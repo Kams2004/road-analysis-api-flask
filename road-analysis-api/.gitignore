@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pt
+*.pth
+models/
+temp/
+logs/
+.DS_Store
+wheels/
+*.mp4
+*.avi
+*.mov
+road-risk-analysis-interface/

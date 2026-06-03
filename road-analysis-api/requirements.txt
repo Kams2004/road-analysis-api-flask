@@ -1,0 +1,25 @@
+# API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic-settings>=2.0.0
+python-multipart>=0.0.9
+
+# Database
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+alembic>=1.13.0
+
+# Storage
+minio>=7.2.0
+
+# Queue
+celery[redis]>=5.3.0
+redis>=5.0.0
+
+# Inference (torch/torchvision installed from local wheels)
+ultralytics==8.3.40
+opencv-python-headless>=4.8.0
+numpy>=1.23.0
+paddlepaddle==2.6.2
+paddleocr==2.8.1
+setuptools>=68.0.0
