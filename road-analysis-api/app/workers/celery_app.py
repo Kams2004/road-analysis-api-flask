@@ -34,16 +34,31 @@ def process_video(self, job_id: str, tmp_path: str, enabled: list):
     Retries up to 3 times on unexpected failure (30s delay between retries).
     """
     try:
-        asyncio.run(_run(job_id, tmp_path, enabled))
+        # Always create a fresh event loop — asyncpg connections are loop-bound
+        # and cannot be reused across tasks in the same worker process.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_run(job_id, tmp_path, enabled))
+        finally:
+            loop.close()
     except Exception as exc:
         logger.error(f"[Job {job_id}] Task failed: {exc}", exc_info=True)
         raise self.retry(exc=exc)
 
 
 async def _run(job_id: str, tmp_path: str, enabled: list):
-    from app.db.session import AsyncSessionLocal
+    from app.core.config import settings
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
     from app.workers.processor import process_source
-    async with AsyncSessionLocal() as db:
-        from app.models.job import Job
-        job = await db.get(Job, job_id)
-        await process_source(job, tmp_path, db, enabled)
+    from app.models.job import Job
+
+    # Fresh engine per task — never reuse the module-level engine across event loops
+    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with SessionLocal() as db:
+            job = await db.get(Job, job_id)
+            await process_source(job, tmp_path, db, enabled)
+    finally:
+        await engine.dispose()
