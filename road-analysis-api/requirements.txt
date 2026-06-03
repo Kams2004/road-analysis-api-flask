@@ -16,7 +16,9 @@ minio>=7.2.0
 celery[redis]>=5.3.0
 redis>=5.0.0
 
-# Inference (torch/torchvision installed from local wheels)
+# Inference
+torch==2.3.1
+torchvision==0.18.1
 ultralytics==8.3.40
 opencv-python-headless>=4.8.0
 numpy>=1.23.0
