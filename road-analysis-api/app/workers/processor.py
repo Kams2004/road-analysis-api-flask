@@ -26,6 +26,7 @@ from app.models.job import Job, JobStatus
 from app.models.detection import Detection
 from app.services.minio_service import upload_image
 from app.services.osd_parser import extract_osd, reset_last, OSDData, GpsVoter
+from app.services.geocoding import reverse_geocode
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def _save_context_clip(
 
     writer = cv2.VideoWriter(
         out_path,
-        cv2.VideoWriter_fourcc(*"mp4v"),
+        cv2.VideoWriter_fourcc(*"avc1"),
         fps,
         (w, h),
     )
@@ -180,6 +181,9 @@ def _save_crop(frame, x1, y1, x2, y2, job_id: str, det_type: str, det_id: str, f
 
 
 def _add_detection(db, job, det_type, subtype, conf, frame_num, osd: OSDData, img_url, crop_url=None, clip_url=None):
+    location_name = osd.location_name
+    if location_name is None and osd.latitude is not None and osd.longitude is not None:
+        location_name = reverse_geocode(osd.latitude, osd.longitude)
     db.add(Detection(
         job_id=job.id, type=det_type,
         subtype=subtype, confidence=conf,
@@ -191,7 +195,7 @@ def _add_detection(db, job, det_type, subtype, conf, frame_num, osd: OSDData, im
         captured_at=osd.timestamp, image_url=img_url,
         crop_url=crop_url,
         context_clip_url=clip_url,
-        location_name=osd.location_name, rpm=osd.rpm,
+        location_name=location_name, rpm=osd.rpm,
     ))
 
 
@@ -350,7 +354,7 @@ async def process_source(
                 det_count += 1
                 logger.info(f"[Job {job.id}] SpeedBump @ frame={frame_num} conf={conf}")
 
-        if frame_num % 500 == 0:
+        if frame_num % 50 == 0:
             job.processed  = frame_num
             job.detections = det_count
             await db.commit()

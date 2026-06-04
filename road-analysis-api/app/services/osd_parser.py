@@ -147,15 +147,51 @@ def _nmea_to_decimal(value: str, direction: str) -> float:
     return round(-dec if direction in ("S", "W") else dec, 6)
 
 
+def _fix_dot_separators(raw: str) -> str:
+    """
+    OCR often reads dots instead of commas as field separators, or omits
+    separators entirely between numbers and direction letters.
+
+    Handles three cases:
+      1. Already correct:  0515.4260,N,01013.5383,E,028KM/H  -> unchanged
+      2. Dot separators:   0409.2839.N.01131.9380.E.039KM/H  -> commas
+      3. No separators:    0515.3177N01013.5650E035KM/H       -> insert commas
+
+    Decimal dots (digit.digit) are never touched.
+    """
+    result = raw
+
+    # Rule 1: dot between digit and letter  e.g. 2839.N -> 2839,N
+    result = re.sub(r'(?<=\d)\.(?=[A-Za-z])', ',', result)
+
+    # Rule 2: dot between letter and digit/letter  e.g. N.01131 -> N,01131
+    result = re.sub(r'(?<=[A-Za-z])\.(?=[\dA-Za-z])', ',', result)
+
+    # Rule 3: no separator at all — digit directly glued to N/S then digit
+    #   e.g. 3177N01013 -> 3177,N,01013
+    result = re.sub(r'(\d)([NS])(\d)', r'\1,\2,\3', result)
+
+    # Rule 4: no separator at all — digit directly glued to E/W then digit
+    #   e.g. 5650E035 -> 5650,E,035
+    result = re.sub(r'(\d)([EW])(\d)', r'\1,\2,\3', result)
+
+    return result
+
+
 def parse_gps_text(raw: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Public — also used by the location-correction endpoint.
     Parses NMEA GPS text → (lat, lon, speed_kmh).
     Returns (None, None, None) if text is incomplete or unparseable.
+    Auto-corrects dot separators before parsing.
     """
-    text = _norm(raw)
-    m = _GPS_RE.search(text)
-    if not m:
+    # Try auto-fix first, then fall back to raw
+    for candidate in [_fix_dot_separators(raw), raw]:
+        text = _norm(candidate)
+        m = _GPS_RE.search(text)
+        if m:
+            break
+    else:
         return None, None, None
     try:
         lon_dir = m.group(4).upper()

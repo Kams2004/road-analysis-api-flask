@@ -8,7 +8,8 @@ from app.db.session import get_db
 from app.models.detection import Detection, ReviewStatus
 from app.models.validation_label import ValidationLabel
 from app.schemas.schemas import DetectionOut, DetectionListOut, ReviewIn, LocationCorrectIn, ValidationLabelOut
-from app.services.osd_parser import parse_gps_text
+from app.services.osd_parser import parse_gps_text, _fix_dot_separators
+from app.services.geocoding import reverse_geocode
 
 router = APIRouter()
 
@@ -70,20 +71,26 @@ async def correct_location(
     if not det:
         raise HTTPException(404, "Detection not found")
 
-    lat, lon, speed = parse_gps_text(body.raw_gps_text)
+    # Auto-fix dot separators before parsing
+    corrected = _fix_dot_separators(body.raw_gps_text)
+    lat, lon, speed = parse_gps_text(corrected)
+    if lat is None:
+        # Try original as fallback
+        lat, lon, speed = parse_gps_text(body.raw_gps_text)
     if lat is None:
         raise HTTPException(
             422,
-            "GPS text could not be parsed. "
-            "Expected NMEA format: DDMM.MMMM,N,DDDMM.MMMM,E  "
+            f"GPS text could not be parsed. "
+            f"Expected NMEA format: DDMM.MMMM,N,DDDMM.MMMM,E  "
             f"(received: {body.raw_gps_text!r})"
         )
 
-    det.raw_gps_text = body.raw_gps_text
-    det.latitude     = lat
-    det.longitude    = lon
+    det.raw_gps_text  = corrected  # save the fixed version
+    det.latitude      = lat
+    det.longitude     = lon
     if speed is not None:
         det.speed_kmh = speed
+    det.location_name = reverse_geocode(lat, lon)
 
     await db.commit()
     await db.refresh(det)
