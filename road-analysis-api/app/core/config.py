@@ -9,8 +9,9 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT:          str  = "localhost:9000"
     MINIO_ACCESS_KEY:        str  = "minioadmin"
     MINIO_SECRET_KEY:        str  = "minioadmin"
-    MINIO_BUCKET_DETECTIONS: str  = "detections"
-    MINIO_BUCKET_DATASETS:   str  = "datasets"
+    MINIO_BUCKET_DETECTIONS:    str  = "detections"
+    MINIO_BUCKET_DATASETS:      str  = "datasets"
+    MINIO_BUCKET_SIGNALEMENTS:  str  = "signalements"
     MINIO_SECURE:            bool = False
 
     # Models paths

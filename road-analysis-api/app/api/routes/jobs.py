@@ -2,11 +2,13 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from typing import List, Optional
 
 from app.db.session import get_db
 from app.models.job import Job
+from app.models.detection import Detection
+from app.models.validation_label import ValidationLabel
 from app.schemas.schemas import JobOut
 from app.workers.celery_app import process_video
 from app.core.config import settings
@@ -86,3 +88,30 @@ async def get_job(job_id: str, db: AsyncSession = Depends(get_db)):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+@router.delete("/{job_id}", status_code=204)
+async def delete_job(job_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Delete a job and all its related data in order:
+    1. validation_labels (references detections)
+    2. detections       (references jobs)
+    3. job
+    """
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    # Step 1 — delete validation labels for detections of this job
+    det_ids = (
+        await db.execute(select(Detection.id).where(Detection.job_id == job_id))
+    ).scalars().all()
+    if det_ids:
+        await db.execute(delete(ValidationLabel).where(ValidationLabel.detection_id.in_(det_ids)))
+
+    # Step 2 — delete detections
+    await db.execute(delete(Detection).where(Detection.job_id == job_id))
+
+    # Step 3 — delete job
+    await db.delete(job)
+    await db.commit()

@@ -4,6 +4,7 @@ from typing import Optional, List
 from app.models.job import JobStatus
 from app.models.detection import ReviewStatus
 from app.models.validation_label import SEVERITY_MIN, SEVERITY_MAX
+from app.models.signalement import SignalementType, SignalementStatus
 
 
 class JobOut(BaseModel):
@@ -95,6 +96,32 @@ class LocationCorrectIn(BaseModel):
     reviewed_by:  str
 
 
+# ─── Spatial query schemas (used by the mobile app) ──────────────────────────
+
+class NearbyQueryIn(BaseModel):
+    """
+    Circle query: return detections within `radius_m` metres of the given point.
+    """
+    latitude:  float
+    longitude: float
+    radius_m:  float = 2000.0   # default 2 km
+
+
+class RouteWaypoint(BaseModel):
+    latitude:  float
+    longitude: float
+
+
+class AlongRouteQueryIn(BaseModel):
+    """
+    Corridor query: return detections that lie within `corridor_m` metres of
+    any segment of the supplied polyline.
+    `waypoints` must contain at least 2 points (the full OSRM route geometry).
+    """
+    waypoints:   List[RouteWaypoint]
+    corridor_m:  float = 60.0   # default 60 m corridor each side of the route
+
+
 class DatasetExportIn(BaseModel):
     detection_type: str   # pothole | traffic_sign | speed_bump
     created_by:     str
@@ -113,3 +140,52 @@ class DatasetOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ─── Signalement schemas ──────────────────────────────────────────────────────
+
+class SignalementIn(BaseModel):
+    type:        SignalementType
+    latitude:    float
+    longitude:   float
+    description: Optional[str] = None
+    reported_by: Optional[str] = None
+
+
+class SignalementOut(BaseModel):
+    id:              str
+    type:            SignalementType
+    status:          SignalementStatus
+    latitude:        float
+    longitude:       float
+    location_name:   Optional[str]
+    blocked_bearing: Optional[float]
+    confirmations:   int
+    not_there_votes: int
+    description:     Optional[str]
+    image_url:       Optional[str]
+    reported_by:     Optional[str]
+    moderated_by:    Optional[str]
+    moderated_at:    Optional[datetime]
+    moderation_note: Optional[str]
+    reported_at:     datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SignalementListOut(BaseModel):
+    total: int
+    items: List[SignalementOut]
+
+
+class SignalementModerationIn(BaseModel):
+    status:       SignalementStatus   # annule | rejete
+    moderated_by: str
+    note:         Optional[str] = None
+
+
+class SignalementNearbyIn(BaseModel):
+    latitude:  float
+    longitude: float
+    radius_m:  float = 5000.0

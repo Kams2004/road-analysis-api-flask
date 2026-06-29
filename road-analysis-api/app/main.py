@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.api.routes import jobs, detections, health, datasets, stats, rejection_reasons
+from app.api.routes import jobs, detections, health, datasets, stats, rejection_reasons, signalements
 from app.core.config import settings
 from app.db.session import init_db, AsyncSessionLocal
 from app.services.watchdog import mark_stale_jobs
@@ -34,7 +34,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    # Allow the Next.js web interface, the Expo dev server, and any LAN IP
+    # (mobile devices on the same network as the API server).
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -45,6 +47,7 @@ app.include_router(detections.router, prefix="/detections", tags=["detections"])
 app.include_router(datasets.router, prefix="/datasets", tags=["datasets"])
 app.include_router(stats.router, prefix="/stats", tags=["stats"])
 app.include_router(rejection_reasons.router, prefix="/rejection-reasons", tags=["rejection-reasons"])
+app.include_router(signalements.router, prefix="/signalements", tags=["signalements"])
 
 
 SEED_REASONS = [

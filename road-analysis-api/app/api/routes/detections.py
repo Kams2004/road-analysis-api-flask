@@ -2,14 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from app.db.session import get_db
 from app.models.detection import Detection, ReviewStatus
 from app.models.validation_label import ValidationLabel
-from app.schemas.schemas import DetectionOut, DetectionListOut, ReviewIn, LocationCorrectIn, ValidationLabelOut
+from app.schemas.schemas import (
+    DetectionOut, DetectionListOut, ReviewIn, LocationCorrectIn,
+    ValidationLabelOut, NearbyQueryIn, AlongRouteQueryIn,
+)
 from app.services.osd_parser import parse_gps_text, _fix_dot_separators
 from app.services.geocoding import reverse_geocode
+from app.services.spatial import query_nearby, query_along_route
 
 router = APIRouter()
 
@@ -45,6 +49,71 @@ async def list_pending(
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar()
     items = (await db.execute(q.offset(skip).limit(limit).order_by(Detection.created_at.asc()))).scalars().all()
     return DetectionListOut(total=total, items=items)
+
+
+@router.post("/nearby", response_model=DetectionListOut)
+async def nearby_detections(
+    body: NearbyQueryIn,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    **Mobile — circle query.**
+
+    Returns all *validated* detections with GPS coordinates that lie within
+    `radius_m` metres of the supplied position.
+
+    Uses a SQL bounding-box pre-filter followed by the exact Haversine
+    formula — all computation happens inside PostgreSQL, so only matching
+    rows are transferred.
+
+    Typical use: call when the device location updates to show nearby hazards
+    on the home/navigation map without loading the entire detections table.
+    """
+    ids = await query_nearby(db, body.latitude, body.longitude, body.radius_m)
+    if not ids:
+        return DetectionListOut(total=0, items=[])
+    items = (
+        await db.execute(select(Detection).where(Detection.id.in_(ids)))
+    ).scalars().all()
+    return DetectionListOut(total=len(items), items=list(items))
+
+
+@router.post("/along-route", response_model=DetectionListOut)
+async def detections_along_route(
+    body: AlongRouteQueryIn,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    **Mobile — route corridor query.**
+
+    Returns all *validated* detections with GPS coordinates that lie within
+    `corridor_m` metres of the polyline defined by `waypoints`.
+
+    Algorithm (two phases, no PostGIS required):
+    1. A SQL bounding-box query with corridor padding reduces the candidate
+       set to only rows near the route envelope.
+    2. Exact point-to-segment Haversine distance is applied in Python to the
+       surviving rows to eliminate false positives from the rectangular box.
+
+    `waypoints` should be the full OSRM route geometry (decoded coordinates)
+    so that every bend and turn is considered.  Sending only the origin +
+    destination would miss detections on curved roads.
+
+    Typical use: call once after the route is computed in the mobile app to
+    overlay hazards on the planned path and compute the safety score.
+    """
+    if len(body.waypoints) < 2:
+        raise HTTPException(422, "At least 2 waypoints are required to define a route segment.")
+
+    pairs = [(wp.latitude, wp.longitude) for wp in body.waypoints]
+    ids   = await query_along_route(db, pairs, body.corridor_m)
+
+    if not ids:
+        return DetectionListOut(total=0, items=[])
+    items = (
+        await db.execute(select(Detection).where(Detection.id.in_(ids)))
+    ).scalars().all()
+    return DetectionListOut(total=len(items), items=list(items))
 
 
 @router.get("/{detection_id}", response_model=DetectionOut)

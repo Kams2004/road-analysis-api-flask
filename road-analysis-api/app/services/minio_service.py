@@ -15,7 +15,7 @@ def get_minio() -> Minio:
             secret_key=settings.MINIO_SECRET_KEY,
             secure=settings.MINIO_SECURE,
         )
-        for bucket in [settings.MINIO_BUCKET_DETECTIONS]:
+        for bucket in [settings.MINIO_BUCKET_DETECTIONS, settings.MINIO_BUCKET_SIGNALEMENTS]:
             if not _client.bucket_exists(bucket):
                 _client.make_bucket(bucket)
     return _client
@@ -32,3 +32,16 @@ def upload_image(data: bytes, object_name: str) -> str:
         content_type="image/jpeg",
     )
     return f"{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET_DETECTIONS}/{object_name}"
+
+
+def upload_signalement_image(data: bytes, object_name: str, content_type: str = "image/jpeg") -> str:
+    """Upload a signalement image to MinIO, return public URL path."""
+    client = get_minio()
+    client.put_object(
+        settings.MINIO_BUCKET_SIGNALEMENTS,
+        object_name,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    return f"{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET_SIGNALEMENTS}/{object_name}"
