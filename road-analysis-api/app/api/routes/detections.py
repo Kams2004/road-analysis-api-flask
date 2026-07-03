@@ -10,7 +10,7 @@ from app.models.validation_label import ValidationLabel
 from app.schemas.schemas import (
     DetectionOut, DetectionListOut, ReviewIn, LocationCorrectIn,
     ValidationLabelOut, NearbyQueryIn, AlongRouteQueryIn,
-    ClusterQueryIn, ClusteredDetectionsOut,
+    ClusterQueryIn, ClusteredDetectionsOut, ResolveClusterIn,
 )
 from app.services.osd_parser import parse_gps_text, _fix_dot_separators
 from app.services.geocoding import reverse_geocode
@@ -124,16 +124,15 @@ async def get_clusters(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Groups *validated* detections into spatial clusters using the configured
-    radius.  Two detections within that distance share a cluster; isolated
-    detections form singleton clusters of size 1.
-    Optional filters: `type`, `subtype`, `job_id`.
+    Groups *validated* and *resolved* detections into spatial clusters.
+    Each cluster reports how many of its members are resolved and whether
+    the whole cluster is considered resolved (all members resolved).
     """
     config = await db.get(ClusterConfig, 1)
     radius = config.radius_m if config else 50.0
 
     q = select(Detection).where(
-        Detection.review_status == ReviewStatus.validated,
+        Detection.review_status.in_([ReviewStatus.validated, ReviewStatus.resolved]),
         Detection.latitude.isnot(None),
         Detection.longitude.isnot(None),
     )
@@ -142,15 +141,82 @@ async def get_clusters(
     if body.job_id:  q = q.where(Detection.job_id  == body.job_id)
 
     detections = (await db.execute(q)).scalars().all()
+    det_map = {d.id: d for d in detections}
+
     points = [{"id": d.id, "latitude": d.latitude, "longitude": d.longitude} for d in detections]
-    clusters = cluster_detections(points, radius)
+    raw_clusters = cluster_detections(points, radius)
+
+    clusters = []
+    for c in raw_clusters:
+        resolved_count = sum(
+            1 for did in c["detection_ids"]
+            if det_map.get(did) and det_map[did].review_status == ReviewStatus.resolved
+        )
+        clusters.append({
+            **c,
+            "resolved_count": resolved_count,
+            "is_resolved":    resolved_count == c["count"],
+        })
+
+    active   = sum(1 for c in clusters if not c["is_resolved"])
+    resolved = sum(1 for c in clusters if c["is_resolved"])
 
     return ClusteredDetectionsOut(
         radius_m=radius,
         total_detections=len(detections),
         total_clusters=len(clusters),
+        active_clusters=active,
+        resolved_clusters=resolved,
         clusters=clusters,
     )
+
+
+@router.post("/clusters/resolve", response_model=DetectionListOut)
+async def resolve_cluster(
+    body: ResolveClusterIn,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    **Cluster resolution.**
+
+    Called when a vehicle passes through a cluster zone and the new job
+    produces fewer detections than the original cluster count.
+
+    Resolution rule:
+      - new_detection_count == 0  → all members resolved (hazard gone)
+      - new_detection_count < original count → all members resolved
+        (improvement sufficient to consider the zone fixed)
+      - new_detection_count >= original count → nothing changes (hazard persists)
+
+    All resolved detections get review_status = 'resolved' and resolved_at = now.
+    """
+    if not body.detection_ids:
+        raise HTTPException(422, "detection_ids must not be empty")
+
+    rows = (await db.execute(
+        select(Detection).where(Detection.id.in_(body.detection_ids))
+    )).scalars().all()
+
+    if not rows:
+        raise HTTPException(404, "No detections found for the given IDs")
+
+    original_count = len(rows)
+    if body.new_detection_count >= original_count:
+        # Hazard persists — nothing to resolve
+        return DetectionListOut(total=len(rows), items=list(rows))
+
+    now = datetime.utcnow()
+    for det in rows:
+        det.review_status = ReviewStatus.resolved
+        det.resolved_at   = now
+        if body.resolved_by:
+            det.reviewed_by = body.resolved_by
+
+    await db.commit()
+    for det in rows:
+        await db.refresh(det)
+
+    return DetectionListOut(total=len(rows), items=list(rows))
 
 
 @router.get("/{detection_id}", response_model=DetectionOut)

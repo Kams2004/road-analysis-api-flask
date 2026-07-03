@@ -45,6 +45,7 @@ class DetectionOut(BaseModel):
     reviewed_by:   Optional[str]
     reviewed_at:   Optional[datetime]
     review_note:   Optional[str]
+    resolved_at:   Optional[datetime]
     created_at:    datetime
 
     class Config:
@@ -204,6 +205,8 @@ class ClusterOut(BaseModel):
     centroid_lat:  float
     centroid_lon:  float
     count:         int
+    resolved_count: int
+    is_resolved:   bool
     detection_ids: List[str]
 
 
@@ -211,4 +214,18 @@ class ClusteredDetectionsOut(BaseModel):
     radius_m:         float
     total_detections: int
     total_clusters:   int
+    active_clusters:  int
+    resolved_clusters: int
     clusters:         List[ClusterOut]
+
+
+class ResolveClusterIn(BaseModel):
+    """
+    Sent when a vehicle passes through a cluster zone.
+    `new_detection_count` is the number of detections the new job found
+    in the same zone (0 = no detections at all).
+    The cluster is resolved when new_detection_count < original cluster count.
+    """
+    detection_ids:       List[str]   # the original cluster member IDs
+    new_detection_count: int = 0
+    resolved_by:         Optional[str] = None

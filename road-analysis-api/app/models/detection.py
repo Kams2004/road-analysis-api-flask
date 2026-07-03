@@ -10,6 +10,7 @@ class ReviewStatus(str, enum.Enum):
     pending   = "pending"
     validated = "validated"
     rejected  = "rejected"
+    resolved  = "resolved"
 
 
 class Detection(Base):
@@ -50,5 +51,6 @@ class Detection(Base):
     reviewed_by:   Mapped[str | None]      = mapped_column(String, nullable=True)
     reviewed_at:   Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     review_note:   Mapped[str | None]      = mapped_column(String, nullable=True)
+    resolved_at:   Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at:   Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
