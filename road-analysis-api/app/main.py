@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.api.routes import jobs, detections, health, datasets, stats, rejection_reasons, signalements
+from app.api.routes import jobs, detections, health, datasets, stats, rejection_reasons, signalements, cluster_config
 from app.core.config import settings
 from app.db.session import init_db, AsyncSessionLocal
 from app.services.watchdog import mark_stale_jobs
@@ -46,6 +46,7 @@ app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
 app.include_router(detections.router, prefix="/detections", tags=["detections"])
 app.include_router(datasets.router, prefix="/datasets", tags=["datasets"])
 app.include_router(stats.router, prefix="/stats", tags=["stats"])
+app.include_router(cluster_config.router, prefix="/cluster-config", tags=["cluster-config"])
 app.include_router(rejection_reasons.router, prefix="/rejection-reasons", tags=["rejection-reasons"])
 app.include_router(signalements.router, prefix="/signalements", tags=["signalements"])
 

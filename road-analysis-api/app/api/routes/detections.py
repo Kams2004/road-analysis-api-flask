@@ -10,10 +10,12 @@ from app.models.validation_label import ValidationLabel
 from app.schemas.schemas import (
     DetectionOut, DetectionListOut, ReviewIn, LocationCorrectIn,
     ValidationLabelOut, NearbyQueryIn, AlongRouteQueryIn,
+    ClusterQueryIn, ClusteredDetectionsOut,
 )
 from app.services.osd_parser import parse_gps_text, _fix_dot_separators
 from app.services.geocoding import reverse_geocode
-from app.services.spatial import query_nearby, query_along_route
+from app.services.spatial import query_nearby, query_along_route, cluster_detections
+from app.models.cluster_config import ClusterConfig
 
 router = APIRouter()
 
@@ -114,6 +116,41 @@ async def detections_along_route(
         await db.execute(select(Detection).where(Detection.id.in_(ids)))
     ).scalars().all()
     return DetectionListOut(total=len(items), items=list(items))
+
+
+@router.post("/clusters", response_model=ClusteredDetectionsOut)
+async def get_clusters(
+    body: ClusterQueryIn,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Groups *validated* detections into spatial clusters using the configured
+    radius.  Two detections within that distance share a cluster; isolated
+    detections form singleton clusters of size 1.
+    Optional filters: `type`, `subtype`, `job_id`.
+    """
+    config = await db.get(ClusterConfig, 1)
+    radius = config.radius_m if config else 50.0
+
+    q = select(Detection).where(
+        Detection.review_status == ReviewStatus.validated,
+        Detection.latitude.isnot(None),
+        Detection.longitude.isnot(None),
+    )
+    if body.type:    q = q.where(Detection.type    == body.type)
+    if body.subtype: q = q.where(Detection.subtype == body.subtype)
+    if body.job_id:  q = q.where(Detection.job_id  == body.job_id)
+
+    detections = (await db.execute(q)).scalars().all()
+    points = [{"id": d.id, "latitude": d.latitude, "longitude": d.longitude} for d in detections]
+    clusters = cluster_detections(points, radius)
+
+    return ClusteredDetectionsOut(
+        radius_m=radius,
+        total_detections=len(detections),
+        total_clusters=len(clusters),
+        clusters=clusters,
+    )
 
 
 @router.get("/{detection_id}", response_model=DetectionOut)

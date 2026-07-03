@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL:      str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND:  str = "redis://localhost:6379/1"
 
+    # Clustering
+    CLUSTER_RADIUS_M: float = 50.0   # default cluster radius in metres
+
     # Watchdog
     STALE_JOB_MINUTES: int = 60
 

@@ -18,7 +18,7 @@ class Base(DeclarativeBase):
 
 async def init_db():
     async with engine.begin() as conn:
-        from app.models import job, detection, validation_label, dataset, signalement  # noqa
+        from app.models import job, detection, validation_label, dataset, signalement, cluster_config  # noqa
         await conn.run_sync(Base.metadata.create_all)
 
 

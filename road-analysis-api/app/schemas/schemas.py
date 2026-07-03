@@ -189,3 +189,26 @@ class SignalementNearbyIn(BaseModel):
     latitude:  float
     longitude: float
     radius_m:  float = 5000.0
+
+
+# ─── Clustering schemas ───────────────────────────────────────────────────────────────
+
+class ClusterQueryIn(BaseModel):
+    type:    Optional[str] = None
+    subtype: Optional[str] = None
+    job_id:  Optional[str] = None
+
+
+class ClusterOut(BaseModel):
+    cluster_id:    int
+    centroid_lat:  float
+    centroid_lon:  float
+    count:         int
+    detection_ids: List[str]
+
+
+class ClusteredDetectionsOut(BaseModel):
+    radius_m:         float
+    total_detections: int
+    total_clusters:   int
+    clusters:         List[ClusterOut]

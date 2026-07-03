@@ -7,3 +7,6 @@ models/
 temp/
 logs/
 .DS_Store
+road-risk-analysis-interface/.next/
+road-risk-analysis-interface/node_modules/
+viasafe-mobile/

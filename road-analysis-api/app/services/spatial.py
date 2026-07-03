@@ -28,7 +28,7 @@ apply Haversine for the final measurement.
 """
 
 from math import radians, cos, sin, asin, sqrt
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -220,3 +220,58 @@ async def query_along_route(
                 break   # no need to check more segments for this detection
 
     return matched_ids
+
+
+# ─── Clustering ───────────────────────────────────────────────────────────────
+
+def cluster_detections(
+    detections: List[Dict[str, Any]],
+    radius_m: float,
+) -> List[Dict[str, Any]]:
+    """
+    Greedy single-linkage clustering.
+
+    Every detection belongs to exactly one cluster.  A detection that has no
+    neighbour within `radius_m` forms a singleton cluster of size 1.
+
+    Each detection dict must have at least: id, latitude, longitude.
+    Returns a list of cluster dicts:
+        {
+            cluster_id:  int,
+            centroid_lat: float,
+            centroid_lon: float,
+            count:        int,
+            detection_ids: List[str],
+        }
+    """
+    used = [False] * len(detections)
+    clusters: List[Dict[str, Any]] = []
+
+    for i, det in enumerate(detections):
+        if used[i]:
+            continue
+        group = [det]
+        used[i] = True
+
+        for j in range(i + 1, len(detections)):
+            if used[j]:
+                continue
+            dist = _haversine_m(
+                det["latitude"],  det["longitude"],
+                detections[j]["latitude"], detections[j]["longitude"],
+            )
+            if dist <= radius_m:
+                group.append(detections[j])
+                used[j] = True
+
+        centroid_lat = sum(d["latitude"]  for d in group) / len(group)
+        centroid_lon = sum(d["longitude"] for d in group) / len(group)
+        clusters.append({
+            "cluster_id":    len(clusters),
+            "centroid_lat":  centroid_lat,
+            "centroid_lon":  centroid_lon,
+            "count":         len(group),
+            "detection_ids": [d["id"] for d in group],
+        })
+
+    return clusters
