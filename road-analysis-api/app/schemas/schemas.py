@@ -208,6 +208,7 @@ class ClusterOut(BaseModel):
     resolved_count: int
     is_resolved:   bool
     detection_ids: List[str]
+    detection_coords: List[List[float]] = []  # [[lat, lon], ...]
 
 
 class ClusteredDetectionsOut(BaseModel):

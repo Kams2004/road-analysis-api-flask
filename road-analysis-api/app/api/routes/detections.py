@@ -156,6 +156,11 @@ async def get_clusters(
             **c,
             "resolved_count": resolved_count,
             "is_resolved":    resolved_count == c["count"],
+            "detection_coords": [
+                [det_map[did].latitude, det_map[did].longitude]
+                for did in c["detection_ids"]
+                if det_map.get(did) and det_map[did].latitude is not None
+            ],
         })
 
     active   = sum(1 for c in clusters if not c["is_resolved"])
