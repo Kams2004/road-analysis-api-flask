@@ -165,6 +165,7 @@ class SignalementOut(BaseModel):
     not_there_votes: int
     description:     Optional[str]
     image_url:       Optional[str]
+    audio_url:       Optional[str]
     reported_by:     Optional[str]
     moderated_by:    Optional[str]
     moderated_at:    Optional[datetime]

@@ -15,7 +15,7 @@ from app.schemas.schemas import (
 from app.services.signalement_service import (
     query_signalements_nearby, query_signalements_along_route,
 )
-from app.services.minio_service import upload_signalement_image
+from app.services.minio_service import upload_signalement_image, upload_signalement_audio
 from app.services.geocoding import reverse_geocode
 
 router = APIRouter()
@@ -32,6 +32,7 @@ async def create_signalement(
     reported_by:     Optional[str]     = Form(None),
     blocked_bearing: Optional[float]   = Form(None),
     image:           Optional[UploadFile] = File(None),
+    audio:           Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db),
 ):
     image_url = None
@@ -41,6 +42,13 @@ async def create_signalement(
         object_name = f"signalements/{uuid.uuid4().hex}.{ext}"
         image_url = upload_signalement_image(data, object_name, image.content_type or "image/jpeg")
 
+    audio_url = None
+    if audio:
+        data = await audio.read()
+        ext  = (audio.filename or "audio.m4a").rsplit(".", 1)[-1].lower()
+        object_name = f"signalements/audio/{uuid.uuid4().hex}.{ext}"
+        audio_url = upload_signalement_audio(data, object_name, audio.content_type or "audio/m4a")
+
     sig = Signalement(
         type=type,
         latitude=latitude,
@@ -48,6 +56,7 @@ async def create_signalement(
         description=description,
         reported_by=reported_by,
         image_url=image_url,
+        audio_url=audio_url,
         blocked_bearing=blocked_bearing,
         location_name=reverse_geocode(latitude, longitude),
         reported_at=datetime.utcnow(),

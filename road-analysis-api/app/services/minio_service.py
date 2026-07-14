@@ -45,3 +45,16 @@ def upload_signalement_image(data: bytes, object_name: str, content_type: str = 
         content_type=content_type,
     )
     return f"{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET_SIGNALEMENTS}/{object_name}"
+
+
+def upload_signalement_audio(data: bytes, object_name: str, content_type: str = "audio/m4a") -> str:
+    """Upload a signalement audio recording to MinIO, return public URL path."""
+    client = get_minio()
+    client.put_object(
+        settings.MINIO_BUCKET_SIGNALEMENTS,
+        object_name,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    return f"{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET_SIGNALEMENTS}/{object_name}"

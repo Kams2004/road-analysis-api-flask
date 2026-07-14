@@ -51,5 +51,6 @@ class Signalement(Base):
     blocked_bearing: Mapped[float | None]  = mapped_column(Float, nullable=True)  # degrees 0-360, closure direction
     confirmations:   Mapped[int]           = mapped_column(Integer, default=0)
     not_there_votes: Mapped[int]           = mapped_column(Integer, default=0)
+    audio_url:       Mapped[str | None]    = mapped_column(String, nullable=True)
 
     reported_at: Mapped[datetime]       = mapped_column(DateTime, default=datetime.utcnow)
