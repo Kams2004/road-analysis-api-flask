@@ -1,0 +1,51 @@
+version: "3.9"
+
+# ── Self-hosted OSRM, for when the public demo server (the default —
+#    see OSRM_BASE_URL in app/core/config.py) isn't good enough: rate
+#    limits, latency, or you want the real Cameroon road network instead of
+#    whatever the demo server happens to serve.
+#
+# This is a separate, optional file — it does not touch docker-compose.yml
+# or the production deployment. Bring it up alongside the main stack:
+#
+#   docker-compose -f docker-compose.yml -f docker-compose.osrm.yml up -d osrm
+#
+# The image is self-preparing (see osrm/Dockerfile / osrm/docker-entrypoint.sh):
+# on first boot, with no compiled dataset yet in ./osrm/data, it downloads
+# the Cameroon extract from Geofabrik and compiles it automatically — no
+# manual step required on deployment. That first boot takes a while (a
+# ~220MB download plus several minutes of extract/partition/customize);
+# every restart after that reuses the compiled data and starts in seconds.
+# For a production deploy where you'd rather not do that compile on a live
+# box, pre-bake the data with osrm/prepare_cameroon.sh and ship ./osrm/data
+# already populated — the entrypoint detects that and skips straight to
+# starting osrm-routed.
+#
+# Then point the backend at it instead of the public server:
+#
+#   OSRM_BASE_URL=http://osrm:5000       (from inside the api/worker containers)
+#   OSRM_BASE_URL=http://localhost:5001  (from the host, e.g. for curl testing)
+
+services:
+  osrm:
+    build:
+      context: ./osrm
+    image: road-analysis-osrm:cameroon
+    environment:
+      OSRM_REGION: cameroon
+      # OSRM_OSM_URL: override only if you need a different Geofabrik URL/mirror
+    volumes:
+      - ./osrm/data:/data
+    ports:
+      - "5001:5000"
+    restart: unless-stopped
+    healthcheck:
+      # OSRM has no dedicated health route on older builds — just confirm
+      # osrm-routed is answering at all (any HTTP response, even a 4xx for a
+      # nonsense query, proves the process is up and the dataset loaded).
+      # A generous start_period covers the first-boot download+compile.
+      test: ["CMD-SHELL", "wget -q --spider --tries=1 http://localhost:5000/route/v1/driving/9.7,4.05;9.71,4.06 || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30m

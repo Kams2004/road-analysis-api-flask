@@ -13,3 +13,7 @@ wheels/
 *.mov
 viasafe-mobile/
 road-risk-analysis-interface/
+
+# Compiled/downloaded OSRM road dataset — regeneratable via osrm/prepare_cameroon.sh
+osrm/data/*
+!osrm/data/.gitkeep

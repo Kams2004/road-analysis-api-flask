@@ -31,6 +31,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  beat:
+    build: .
+    # Schedules periodic tasks (currently: Ymane historical-event sync,
+    # off by default — see settings.HISTORICAL_YMANE_SYNC_ENABLED) onto the
+    # same "processing" queue the `worker` service already consumes. This
+    # container only enqueues on schedule; it never executes tasks itself.
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./app:/app/app:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     network_mode: host          # listens on host 127.0.0.1:6379

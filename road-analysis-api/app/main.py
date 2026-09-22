@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.api.routes import jobs, detections, health, datasets, stats, rejection_reasons, signalements, cluster_config
+from app.api.routes import jobs, detections, health, datasets, stats, rejection_reasons, signalements, cluster_config, vehicles, road_state, trajectory, collisions, alerts, historical
 from app.core.config import settings
 from app.db.session import init_db, AsyncSessionLocal
 from app.services.watchdog import mark_stale_jobs
@@ -49,6 +49,12 @@ app.include_router(stats.router, prefix="/stats", tags=["stats"])
 app.include_router(cluster_config.router, prefix="/cluster-config", tags=["cluster-config"])
 app.include_router(rejection_reasons.router, prefix="/rejection-reasons", tags=["rejection-reasons"])
 app.include_router(signalements.router, prefix="/signalements", tags=["signalements"])
+app.include_router(vehicles.router, prefix="/vehicles", tags=["vehicles"])
+app.include_router(road_state.router, prefix="/road-state", tags=["road-state"])
+app.include_router(trajectory.router, prefix="/trajectory", tags=["trajectory"])
+app.include_router(collisions.router, prefix="/collisions", tags=["collisions"])
+app.include_router(alerts.router, prefix="/alerts", tags=["alerts"])
+app.include_router(historical.router, prefix="/historical", tags=["historical"])
 
 
 SEED_REASONS = [

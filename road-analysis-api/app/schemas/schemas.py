@@ -5,6 +5,7 @@ from app.models.job import JobStatus
 from app.models.detection import ReviewStatus
 from app.models.validation_label import SEVERITY_MIN, SEVERITY_MAX
 from app.models.signalement import SignalementType, SignalementStatus
+from app.models.vehicle import VehicleType
 
 
 class JobOut(BaseModel):
@@ -191,6 +192,86 @@ class SignalementNearbyIn(BaseModel):
     latitude:  float
     longitude: float
     radius_m:  float = 5000.0
+
+
+# ─── Vehicle telemetry schemas ────────────────────────────────────────────────
+
+class VehicleRegisterIn(BaseModel):
+    vehicle_id:   Optional[str] = None   # client resends its stored id to re-register after reinstall/backend reset
+    vehicle_type: VehicleType = VehicleType.private
+
+
+class VehicleOut(BaseModel):
+    id:           str
+    vehicle_type: VehicleType
+    created_at:   datetime
+    last_seen:    Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class VehiclePingIn(BaseModel):
+    latitude:  float
+    longitude: float
+    speed_mps: Optional[float] = None     # metres/second, as reported by device GPS
+    heading:   Optional[float] = None     # degrees, 0-360, direction of travel
+    accuracy_m: Optional[float] = None    # device-reported GPS horizontal accuracy, metres
+    acceleration_mps2: Optional[float] = None  # device-reported linear acceleration, if available (see Step 3)
+    ts:        Optional[datetime] = None  # device timestamp; server time used if omitted
+
+    @field_validator("latitude")
+    @classmethod
+    def _lat_range(cls, v: float) -> float:
+        if not (-90.0 <= v <= 90.0):
+            raise ValueError("latitude out of range")
+        return v
+
+    @field_validator("longitude")
+    @classmethod
+    def _lon_range(cls, v: float) -> float:
+        if not (-180.0 <= v <= 180.0):
+            raise ValueError("longitude out of range")
+        return v
+
+    @field_validator("speed_mps")
+    @classmethod
+    def _speed_sane(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (0.0 <= v <= 100.0):  # 360 km/h ceiling — clearly bad fix beyond this
+            raise ValueError("speed_mps out of plausible range")
+        return v
+
+    @field_validator("acceleration_mps2")
+    @classmethod
+    def _acceleration_sane(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (-20.0 <= v <= 20.0):  # ~2g either way — crash-level beyond this, treat as sensor noise
+            raise ValueError("acceleration_mps2 out of plausible range")
+        return v
+
+
+class VehicleLiveOut(BaseModel):
+    vehicle_id:   str
+    vehicle_type: VehicleType
+    latitude:     float
+    longitude:    float
+    speed_mps:    Optional[float]
+    heading:      Optional[float]
+    accuracy_m:   Optional[float] = None
+    acceleration_mps2: Optional[float] = None
+    ts:           datetime
+    distance_m:   Optional[float] = None  # populated for /nearby queries
+
+
+class VehicleNearbyIn(BaseModel):
+    latitude:  float
+    longitude: float
+    radius_m:  float = 500.0
+    exclude_vehicle_id: Optional[str] = None
+
+
+class VehicleNearbyOut(BaseModel):
+    total: int
+    items: List[VehicleLiveOut]
 
 
 # ─── Clustering schemas ───────────────────────────────────────────────────────────────
