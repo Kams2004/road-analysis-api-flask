@@ -63,10 +63,13 @@ SCENARIOS = [
 # since the current phase's route was computed (handles the phone drifting
 # a little without needing a full stop/restart).
 REANCHOR_JUMP_M = float(os.environ.get("ALERT_DEMO_REANCHOR_JUMP_M", "40"))
-# How long to sit at the closest point of approach before retreating — long
-# enough for someone presenting this to actually see and point at the
-# CRITICAL alert, not just a single flash as the vehicle passes through.
-DWELL_AT_CLOSEST_S = float(os.environ.get("ALERT_DEMO_DWELL_AT_CLOSEST_S", "10"))
+# How long to sit at the closest point of approach before retreating. Kept
+# brief on purpose — a long dwell here means the vehicle spends a large
+# fraction of every cycle camped right at the alert-triggering position, so
+# reopening the app after any time away tends to land mid-alert instead of
+# catching the escalation. The vehicle still passes through CRITICAL on its
+# way in and out either way.
+DWELL_AT_CLOSEST_S = float(os.environ.get("ALERT_DEMO_DWELL_AT_CLOSEST_S", "1"))
 
 
 class AlertDemoVehicle:
