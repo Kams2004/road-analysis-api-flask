@@ -12,10 +12,21 @@ source=manual has no such dependency; this script just builds a plausible
 event set and posts it the same way a real manual/CSV import would.
 
 Event points are real OSRM route geometry — not synthetic lat/lon jitter
-around a center point — so every event sits exactly on the road trace,
-never off to the side of it. Several clusters are spread along BOTH the
-Douala-Bafoussam (N5) and Douala-Yaounde (N3) corridors rather than
-bunched into one area.
+around a center point — so every event sits exactly on the road trace.
+Clusters are spread along BOTH the Douala-Bafoussam (N5) and
+Douala-Yaounde (N3) corridors, not bunched into one area.
+
+Severity is deliberately tiered per cluster (light/moderate/high/critical)
+rather than left to pure randomness, and each cluster's events are kept
+within a tight ~120m window (well inside one HISTORICAL_GRID_CELL_SIZE_M
+150m cell) — see app/services/historical_service.py's _risk_score: it's a
+weighted sum of event-type counts (ACCIDENT=5.0, HARD_BRAKING/
+HARSH_CORNERING=1.5, HARD_ACCELERATION=1.2, SPEEDING=1.0, IDLE=0.3) divided
+by HISTORICAL_RISK_SATURATION_WEIGHT (20.0). Spreading a cluster's events
+across too wide a window dilutes them into separate grid cells, so no
+single cell ever crosses the moderate/high/critical color thresholds —
+that's what an earlier version of this script got wrong (it used a much
+wider window and produced an almost uniformly green/low-risk map).
 
 Usage:
     API_BASE_URL=http://185.182.184.188:8080 python -m app.demo.seed_demo_exceptions
@@ -24,11 +35,12 @@ Re-running is safe: each event has a unique source_event_id and the
 (source, source_event_id) pair is a DB uniqueness constraint, so duplicate
 runs are simply skipped (skipped_duplicates in the response), not doubled.
 
-This replaces an earlier batch (source_event_id prefix "demo-n5-") that
-used random jitter and could land slightly off the actual road; that batch
-is NOT auto-deleted by this script (the import API is insert-only, no
-delete endpoint) — remove it manually on the server if desired:
-    psql "$DB_URL" -c "DELETE FROM historical_events WHERE source='manual' AND source_event_id LIKE 'demo-n5-%'"
+This replaces two earlier batches:
+  - "demo-n5-*"    — random +/-100m jitter, Bafoussam only, could land off-road
+  - "demo-route-*" — real road points but too wide a window, mostly green
+Neither is auto-deleted (the import API is insert-only, no delete
+endpoint) — remove them manually on the server if desired:
+    psql "$DB_URL" -c "DELETE FROM historical_events WHERE source='manual' AND (source_event_id LIKE 'demo-n5-%' OR source_event_id LIKE 'demo-route-%')"
 """
 import json
 import os
@@ -38,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8080")
 OSRM_URL = os.environ.get("SEED_DEMO_OSRM_URL", "https://router.project-osrm.org")
-SEED = int(os.environ.get("SEED_DEMO_EXCEPTIONS_SEED", "7"))
+SEED = int(os.environ.get("SEED_DEMO_EXCEPTIONS_SEED", "11"))
 
 # (origin, destination, label) — real driving routes; events are placed
 # using the actual OSRM-returned road geometry between them.
@@ -47,29 +59,64 @@ ROUTES = [
     ((9.700013, 4.045019), (11.502169, 3.848010), "Douala-Yaounde (N3)"),
 ]
 
-# Where along each route (as a fraction of total points, 0=origin/Douala,
-# 1=destination) to anchor a cluster. Skipping the first ~12% keeps events
-# off dense in-city Douala streets and on the actual intercity highway.
-ANCHOR_FRACTIONS = [0.18, 0.38, 0.58, 0.78, 0.93]
+# Half-width of the window (metres) each cluster's events are drawn from —
+# small enough to stay within one 150m grid cell in the vast majority of
+# cases regardless of exactly where the anchor lands relative to a cell
+# boundary.
+WINDOW_HALF_WIDTH_M = 60.0
 
-EVENT_TYPES_WEIGHTED = (
-    ["SPEEDING"] * 5
-    + ["HARD_BRAKING"] * 4
-    + ["HARSH_CORNERING"] * 2
-    + ["HARD_ACCELERATION"] * 2
-    + ["ACCIDENT"] * 1
-    + ["IDLE_VIOLATION"] * 1
-)
+# (fraction along the route, tier) — five clusters per route, deliberately
+# spanning the full severity range so the map shows real color variation
+# instead of one uniform tier.
+ANCHORS = [
+    (0.15, "light"),
+    (0.35, "moderate"),
+    (0.55, "high"),
+    (0.75, "critical"),
+    (0.92, "moderate"),
+]
+
+# event_type weighted list, roughly targeted per tier: (event types, count range)
+TIER_SPEC = {
+    "light":    (["SPEEDING"] * 3 + ["IDLE_VIOLATION"] * 1, (3, 4)),
+    "moderate": (["SPEEDING"] * 3 + ["HARD_BRAKING"] * 2 + ["HARSH_CORNERING"] * 1, (6, 8)),
+    "high":     (["HARD_BRAKING"] * 3 + ["HARSH_CORNERING"] * 2 + ["SPEEDING"] * 2 + ["HARD_ACCELERATION"] * 1, (9, 11)),
+    "critical": (["ACCIDENT"] * 2 + ["HARD_BRAKING"] * 3 + ["SPEEDING"] * 3 + ["HARSH_CORNERING"] * 2, (11, 13)),
+}
 
 
-def fetch_osrm_route(origin, dest):
+def haversine_m(lat1, lon1, lat2, lon2):
+    import math
+    R = 6_371_000
+    to_rad = math.radians
+    d_lat = to_rad(lat2 - lat1)
+    d_lon = to_rad(lon2 - lon1)
+    a = math.sin(d_lat / 2) ** 2 + math.cos(to_rad(lat1)) * math.cos(to_rad(lat2)) * math.sin(d_lon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def fetch_osrm_route_with_distances(origin, dest):
     lon1, lat1 = origin
     lon2, lat2 = dest
     url = f"{OSRM_URL}/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?geometries=geojson&overview=full"
     with urllib.request.urlopen(url, timeout=30) as resp:
         data = json.load(resp)
-    # OSRM coordinates are [lon, lat]
-    return data["routes"][0]["geometry"]["coordinates"]
+    coords = data["routes"][0]["geometry"]["coordinates"]  # [lon, lat]
+    cumulative = [0.0]
+    for i in range(1, len(coords)):
+        lon_a, lat_a = coords[i - 1]
+        lon_b, lat_b = coords[i]
+        cumulative.append(cumulative[-1] + haversine_m(lat_a, lon_a, lat_b, lon_b))
+    return coords, cumulative
+
+
+def window_around(coords, cumulative, center_idx, half_width_m):
+    center_dist = cumulative[center_idx]
+    window = [
+        coords[i] for i in range(len(coords))
+        if abs(cumulative[i] - center_dist) <= half_width_m
+    ]
+    return window or [coords[center_idx]]
 
 
 def build_events():
@@ -78,24 +125,21 @@ def build_events():
     events, eid = [], 0
 
     for origin, dest, label in ROUTES:
-        coords = fetch_osrm_route(origin, dest)
+        coords, cumulative = fetch_osrm_route_with_distances(origin, dest)
         n = len(coords)
-        for frac in ANCHOR_FRACTIONS:
+        for frac, tier in ANCHORS:
             center_idx = int(n * frac)
-            # window of real route points around the anchor — no synthetic
-            # offset, so every event is exactly on the road trace
-            window = coords[max(0, center_idx - 30):center_idx + 30]
-            if not window:
-                continue
-            for _ in range(random.randint(8, 14)):
+            window = window_around(coords, cumulative, center_idx, WINDOW_HALF_WIDTH_M)
+            types, (lo, hi) = TIER_SPEC[tier]
+            for _ in range(random.randint(lo, hi)):
                 eid += 1
                 lon, lat = random.choice(window)
                 occurred = now - timedelta(days=random.uniform(0, 45), hours=random.uniform(0, 23))
-                etype = random.choice(EVENT_TYPES_WEIGHTED)
+                etype = random.choice(types)
                 speed = random.uniform(14, 33) if etype in ("SPEEDING", "HARD_BRAKING", "HARSH_CORNERING") else None
                 events.append({
                     "source": "manual",
-                    "source_event_id": f"demo-route-{eid:04d}",
+                    "source_event_id": f"demo-tier-{eid:04d}",
                     "event_type": etype,
                     "occurred_at": occurred.isoformat(),
                     "latitude": round(lat, 6),
@@ -103,8 +147,8 @@ def build_events():
                     "vehicle_external_id": f"demo-veh-{random.randint(1, 6)}",
                     "speed_mps": round(speed, 1) if speed else None,
                     "speed_limit_mps": 22.2 if speed else None,  # ~80 km/h highway limit
-                    "severity": random.choice(["low", "medium", "high"]),
-                    "raw": {"demo": True, "label": label},
+                    "severity": {"light": "low", "moderate": "low", "high": "medium", "critical": "high"}[tier],
+                    "raw": {"demo": True, "label": label, "tier": tier},
                 })
     return events, now
 
