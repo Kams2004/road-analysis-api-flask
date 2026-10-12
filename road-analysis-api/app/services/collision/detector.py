@@ -39,6 +39,19 @@ LatLon = Tuple[float, float]
 _UNUSABLE_STATUSES = (TrajectoryStatus.UNAVAILABLE,)
 _DEGRADING_STATUSES = (TrajectoryStatus.DEGRADED, TrajectoryStatus.STALE)
 
+_SEVERITY_RANK = {
+    ConflictRiskLevel.NONE: 0,
+    ConflictRiskLevel.LOW: 1,
+    ConflictRiskLevel.MODERATE: 2,
+    ConflictRiskLevel.HIGH: 3,
+    ConflictRiskLevel.CRITICAL: 4,
+}
+# Cap applied when two vehicles are confidently confirmed to share no road
+# at all (see assess_conflict) — dampened, not zeroed: segment data can
+# still be incomplete even at reportable confidence (an unmapped junction,
+# a gap in OSRM's graph), so this never fully silences a borderline case.
+_UNRELATED_ROAD_SEVERITY_CAP = ConflictRiskLevel.MODERATE
+
 
 def _cpa_in_interval(
     a1: LatLon, a2: LatLon, b1: LatLon, b2: LatLon, dt: float, ref_lat: float,
@@ -190,6 +203,40 @@ def assess_conflict(
     confidence = min(trajectory_a.confidence, trajectory_b.confidence)
     degraded = trajectory_a.status in _DEGRADING_STATUSES or trajectory_b.status in _DEGRADING_STATUSES
 
+    # Road Intelligence Broker: computed before the branch below (not just
+    # in the "full" return, as before) so it can actually gate risk rather
+    # than only ever being reported as metadata after the fact.
+    ids_a, ids_b = _segment_ids(trajectory_a), _segment_ids(trajectory_b)
+    same_current_segment = (
+        trajectory_a.road_segment_id is not None
+        and trajectory_a.road_segment_id == trajectory_b.road_segment_id
+    )
+    segment_overlap_ahead = bool(ids_a & ids_b)
+
+    # This system has no elevation data anywhere in its geometry — two
+    # vehicles merely close in flat lat/lon (an overpass and the road
+    # beneath it, two parallel roads) look exactly like an imminent
+    # collision to the pure distance/TTC math above. Dampen ONLY when
+    # confidently confirmed to share no road at all (neither vehicle's
+    # current nor predicted path touches a segment the other's does) AND
+    # confident enough in the underlying map-match to trust that reading —
+    # a low-confidence match (GPS noise, a gap in OSRM's road graph) falls
+    # through unchanged rather than risk suppressing a real conflict on
+    # unreliable segment data (see COLLISION_SEGMENT_TRUST_CONFIDENCE).
+    #
+    # Deliberately does NOT touch a pair that DOES share a segment — this
+    # includes two vehicles meeting head-on on a single-track road carrying
+    # both directions at once (a common road type here, see README/driver
+    # footage): same_current_segment is still True for that case, so its
+    # severity is computed exactly as before, at full strength.
+    road_confirmed_unrelated = (
+        not same_current_segment
+        and not segment_overlap_ahead
+        and confidence >= settings.COLLISION_SEGMENT_TRUST_CONFIDENCE
+    )
+    if road_confirmed_unrelated and _SEVERITY_RANK[risk] > _SEVERITY_RANK[_UNRELATED_ROAD_SEVERITY_CAP]:
+        risk = _UNRELATED_ROAD_SEVERITY_CAP
+
     if risk == ConflictRiskLevel.NONE:
         return VehicleConflict(
             vehicle_a_id=vehicle_a_id,
@@ -200,6 +247,8 @@ def assess_conflict(
             time_to_closest_approach_s=best_ttc,
             distance_at_closest_approach_m=best_distance,
             conflict_point=best_point,
+            same_current_segment=same_current_segment,
+            segment_overlap_ahead=segment_overlap_ahead,
             relative_speed_mps=relative_speed,
             closing_speed_mps=best_closing_speed,
             relative_heading_deg=relative_heading,
@@ -213,8 +262,6 @@ def assess_conflict(
             "predicted proximity found, but trajectory confidence too low to report reliably",
         )
 
-    ids_a, ids_b = _segment_ids(trajectory_a), _segment_ids(trajectory_b)
-
     return VehicleConflict(
         vehicle_a_id=vehicle_a_id,
         vehicle_b_id=vehicle_b_id,
@@ -224,11 +271,8 @@ def assess_conflict(
         time_to_closest_approach_s=best_ttc,
         distance_at_closest_approach_m=best_distance,
         conflict_point=best_point,
-        same_current_segment=(
-            trajectory_a.road_segment_id is not None
-            and trajectory_a.road_segment_id == trajectory_b.road_segment_id
-        ),
-        segment_overlap_ahead=bool(ids_a & ids_b),
+        same_current_segment=same_current_segment,
+        segment_overlap_ahead=segment_overlap_ahead,
         relative_speed_mps=relative_speed,
         closing_speed_mps=best_closing_speed,
         relative_heading_deg=relative_heading,

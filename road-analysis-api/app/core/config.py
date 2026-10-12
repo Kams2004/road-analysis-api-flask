@@ -167,6 +167,17 @@ class Settings(BaseSettings):
     # all it's dropped entirely, matching "do not create false precision".
     COLLISION_MIN_CONFIDENCE_TO_REPORT: float = 0.15
 
+    # A stricter bar than COLLISION_MIN_CONFIDENCE_TO_REPORT, used only to
+    # decide whether "these two vehicles share no road segment at all" is
+    # trustworthy enough to dampen an otherwise-high distance/TTC severity
+    # (see app/services/collision/detector.py — this system has no
+    # elevation data, so an overpass and the road beneath it otherwise look
+    # like an imminent head-on). Set to OSRM's own GOOD-match threshold:
+    # below that, a "different segment" reading could just as easily be a
+    # noisy/degraded match as a genuinely different road, so it isn't
+    # trusted enough to suppress anything.
+    COLLISION_SEGMENT_TRUST_CONFIDENCE: float = 0.5
+
     COLLISION_TTL_S: int = 15  # cached VehicleConflictReport per vehicle, mirrors TRAJECTORY_TTL_S
 
     # ── Prevention & alert engine (collision-prevention Step 5) ────────────

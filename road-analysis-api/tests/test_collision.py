@@ -196,6 +196,67 @@ def test_different_segments_not_flagged_as_overlapping():
     assert conflict.segment_overlap_ahead is False
 
 
+# ── Road Intelligence Broker: dampen confirmed-unrelated-road false
+# positives (no elevation data anywhere in this system — an overpass and
+# the road beneath it are otherwise indistinguishable from a head-on) —
+# without ever dampening two vehicles that genuinely share a segment, which
+# specifically includes meeting head-on on a single-track road carrying
+# both directions at once. ───────────────────────────────────────────────
+
+def test_different_segments_high_confidence_caps_severity_to_moderate():
+    # Identical physics to test_head_on_collision_course_is_critical (60m
+    # gap, closing head-on at 10 m/s each -> CRITICAL by distance/TTC alone)
+    # but on two DIFFERENT, non-overlapping segments at high confidence —
+    # e.g. an overpass and the road beneath it. Should now be dampened.
+    b_start = geo.destination(*KAMBO, 90.0, 60.0)
+    points_a = [pt(t, geo.destination(*KAMBO, 90.0, 10 * t), seg="seg-a") for t in HORIZONS]
+    points_b = [pt(t, geo.destination(*b_start, 270.0, 10 * t), seg="seg-b") for t in HORIZONS]
+
+    conflict = detector.assess_conflict(
+        "A", make_trajectory("A", points_a, confidence=0.9, road_segment_id="seg-a"),
+        "B", make_trajectory("B", points_b, confidence=0.9, road_segment_id="seg-b"),
+    )
+
+    assert conflict.same_current_segment is False
+    assert conflict.segment_overlap_ahead is False
+    assert conflict.risk_level == ConflictRiskLevel.MODERATE  # capped, not CRITICAL, and not NONE either
+
+
+def test_different_segments_low_confidence_does_not_cap_severity():
+    # Same physically-unrelated-roads geometry, but confidence is too low to
+    # trust the "different segment" reading (could be a noisy/degraded
+    # match, not a genuinely different road) — must fall through unchanged
+    # rather than risk silencing a real conflict on unreliable data.
+    b_start = geo.destination(*KAMBO, 90.0, 60.0)
+    points_a = [pt(t, geo.destination(*KAMBO, 90.0, 10 * t), seg="seg-a") for t in HORIZONS]
+    points_b = [pt(t, geo.destination(*b_start, 270.0, 10 * t), seg="seg-b") for t in HORIZONS]
+
+    conflict = detector.assess_conflict(
+        "A", make_trajectory("A", points_a, confidence=0.3, road_segment_id="seg-a"),
+        "B", make_trajectory("B", points_b, confidence=0.9, road_segment_id="seg-b"),
+    )
+
+    assert conflict.risk_level == ConflictRiskLevel.CRITICAL  # uncapped
+
+
+def test_single_track_road_head_on_meeting_stays_critical():
+    # The case this fix must NOT touch: two vehicles on the SAME segment,
+    # travelling head-on towards each other — the normal situation on a
+    # single-track road that carries both directions, not a false positive.
+    # same_current_segment=True must keep this at full, uncapped severity.
+    b_start = geo.destination(*KAMBO, 90.0, 60.0)
+    points_a = [pt(t, geo.destination(*KAMBO, 90.0, 10 * t), seg="seg-shared") for t in HORIZONS]
+    points_b = [pt(t, geo.destination(*b_start, 270.0, 10 * t), seg="seg-shared") for t in HORIZONS]
+
+    conflict = detector.assess_conflict(
+        "A", make_trajectory("A", points_a, confidence=0.9, road_segment_id="seg-shared"),
+        "B", make_trajectory("B", points_b, confidence=0.9, road_segment_id="seg-shared"),
+    )
+
+    assert conflict.same_current_segment is True
+    assert conflict.risk_level == ConflictRiskLevel.CRITICAL  # untouched by the dampening logic
+
+
 # ── Degraded/stale trajectories still get assessed, just flagged ───────────
 
 def test_degraded_trajectory_marks_conflict_degraded_not_unavailable():

@@ -84,6 +84,13 @@ def _reason_text(conflict: VehicleConflict, level: AlertLevel) -> str:
     parts = []
     if conflict.segment_overlap_ahead or conflict.same_current_segment:
         parts.append("shared road segment")
+    elif conflict.confidence >= settings.COLLISION_SEGMENT_TRUST_CONFIDENCE:
+        # No shared segment, and confident enough in the match to trust that
+        # — detector.py has already capped severity for this case (see
+        # COLLISION_SEGMENT_TRUST_CONFIDENCE), but the alert still deserves
+        # an honest reason rather than implying a stronger read than this
+        # actually is.
+        parts.append("close in raw position only — no confirmed shared road (e.g. an over/underpass)")
     heading = conflict.relative_heading_deg
     if heading is not None and heading >= 135:
         parts.append("opposing trajectories predicted to converge")
