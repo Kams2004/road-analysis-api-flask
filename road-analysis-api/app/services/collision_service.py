@@ -18,7 +18,7 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.services import road_state_service, trajectory_service, vehicle_service
+from app.services import road_state_service, staleness_guard, trajectory_service, vehicle_service
 from app.services.collision import detector
 from app.services.collision.models import ConflictRiskLevel, VehicleConflict, VehicleConflictReport
 from app.services.redis_client import get_redis
@@ -39,6 +39,10 @@ def _cache_key(vehicle_id: str) -> str:
     return f"collision:{vehicle_id}"
 
 
+def _staleness_key(vehicle_id: str) -> str:
+    return f"collision:ts_guard:{vehicle_id}"
+
+
 async def _load_cached(vehicle_id: str) -> Optional[VehicleConflictReport]:
     r = get_redis()
     raw = await r.get(_cache_key(vehicle_id))
@@ -51,7 +55,22 @@ async def _load_cached(vehicle_id: str) -> Optional[VehicleConflictReport]:
         return None
 
 
-async def _store_cached(report: VehicleConflictReport) -> None:
+async def _store_cached(report: VehicleConflictReport, telemetry_ts: datetime) -> None:
+    """`telemetry_ts` is the *own* vehicle's underlying telemetry timestamp
+    (own_trajectory.telemetry_timestamp), not `report.generated_at` —
+    `generated_at` is wall-clock time at the moment this report finished
+    computing, which is exactly the value that can't be used for staleness
+    ordering: a slower-finishing pipeline run for an *older* ping would
+    still get a *later* `generated_at` than a faster run for a newer one."""
+    skip = await staleness_guard.skip_if_stale(
+        _staleness_key(report.vehicle_id), telemetry_ts, settings.COLLISION_TTL_S
+    )
+    if skip:
+        logger.info(
+            "[COLLISION] vehicle=%s skipped stale write (telemetry older than what's already cached)",
+            report.vehicle_id,
+        )
+        return
     r = get_redis()
     await r.set(_cache_key(report.vehicle_id), report.model_dump_json(), ex=settings.COLLISION_TTL_S)
 
@@ -102,7 +121,7 @@ async def compute_and_store(
         highest_risk=highest,
         conflicts=conflicts,
     )
-    await _store_cached(report)
+    await _store_cached(report, own_trajectory.telemetry_timestamp)
 
     processing_ms = (time.monotonic() - started) * 1000
     logger.info(

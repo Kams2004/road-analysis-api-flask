@@ -47,6 +47,20 @@ def _active_pairs_key(vehicle_id: str) -> str:
     return f"alert:active_pairs:{vehicle_id}"
 
 
+def _lock_key(key: str) -> str:
+    return f"alert:lock:{key}"
+
+
+async def _try_lock_pair(key: str) -> bool:
+    r = get_redis()
+    return bool(await r.set(_lock_key(key), "1", nx=True, ex=settings.ALERT_PAIR_LOCK_TTL_S))
+
+
+async def _unlock_pair(key: str) -> None:
+    r = get_redis()
+    await r.delete(_lock_key(key))
+
+
 async def _load_alert(key: str) -> Optional[ConflictAlert]:
     r = get_redis()
     raw = await r.get(_alert_key(key))
@@ -87,11 +101,23 @@ async def process_vehicle(vehicle_id: str, db: AsyncSession) -> List[ConflictAle
     for conflict in report.conflicts:
         key = pair_key(conflict.vehicle_a_id, conflict.vehicle_b_id)
         current_keys.add(key)
-        previous = await _load_alert(key)
-        alert = engine.evaluate(conflict, previous, now)
-        await _store_alert(key, alert)
-        await _notify_if_changed(alert)
-        touched.append(alert)
+        if not await _try_lock_pair(key):
+            # Another concurrent pipeline — most often the *other* vehicle in
+            # this pair, whose own ping arrived around the same time — is
+            # already evaluating this exact pair. Skip rather than race it:
+            # both reading the same `previous` and both writing afterwards is
+            # how a single transition becomes two (duplicate notifications).
+            # The next tick, moments later, catches up either way.
+            logger.info("[ALERT-ENGINE] pair=%s skipped — locked by a concurrent evaluation", key)
+            continue
+        try:
+            previous = await _load_alert(key)
+            alert = engine.evaluate(conflict, previous, now)
+            await _store_alert(key, alert)
+            await _notify_if_changed(alert)
+            touched.append(alert)
+        finally:
+            await _unlock_pair(key)
 
     r = get_redis()
     active_key = _active_pairs_key(vehicle_id)
@@ -99,13 +125,19 @@ async def process_vehicle(vehicle_id: str, db: AsyncSession) -> List[ConflictAle
     for key in previously_active:
         if key in current_keys:
             continue
-        previous = await _load_alert(key)
-        if previous is None or previous.status == AlertLifecycleStatus.RESOLVED:
+        if not await _try_lock_pair(key):
+            logger.info("[ALERT-ENGINE] pair=%s resolve skipped — locked by a concurrent evaluation", key)
             continue
-        resolved = engine.resolve(previous, now)
-        await _store_alert(key, resolved)
-        await _notify_if_changed(resolved)
-        touched.append(resolved)
+        try:
+            previous = await _load_alert(key)
+            if previous is None or previous.status == AlertLifecycleStatus.RESOLVED:
+                continue
+            resolved = engine.resolve(previous, now)
+            await _store_alert(key, resolved)
+            await _notify_if_changed(resolved)
+            touched.append(resolved)
+        finally:
+            await _unlock_pair(key)
 
     await r.delete(active_key)
     if current_keys:

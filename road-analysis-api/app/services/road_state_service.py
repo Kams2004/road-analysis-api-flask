@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.vehicle_road_state import VehicleRoadState
-from app.services import vehicle_service
+from app.services import staleness_guard, vehicle_service
 from app.services.osrm import map_matching
 from app.services.osrm.models import RoadAwareVehicleState, RoadDirection, TelemetrySnapshot
 from app.services.redis_client import get_redis
@@ -44,6 +44,10 @@ def _db_throttle_key(vehicle_id: str) -> str:
     return f"road_state:db_throttle:{vehicle_id}"
 
 
+def _staleness_key(vehicle_id: str) -> str:
+    return f"road_state:ts_guard:{vehicle_id}"
+
+
 async def _load_cached(vehicle_id: str) -> Optional[RoadAwareVehicleState]:
     r = get_redis()
     raw = await r.get(_cache_key(vehicle_id))
@@ -57,6 +61,15 @@ async def _load_cached(vehicle_id: str) -> Optional[RoadAwareVehicleState]:
 
 
 async def _store_cached(state: RoadAwareVehicleState) -> None:
+    skip = await staleness_guard.skip_if_stale(
+        _staleness_key(state.vehicle_id), state.telemetry.timestamp, settings.ROAD_STATE_TTL_S
+    )
+    if skip:
+        logger.info(
+            "[ROAD-STATE] vehicle=%s skipped stale write (telemetry older than what's already cached)",
+            state.vehicle_id,
+        )
+        return
     r = get_redis()
     await r.set(_cache_key(state.vehicle_id), state.model_dump_json(), ex=settings.ROAD_STATE_TTL_S)
 

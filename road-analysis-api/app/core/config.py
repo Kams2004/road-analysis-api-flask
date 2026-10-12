@@ -190,6 +190,13 @@ class Settings(BaseSettings):
     # when a previously-alerted pair has stopped appearing at all (the
     # trigger for a RESOLVED transition) — see app/services/alert_service.py.
     ALERT_ACTIVE_PAIRS_TTL_S: int = 90
+    # Both vehicles in a pair land on the same alert record via their own,
+    # independent ping-triggered pipelines — this short-lived per-pair lock
+    # stops two concurrent evaluate()s (e.g. both vehicles' pings arriving
+    # together) from both reading the same `previous` state and both firing
+    # a transition/notification off it. A skipped evaluation is caught by
+    # the next tick, so this stays short. See app/services/alert_service.py.
+    ALERT_PAIR_LOCK_TTL_S: int = 3
 
     # ── Historical data & AI dataset preparation (Step 6.1) ────────────────
     # Aggregation cell size for zone risk profiles — coarse enough that a

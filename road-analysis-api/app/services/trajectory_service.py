@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.services import road_state_service, vehicle_service
+from app.services import road_state_service, staleness_guard, vehicle_service
 from app.services.osrm.models import RoadAwareVehicleState
 from app.services.redis_client import get_redis
 from app.services.trajectory.models import Trajectory
@@ -35,6 +35,10 @@ def _prev_speed_key(vehicle_id: str) -> str:
     return f"trajectory:prev_speed:{vehicle_id}"
 
 
+def _staleness_key(vehicle_id: str) -> str:
+    return f"trajectory:ts_guard:{vehicle_id}"
+
+
 async def _load_cached(vehicle_id: str) -> Optional[Trajectory]:
     r = get_redis()
     raw = await r.get(_cache_key(vehicle_id))
@@ -48,6 +52,15 @@ async def _load_cached(vehicle_id: str) -> Optional[Trajectory]:
 
 
 async def _store_cached(trajectory: Trajectory) -> None:
+    skip = await staleness_guard.skip_if_stale(
+        _staleness_key(trajectory.vehicle_id), trajectory.telemetry_timestamp, settings.TRAJECTORY_TTL_S
+    )
+    if skip:
+        logger.info(
+            "[TRAJECTORY] vehicle=%s skipped stale write (telemetry older than what's already cached)",
+            trajectory.vehicle_id,
+        )
+        return
     r = get_redis()
     await r.set(_cache_key(trajectory.vehicle_id), trajectory.model_dump_json(), ex=settings.TRAJECTORY_TTL_S)
 
