@@ -9096,7 +9096,7 @@
           "Cloud connections"
         ],
         "summary": "Disconnect an SFTP server",
-        "description": "Close the API's browse session (downloads in progress keep their own session). The next\nbrowse reconnects automatically.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "description": "Close the API's browse session (downloads in progress keep their own session) and stay\ndisconnected: browsing answers `409 sftp_disconnected` until *Connect* is clicked again.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
         "operationId": "disconnect_sftp",
         "parameters": [
           {
@@ -41581,6 +41581,12 @@
             ],
             "title": "Link At",
             "description": "When the state last changed (UTC, ISO 8601)."
+          },
+          "link_held": {
+            "type": "boolean",
+            "title": "Link Held",
+            "description": "Disconnected by the user: browsing does not reconnect until *Connect* (`409 sftp_disconnected`).",
+            "default": false
           }
         },
         "type": "object",
@@ -41677,6 +41683,12 @@
               }
             ],
             "title": "Link At"
+          },
+          "link_held": {
+            "type": "boolean",
+            "title": "Link Held",
+            "description": "Disconnected by the user (no automatic reconnection).",
+            "default": false
           },
           "last_seq": {
             "type": "integer",

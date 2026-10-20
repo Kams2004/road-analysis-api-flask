@@ -39,6 +39,9 @@ not a line
 def test_normalize_key():
     assert core.normalize_key("camtrack") == "CAMTRACK"
     assert core.normalize_key(" cam-track.2 ") == "CAM_TRACK_2"
+    # typed as the full variable name: only the suffix is kept
+    assert core.normalize_key("SFTP_PASSWORD_CAMTRACK") == "CAMTRACK"
+    assert core.normalize_key("sftp_password_camtrack") == "CAMTRACK"
     for bad in ("", "a;b", "x" * 65, "../etc"):
         with pytest.raises(ValueError):
             core.normalize_key(bad)

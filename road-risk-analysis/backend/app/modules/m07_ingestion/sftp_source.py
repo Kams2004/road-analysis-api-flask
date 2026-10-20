@@ -242,6 +242,23 @@ async def forget_state(connection_id: str) -> None:
                              sessions_key(connection_id))
 
 
+# "Disconnected by the user": browsing must not silently reconnect (the file
+# browser lists the folder each time the page is shown) until Connect is clicked.
+async def hold(connection_id: str) -> None:
+    from app.core.storage.redis_client import get_redis
+    await get_redis().hset(state_key(connection_id), "held", "1")
+
+
+async def release(connection_id: str) -> None:
+    from app.core.storage.redis_client import get_redis
+    await get_redis().hdel(state_key(connection_id), "held")
+
+
+async def is_held(connection_id: str) -> bool:
+    from app.core.storage.redis_client import get_redis
+    return (await get_redis().hget(state_key(connection_id), "held")) == "1"
+
+
 def link_state(st: dict, now: Optional[float] = None) -> dict:
     """API view of the state hash."""
     now = time.time() if now is None else now
@@ -249,7 +266,8 @@ def link_state(st: dict, now: Optional[float] = None) -> dict:
     state = core.effective_state(st.get("state") or "disconnected", last, now)
     at = core_float(st.get("at"))
     return {"state": state, "message": (st.get("message") or None) if state == "error" else None,
-            "at": datetime.utcfromtimestamp(at).isoformat() + "Z" if at else None}
+            "at": datetime.utcfromtimestamp(at).isoformat() + "Z" if at else None,
+            "held": st.get("held") == "1"}
 
 
 def core_float(v) -> Optional[float]:

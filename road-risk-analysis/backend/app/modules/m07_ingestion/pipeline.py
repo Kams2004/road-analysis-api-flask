@@ -936,6 +936,20 @@ def _observe_vehicles(ctx: _JobContext, tracker: static_check.Tracker, results, 
                         lambda f=frame, n=frame_num, b=(x1, y1, x2, y2), c=conf, o=osd: _Best(f.copy(), n, b, c, o))
 
 
+PROGRESS_EVERY = 50   # frames read between two progress commits
+
+
+async def _commit_progress(db, job: Job, track: list, stats: "_Stats", frame_num: int, total: int,
+                           heartbeat: Optional[Callable[[], None]]) -> None:
+    await _flush_track(db, track)
+    stats.apply(job, frame_num)
+    await db.commit()
+    if heartbeat is not None:
+        heartbeat()
+    pct = 100 * frame_num // total if total else 0
+    logger.info(f"[Job {job.id}] Progress: frame {frame_num}/{total} ({pct}%) — {stats.count} detections")
+
+
 async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list, skips: dict, track: list,
                       stats: _Stats, geo_seen: dict, px_seen: dict, total: int,
                       heartbeat: Optional[Callable[[], None]]) -> tuple[int, bool]:
@@ -954,6 +968,11 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
         if frame_num % CANCEL_CHECK_EVERY == 0 and await _cancel_requested(db, job.id):
             cancelled = True
             break
+        # Progress + detections found so far are committed on EVERY 50th frame read —
+        # before the sampling skip below, which would otherwise hide it whenever no
+        # model samples that frame (e.g. frame_skip 5 never samples frame 50, 100 …).
+        if frame_num % PROGRESS_EVERY == 0:
+            await _commit_progress(db, job, track, stats, frame_num, total, heartbeat)
         active = job_service.models_for_frame(frame_num - 1, skips)
         if not active:
             continue
@@ -1000,15 +1019,6 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
                                       _Best(f.copy(), n, b, c, o))
             for done in trackers[key].expire(frame_num, step):
                 await _finalize(db, ctx, key, done, geo_seen, px_seen, stats, video)
-
-        if frame_num % 50 == 0:
-            await _flush_track(db, track)
-            stats.apply(job, frame_num)
-            await db.commit()
-            if heartbeat is not None:
-                heartbeat()
-            pct = 100 * frame_num // total if total else 0
-            logger.info(f"[Job {job.id}] Progress: frame {frame_num}/{total} ({pct}%) — {stats.count} detections")
     # end of media or cancel: what is still tracked becomes detections too
     for key, tracker in trackers.items():
         done_batch = tracker.flush()

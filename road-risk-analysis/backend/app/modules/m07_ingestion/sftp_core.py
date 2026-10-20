@@ -77,6 +77,8 @@ def normalize_key(name: Optional[str]) -> str:
     """'camtrack' / 'cam-track' → 'CAMTRACK' / 'CAM_TRACK'; refuses anything
     that is not a safe environment-variable suffix."""
     key = re.sub(r"[\s\-.]+", "_", (name or "").strip()).upper()
+    # Typed as the full variable name ("SFTP_PASSWORD_CAMTRACK"): keep the suffix only.
+    key = re.sub(r"^SFTP_(?:PASSWORD|KEYFILE|KEY_PASSPHRASE)_(?=.)", "", key)
     if not KEY_RE.match(key):
         raise ValueError("The password key may only contain letters, digits and _ (max 64), e.g. CAMTRACK.")
     return key

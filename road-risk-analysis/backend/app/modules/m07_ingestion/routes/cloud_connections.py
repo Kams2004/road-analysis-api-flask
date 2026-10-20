@@ -113,6 +113,8 @@ class SftpInfoOut(BaseModel):
         "disconnected", description="Live link state (API browse session or a download in progress).")
     link_message:         Optional[str] = Field(None, description="Last error when `link_state` is `error`.")
     link_at:              Optional[str] = Field(None, description="When the state last changed (UTC, ISO 8601).")
+    link_held:            bool = Field(False, description="Disconnected by the user: browsing does not reconnect "
+                                                          "until *Connect* (`409 sftp_disconnected`).")
 
 
 class ConnectionOut(BaseModel):
@@ -174,7 +176,8 @@ def _sftp_out(c: CloudConnection, link: Optional[dict] = None) -> Optional[SftpI
         host=c.sftp_host or "", port=c.sftp_port or 22, username=c.sftp_username or "", base_path=c.sftp_base_path,
         password_key=key, password_var=sftp_core.password_var(key), credentials=sftp_core.credentials_status(key),
         host_key_fingerprint=c.sftp_host_key_fp, host_key_trusted_at=c.sftp_host_key_at,
-        link_state=link.get("state") or "disconnected", link_message=link.get("message"), link_at=link.get("at"))
+        link_state=link.get("state") or "disconnected", link_message=link.get("message"), link_at=link.get("at"),
+        link_held=bool(link.get("held")))
 
 
 def _out(c: CloudConnection, link: Optional[dict] = None) -> ConnectionOut:
@@ -464,6 +467,9 @@ async def _with_token(db: AsyncSession, conn: CloudConnection, fn):
     Provider errors become `502 cloud_failed`. What the operation learned
     (SFTP host key trusted on first use) is stored."""
     provider = cloud_providers.get_provider(conn.provider)
+    if conn.provider == "sftp" and await sftp_source.is_held(conn.id):
+        raise api_error(409, "sftp_disconnected",
+                        "Disconnected from the server — click Connect to reconnect.")
 
     async def call():
         token = await cloud_import.access_token(db, conn)
@@ -710,6 +716,7 @@ class SftpLogOut(BaseModel):
     link_state:    Literal["disconnected", "connecting", "connected", "error"]
     link_message:  Optional[str] = None
     link_at:       Optional[str] = None
+    link_held:     bool = Field(False, description="Disconnected by the user (no automatic reconnection).")
     last_seq:      int = Field(description="Highest `seq` known (poll again with `after=last_seq`).")
     lines:         list[SftpLogLineOut]
 
@@ -809,6 +816,7 @@ async def connect_sftp(connection_id: ConnectionId, request: Request, db: AsyncS
     conn = await _sftp(db, connection_id)
     if not conn.enabled:
         raise api_error(409, "connection_disabled", "Enable the connection first.")
+    await sftp_source.release(conn.id)            # browsing may (re)connect again
     provider = cloud_providers.get_provider("sftp")
     try:
         target = sftp_source.SftpTarget.from_connection(conn)
@@ -832,13 +840,15 @@ async def connect_sftp(connection_id: ConnectionId, request: Request, db: AsyncS
 @router.post("/{connection_id}/sftp/disconnect", response_model=ConnectionOut, summary="Disconnect an SFTP server",
              responses=errors(E_NOT_FOUND, E_NOT_SFTP))
 async def disconnect_sftp(connection_id: ConnectionId, db: AsyncSession = Depends(get_db)):
-    """Close the API's browse session (downloads in progress keep their own session). The next
-    browse reconnects automatically."""
+    """Close the API's browse session (downloads in progress keep their own session) and stay
+    disconnected: browsing answers `409 sftp_disconnected` until *Connect* is clicked again."""
     conn = await _sftp(db, connection_id)
     log = sftp_source.make_log(conn.id)
+    await sftp_source.hold(conn.id)
     had = await asyncio.to_thread(sftp_source.POOL.close, conn.id, log)
     if not had:
         log.state("disconnected")
+    log.status("Disconnected by user — no automatic reconnection until Connect is clicked")
     return _out(conn, await _link(conn))
 
 
@@ -880,7 +890,7 @@ async def sftp_log(connection_id: ConnectionId,
     link = sftp_source.link_state(st)
     last = max([int(x.get("seq") or 0) for x in lines] + [after])
     return SftpLogOut(connection_id=conn.id, link_state=link["state"], link_message=link["message"],
-                      link_at=link["at"], last_seq=last, lines=[SftpLogLineOut(**x) for x in lines])
+                      link_at=link["at"], link_held=link["held"], last_seq=last, lines=[SftpLogLineOut(**x) for x in lines])
 
 
 @router.delete("/{connection_id}/sftp/log", status_code=204, summary="Clear the connection log",
