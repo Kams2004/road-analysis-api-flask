@@ -1,7 +1,7 @@
 # Pothole models — "pothole v1" pipeline
 
-Status: installed 2026-10-19. Code: `app/workers/processor.py`, `app/services/model_registry.py`,
-`app/services/static_check.py`, `app/services/ai_validation.py`; settings section `ai_validation`.
+Status: installed 2026-10-19. Code: `app/modules/m07_ingestion/pipeline.py`, `app/modules/m05_ai_detection/model_registry.py`,
+`app/modules/m05_ai_detection/static_check.py`, `app/modules/m05_ai_detection/ai_validation.py`; settings section `ai_validation`.
 
 ## 1. What is installed
 
@@ -90,7 +90,7 @@ else changes; the false-positive rules apply to any pothole detector.
 ## 4. Installing a v2
 
 1. Train in `ai/training/pothole/`; it writes `model_pothole.pt` + `model_pothole.json` (detector) and
-   `model_pothole_classifier.pt` + `.json` (classifier) — card format in `app/services/model_registry.py`
+   `model_pothole_classifier.pt` + `.json` (classifier) — card format in `app/modules/m05_ai_detection/model_registry.py`
    (`model_type`, `name`, `version`, `classes`, `imgsz`, `thresholds.{auto_accept, auto_reject,
    target_precision}`, `sha256`, classifier `crop_pad_ratio`).
 2. Compare on real video before installing (`tools/pothole_v1/run_test.sh`, `OUT=… --det …`).

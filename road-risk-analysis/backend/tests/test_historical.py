@@ -12,13 +12,13 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from app.models.historical_event import HistoricalEventRecord
-from app.services.historical import matcher
-from app.services.historical.grid import grid_cell_center, grid_cell_id
-from app.services.historical.models import HistoricalEvent, HistoricalEventType
-from app.services.historical.sources.manual import ManualEventSource
-from app.services.historical.sources.ymane import _map_raw_event_fields, YmaneEventSource
-from app.services.historical_service import _aggregate_by_cell, _risk_score
+from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
+from app.modules.m08_historical import matcher
+from app.modules.m08_historical.grid import grid_cell_center, grid_cell_id
+from app.modules.m08_historical.domain import HistoricalEvent, HistoricalEventType
+from app.modules.m08_historical.sources.manual import ManualEventSource
+from app.modules.m08_historical.sources.ymane import _map_raw_event_fields, YmaneEventSource
+from app.modules.m08_historical.historical_service import _aggregate_by_cell, _risk_score
 from tests.fakes import FakeOSRMClient, nearest_response
 
 KAMBO = (4.0412, 9.8107)
@@ -80,7 +80,7 @@ def matched_cell_size(matched) -> float:
 
 
 async def test_matcher_falls_back_gracefully_when_osrm_unavailable():
-    from app.services.osrm.client import OSRMUnavailableError
+    from app.modules.m03_maps.osrm.client import OSRMUnavailableError
 
     event = HistoricalEvent(
         source="manual", source_event_id="2", event_type=HistoricalEventType.HARD_BRAKING,
@@ -233,13 +233,13 @@ class _RouteOSRM:
         self.calls = []
 
     async def route_overview(self, points, alternatives=True):
-        from app.services.osrm.client import OSRMResult
+        from app.modules.m03_maps.osrm.client import OSRMResult
         self.calls.append((list(points), alternatives))
         return OSRMResult(self.data, 5.0)
 
 
 async def test_route_preview_returns_latlon_geometry_and_alternatives(monkeypatch):
-    from app.api.routes import historical as routes
+    from app.modules.m08_historical.routes import historical as routes
     fake = _RouteOSRM({"code": "Ok", "routes": [
         {"geometry": {"coordinates": [[9.70, 4.05], [9.71, 4.06]]}, "distance": 1500.0, "duration": 180.0},
         {"geometry": {"coordinates": [[9.70, 4.05], [9.72, 4.06]]}, "distance": 1900.0, "duration": 240.0},
@@ -256,7 +256,7 @@ async def test_route_preview_returns_latlon_geometry_and_alternatives(monkeypatc
 
 async def test_route_preview_rejects_bad_input_and_no_route(monkeypatch):
     from fastapi import HTTPException
-    from app.api.routes import historical as routes
+    from app.modules.m08_historical.routes import historical as routes
     monkeypatch.setattr(routes, "get_osrm_client", lambda: _RouteOSRM({"code": "NoRoute", "routes": []}))
 
     with pytest.raises(HTTPException) as e:

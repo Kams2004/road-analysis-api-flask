@@ -1,4 +1,4 @@
-"""Structured reverse geocoding (app.services.geocoding) — pure parsing of
+"""Structured reverse geocoding (app.modules.m03_maps.geocoding) — pure parsing of
 Nominatim answers for Cameroonian places, the cache / throttle wrapper with a
 fake upstream (no network), and the hazard address aggregation."""
 from datetime import datetime, timedelta
@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services import geocoding
-from app.services.geocoding import apply_to, has_address, parse_address
-from app.services.hazard_service import address_member, aggregate
+from app.modules.m03_maps import geocoding
+from app.modules.m03_maps.geocoding import apply_to, has_address, parse_address
+from app.modules.m06_hazards.hazard_service import address_member, aggregate
 
 
 # Shapes of real Nominatim /reverse answers (jsonv2, addressdetails=1).

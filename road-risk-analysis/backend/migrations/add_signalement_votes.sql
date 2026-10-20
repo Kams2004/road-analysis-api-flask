@@ -2,7 +2,7 @@
 -- voter's position (only votes cast within community.vote_max_distance_m
 -- count; the others are kept for review as invalid / false testimony).
 --
--- Applied automatically at API startup by app/db/upgrade.py (idempotent);
+-- Applied automatically at API startup by app/core/db/upgrade.py (idempotent);
 -- this file mirrors it for review / manual runs.
 
 CREATE TABLE IF NOT EXISTS signalement_votes (

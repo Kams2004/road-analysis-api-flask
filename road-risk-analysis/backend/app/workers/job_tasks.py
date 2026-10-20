@@ -23,8 +23,8 @@ from pathlib import Path
 from celery.exceptions import Retry
 
 from app.core.config import settings
-from app.services import job_slots
-from app.services.job_service import PermanentJobError, TRANSIENT_RETRIES, readable_error
+from app.modules.m07_ingestion import job_slots
+from app.modules.m07_ingestion.job_service import PermanentJobError, TRANSIENT_RETRIES, readable_error
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def process_video(self, job_id: str, tmp_path: str = None, enabled: list = None,
         outcome = _run(lambda db: _process(db, job_id, r))
         if outcome == "done":
             # Module 6 hazard lifecycle: sightings + "not seen" passes of this video.
-            from app.services.job_service import schedule_hazard_lifecycle
+            from app.modules.m07_ingestion.job_service import schedule_hazard_lifecycle
             schedule_hazard_lifecycle(job_id)
         return outcome
     except Retry:
@@ -119,10 +119,10 @@ def _acquire(r, job_id: str, capacity: int) -> bool:
 
 async def _prepare(db, job_id: str, tmp_path, enabled):
     """Checks before taking a slot. Returns the capacity C, or None to skip."""
-    from app.models.cloud_connection import CloudConnection
-    from app.models.job import CLOUD_SOURCES, FINAL_STATUSES, Job
-    from app.services import job_service
-    from app.services.settings_service import get_section
+    from app.modules.m07_ingestion.models.cloud_connection import CloudConnection
+    from app.modules.m07_ingestion.models.job import CLOUD_SOURCES, FINAL_STATUSES, Job
+    from app.modules.m07_ingestion import job_service
+    from app.core.settings_service import get_section
 
     job = await db.get(Job, job_id)
     if job is None:
@@ -155,14 +155,14 @@ async def _prepare(db, job_id: str, tmp_path, enabled):
 
 
 async def _download_cloud(db, job, conn) -> None:
-    from app.services import cloud_storage
+    from app.modules.m07_ingestion import cloud_storage
     ext = Path(job.filename or "").suffix.lower() or ".mp4"
     dest = str(TEMP_DIR / f"{uuid.uuid4().hex}{ext}")
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     try:
         token = await cloud_storage.connection_token(db, conn)
         if conn.provider == "sftp":
-            from app.services.cloud_providers import get_provider
+            from app.modules.m07_ingestion.cloud_providers import get_provider
             provider = get_provider("sftp")
             await provider.download(token, job.source_ref, dest)
             provider.persist_credentials(conn, token)
@@ -175,9 +175,9 @@ async def _download_cloud(db, job, conn) -> None:
 
 
 async def _process(db, job_id: str, r):
-    from app.models.job import FINAL_STATUSES, Job
-    from app.services import job_service
-    from app.workers.processor import process_source
+    from app.modules.m07_ingestion.models.job import FINAL_STATUSES, Job
+    from app.modules.m07_ingestion import job_service
+    from app.modules.m07_ingestion.pipeline import process_source
 
     job = await db.get(Job, job_id)
     if job is None or job.status in FINAL_STATUSES:
@@ -205,8 +205,8 @@ async def _process(db, job_id: str, r):
 async def _transient(db, job_id: str, error: str, failure_no: int) -> bool:
     """Back to pending before a worker-side retry. False when the job must
     not be retried (gone, final, or a cancel is pending)."""
-    from app.models.job import FINAL_STATUSES, Job, JobStatus
-    from app.services import job_service
+    from app.modules.m07_ingestion.models.job import FINAL_STATUSES, Job, JobStatus
+    from app.modules.m07_ingestion import job_service
 
     await db.rollback()
     job = await db.get(Job, job_id)
@@ -221,8 +221,8 @@ async def _transient(db, job_id: str, error: str, failure_no: int) -> bool:
 
 
 async def _finish_failed(db, job_id: str, error: str) -> None:
-    from app.models.job import FINAL_STATUSES, Job
-    from app.services import job_service
+    from app.modules.m07_ingestion.models.job import FINAL_STATUSES, Job
+    from app.modules.m07_ingestion import job_service
 
     await db.rollback()
     job = await db.get(Job, job_id)
@@ -245,8 +245,8 @@ def watchdog_stale_jobs():
 
 async def _watchdog(db) -> int:
     from sqlalchemy import select
-    from app.models.job import Job, JobStatus
-    from app.services.watchdog import mark_stale_jobs
+    from app.modules.m07_ingestion.models.job import Job, JobStatus
+    from app.modules.m07_ingestion.watchdog import mark_stale_jobs
 
     marked = await mark_stale_jobs(db)
     # Free slots held by jobs that are no longer processing (worker killed).
@@ -276,9 +276,9 @@ async def _cleanup_media(db) -> int:
     """Delete media of failed/cancelled jobs older than retain_failed_hours
     (they can no longer be retried from local media), plus orphan files."""
     from sqlalchemy import func, select
-    from app.models.job import Job, JobStatus
-    from app.services import job_service
-    from app.services.settings_service import get_section
+    from app.modules.m07_ingestion.models.job import Job, JobStatus
+    from app.modules.m07_ingestion import job_service
+    from app.core.settings_service import get_section
 
     proc = await get_section(db, "processing")
     cutoff = datetime.utcnow() - timedelta(hours=proc.retain_failed_hours)
@@ -320,8 +320,8 @@ def sync_cloud_connections():
 
 async def _dispatch_due_syncs(db) -> int:
     from sqlalchemy import or_, select
-    from app.models.cloud_connection import CloudConnection, ConnectionStatus
-    from app.services.settings_service import get_section
+    from app.modules.m07_ingestion.models.cloud_connection import CloudConnection, ConnectionStatus
+    from app.core.settings_service import get_section
 
     cfg = await get_section(db, "cloud")
     due_before = datetime.utcnow() - timedelta(minutes=cfg.sync_interval_minutes)
@@ -363,9 +363,10 @@ async def sync_connection(db, connection_id: str, actor: str = "system", client=
     media file whose current version was not imported yet, as an import
     batch (origin `sync`) — progress shows up with the manual imports.
     Returns the number of files queued. `client`/`dispatch_fn` are test hooks."""
-    from app.models.cloud_connection import CloudConnection, ConnectionStatus
-    from app.services import audit, cloud_import, cloud_storage, job_service
-    from app.services.cloud_providers import get_provider
+    from app.modules.m07_ingestion.models.cloud_connection import CloudConnection, ConnectionStatus
+    from app.core import audit
+    from app.modules.m07_ingestion import cloud_import, cloud_storage, job_service
+    from app.modules.m07_ingestion.cloud_providers import get_provider
 
     conn = await db.get(CloudConnection, connection_id)
     if conn is None or not conn.enabled or not (conn.refresh_token_enc or conn.provider == "sftp"):
@@ -423,7 +424,7 @@ def capture_streams():
 
 async def _dispatch_captures(db) -> int:
     from sqlalchemy import select
-    from app.models.stream_source import StreamSource, StreamStatus
+    from app.modules.m07_ingestion.models.stream_source import StreamSource, StreamStatus
 
     streams = (await db.execute(
         select(StreamSource).where(StreamSource.status == StreamStatus.active.value)
@@ -456,9 +457,9 @@ def capture_stream_segment(stream_id: str):
 async def _capture(db, stream_id: str) -> int:
     """Record one segment and create its job. Returns the segment length when
     the stream is still active and the next segment should follow, else 0."""
-    from app.models.stream_source import StreamSource, StreamStatus
-    from app.services import job_service
-    from app.services.stream_capture import capture_segment
+    from app.modules.m07_ingestion.models.stream_source import StreamSource, StreamStatus
+    from app.modules.m07_ingestion import job_service
+    from app.modules.m07_ingestion.stream_capture import capture_segment
 
     s = await db.get(StreamSource, stream_id)
     if s is None or s.status != StreamStatus.active.value:

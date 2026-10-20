@@ -1,7 +1,7 @@
 import sys
 sys.path.insert(0, '/app')
 import re
-from app.services.osd_parser import _norm, _LON_RE, _nmea_to_decimal
+from app.modules.m05_ai_detection.osd_parser import _norm, _LON_RE, _nmea_to_decimal
 
 # Simulate what _parse_partial_gps does for frame 85 candidates
 # From diag7: frame 85 near-matches

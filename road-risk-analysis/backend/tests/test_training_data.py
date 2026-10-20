@@ -1,10 +1,10 @@
-"""Live training dataset — pure layout / label rules (app.services.training_data)."""
+"""Live training dataset — pure layout / label rules (app.modules.m06_hazards.training_data)."""
 from types import SimpleNamespace
 
 import pytest
 
-from app.services.training_data import layout as L
-from app.services.training_data.export import clean_review_boxes
+from app.modules.m06_hazards.training_data import layout as L
+from app.modules.m06_hazards.training_data.export import clean_review_boxes
 
 
 # ── keys and groups ──────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ def test_yolo_normalisation_and_clipping():
 
 
 def test_crop_padding_matches_the_registry():
-    from app.services import model_registry
+    from app.modules.m05_ai_detection import model_registry
     card = SimpleNamespace(crop_pad_ratio=0.15, crop_pad_px=None)
     assert L.crop_box(100, 200, 200, 260, 720, 576, pad_ratio=0.15) == \
         model_registry.crop_box(100, 200, 200, 260, 720, 576, card)

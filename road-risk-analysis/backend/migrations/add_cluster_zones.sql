@@ -1,8 +1,8 @@
 -- Global Cluster Configuration (Module 6, RRAP-06-009/010/011).
--- Mirrors app/db/upgrade.py CLUSTER_ZONE_COLUMNS; the API applies it on
+-- Mirrors app/core/db/upgrade.py CLUSTER_ZONE_COLUMNS; the API applies it on
 -- every start (idempotent). The settings row `clustering` and the legacy
 -- cluster_config / cluster_areas conversion are done once by
--- app.services.clustering.service.migrate_legacy (Python, at start-up).
+-- app.modules.m06_hazards.clustering.service.migrate_legacy (Python, at start-up).
 
 CREATE TABLE IF NOT EXISTS cluster_zones (
     id                 SERIAL PRIMARY KEY,

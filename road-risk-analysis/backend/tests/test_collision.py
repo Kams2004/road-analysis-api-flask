@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.services.collision import detector
-from app.services.collision.models import ConflictRiskLevel, ConflictStatus
-from app.services.osrm import geo
-from app.services.trajectory.models import (
+from app.modules.m10_collision.collision import detector
+from app.modules.m10_collision.collision.models import ConflictRiskLevel, ConflictStatus
+from app.modules.m03_maps.osrm import geo
+from app.modules.m10_collision.trajectory.models import (
     AccelerationSource,
     ConfidenceLevel,
     Trajectory,
@@ -410,7 +410,7 @@ def test_critical_needs_both_short_ttc_and_small_cpa():
 
 
 def test_new_settings_keys_have_defaults_and_validate():
-    from app.services.collision import thresholds
+    from app.modules.m10_collision.collision import thresholds
     cfg = thresholds.CollisionSettings()
     for key in ("min_closing_speed_mps", "max_horizon_s", "road_link_margin_m", "unrelated_monitor_distance_m",
                 "lateral_margin_m", "lateral_max_accuracy_m", "deescalate_after_s", "resolve_after_s"):

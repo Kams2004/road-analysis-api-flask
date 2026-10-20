@@ -12,5 +12,5 @@ from app.workers.job_tasks import _run
 
 @celery_app.task(name="app.workers.celery_app.sync_training_data")
 def sync_training_data(limit: int = 1000):
-    from app.services.training_data.sync import sync_dirty
+    from app.modules.m06_hazards.training_data.sync import sync_dirty
     return _run(lambda db: sync_dirty(db, limit=limit))

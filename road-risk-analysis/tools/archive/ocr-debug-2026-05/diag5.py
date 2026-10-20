@@ -10,7 +10,7 @@ GPS_RE = re.compile(
     re.IGNORECASE,
 )
 
-from app.services.osd_parser import ROI_GPS, _crop
+from app.modules.m05_ai_detection.osd_parser import ROI_GPS, _crop
 
 for frame_num in [25, 85, 660]:
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)

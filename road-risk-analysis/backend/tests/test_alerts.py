@@ -1,6 +1,6 @@
 """
 Step 5 (prevention & alert engine) scenarios. Fully deterministic — built
-directly against app.services.alerts.engine with VehicleConflict fixtures;
+directly against app.modules.m10_collision.alerts.engine with VehicleConflict fixtures;
 no Redis/network involved (that's alert_service.py's orchestration concern,
 live-verified separately, same pattern as Steps 2-4).
 """
@@ -9,9 +9,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.config import settings
-from app.services.alerts import engine
-from app.services.alerts.models import AlertLifecycleStatus, AlertTransition, AlertLevel, RecommendedAction
-from app.services.collision.models import ConflictRiskLevel, ConflictStatus, VehicleConflict
+from app.modules.m10_collision.alerts import engine
+from app.modules.m10_collision.alerts.models import AlertLifecycleStatus, AlertTransition, AlertLevel, RecommendedAction
+from app.modules.m10_collision.collision.models import ConflictRiskLevel, ConflictStatus, VehicleConflict
 
 NOW = datetime.now(timezone.utc)
 

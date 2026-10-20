@@ -3,9 +3,9 @@ settings / decision in the modes (ai_validation.rule_reject)."""
 import pytest
 from pydantic import ValidationError
 
-from app.services import ai_validation as av
-from app.services import static_check as sc
-from app.services.settings_service import AiValidationSettings, ValidationSettings
+from app.modules.m05_ai_detection import ai_validation as av
+from app.modules.m05_ai_detection import static_check as sc
+from app.core.settings_service import AiValidationSettings, ValidationSettings
 
 W, H = 720, 576
 DEFAULTS = sc.pothole_rule_kwargs(AiValidationSettings())

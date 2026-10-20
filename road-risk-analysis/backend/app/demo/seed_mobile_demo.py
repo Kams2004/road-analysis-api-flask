@@ -7,9 +7,9 @@ creates:
   * one finished upload Job ("demo_dashcam.mp4") with ~12 VALIDATED
     detections (pothole / speed_bump / traffic_sign stop|crosswalk|speedlimit)
     whose frame + crop images are real training crops uploaded to MinIO in the
-    same object layout and URL format as app/workers/processor.py
+    same object layout and URL format as app/modules/m07_ingestion/pipeline.py
     ("minio:9000/detections/<job>/<type>/..."), then attached to hazards with
-    app.services.hazard_service exactly like the processor does;
+    app.modules.m06_hazards.hazard_service exactly like the processor does;
   * 5-6 active community reports (signalements) next to the route;
   * two clusters of historical driving "exceptions" (manual source) at ~35 %
     and ~70 % of the route, each confined to one 150 m grid cell and heavy
@@ -51,25 +51,28 @@ import cv2
 from sqlalchemy import delete, select
 
 from app.core.config import settings
-from app.db.session import AsyncSessionLocal
-from app.models import (  # noqa: F401 — register every mapper / FK target
-    job as _job, detection as _det, signalement as _sig, hazard as _hz,
-    detection_review as _dr, validation_label as _vl, historical_event as _he,
+from app.core.db.session import AsyncSessionLocal
+from app.modules.m07_ingestion.models import job as _job  # noqa: F401 — register every mapper / FK target
+from app.modules.m11_community.models import signalement as _sig  # noqa: F401 — register every mapper / FK target
+from app.modules.m08_historical.models import historical_event as _he  # noqa: F401 — register every mapper / FK target
+from app.modules.m06_hazards.models import (  # noqa: F401 — register every mapper / FK target
+    detection as _det, hazard as _hz, detection_review as _dr, validation_label as _vl,
 )
-from app.models.detection import Detection, LocationSource, LocationStatus, ReviewStatus
-from app.models.audit_log import AuditLog
-from app.models.detection_review import DetectionReview
-from app.models.hazard import Hazard
-from app.models.hazard_lifecycle import HazardEvent
-from app.models.historical_event import HistoricalEventRecord
-from app.models.job import Job, JobStatus, SourceType
-from app.models.signalement import Signalement, SignalementStatus, SignalementType
-from app.models.validation_label import ValidationLabel
-from app.services import hazard_service, historical_service
-from app.services.historical.grid import grid_cell_id
-from app.services.historical.models import HistoricalEvent
-from app.services.historical.sources.manual import ManualEventSource
-from app.services.minio_service import get_minio, upload_image, upload_signalement_image
+from app.modules.m06_hazards.models.detection import Detection, LocationSource, LocationStatus, ReviewStatus
+from app.modules.m13_admin.models.audit_log import AuditLog
+from app.modules.m06_hazards.models.detection_review import DetectionReview
+from app.modules.m06_hazards.models.hazard import Hazard
+from app.modules.m06_hazards.models.hazard_lifecycle import HazardEvent
+from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
+from app.modules.m07_ingestion.models.job import Job, JobStatus, SourceType
+from app.modules.m11_community.models.signalement import Signalement, SignalementStatus, SignalementType
+from app.modules.m06_hazards.models.validation_label import ValidationLabel
+from app.modules.m06_hazards import hazard_service
+from app.modules.m08_historical import historical_service
+from app.modules.m08_historical.grid import grid_cell_id
+from app.modules.m08_historical.domain import HistoricalEvent
+from app.modules.m08_historical.sources.manual import ManualEventSource
+from app.core.storage.minio_service import get_minio, upload_image, upload_signalement_image
 
 TAG = "demo-seed"
 HIST_PREFIX = "demo-seed-mobile-"
@@ -223,7 +226,7 @@ def remove_objects(bucket: str, prefix: str):
 
 def geocode(lat, lon, fallback):
     try:
-        from app.services.geocoding import reverse_geocode_details
+        from app.modules.m03_maps.geocoding import reverse_geocode_details
         g = reverse_geocode_details(lat, lon)
     except Exception:
         g = {}

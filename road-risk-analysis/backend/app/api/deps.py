@@ -26,10 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.permissions import MODULES
 from app.core.security import hash_token
-from app.db.session import get_db
-from app.models.api_client import ApiClient
-from app.models.auth_token import AuthSession, SessionStage
-from app.models.user import User, UserStatus
+from app.core.db.session import get_db
+from app.modules.m12_integration.models.api_client import ApiClient
+from app.modules.m01_security.models.auth_token import AuthSession, SessionStage
+from app.modules.m01_security.models.user import User, UserStatus
 
 _TOUCH_EVERY = timedelta(seconds=60)
 

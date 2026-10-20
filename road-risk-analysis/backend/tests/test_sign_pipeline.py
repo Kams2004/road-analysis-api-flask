@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from app.services import model_registry, sign_taxonomy, static_check
-from app.services.ai_validation import Policy, Thresholds, decide, resolve_thresholds, sign_subtype
-from app.services.settings_service import AiValidationSettings, ValidationSettings
+from app.modules.m05_ai_detection import model_registry, sign_taxonomy, static_check
+from app.modules.m05_ai_detection.ai_validation import Policy, Thresholds, decide, resolve_thresholds, sign_subtype
+from app.core.settings_service import AiValidationSettings, ValidationSettings
 from tests.test_ai_validation import CLS_CARD, DET_CARD, _FakeProbs, client, model_dir  # noqa: F401  (fixtures)
 
 SIGNS = Thresholds(detector_accept=0.6, detector_reject=0.25, auto_accept=0.85, auto_reject=0.40,
@@ -183,7 +183,7 @@ def test_two_stage_detector_detection():
 
 @pytest.fixture
 def processor():
-    from app.workers import processor as proc
+    from app.modules.m07_ingestion import pipeline as proc
     proc._unload_models()
     yield proc
     proc._unload_models()

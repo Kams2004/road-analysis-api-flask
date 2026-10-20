@@ -1,6 +1,6 @@
 -- Structured reverse geocoding of detections and hazards (Hazard Track:
 -- readable locations instead of raw GPS). Applied automatically at startup by
--- app/db/upgrade.py (ADDRESS_COLUMNS); kept here for manual / review purposes.
+-- app/core/db/upgrade.py (ADDRESS_COLUMNS); kept here for manual / review purposes.
 -- Idempotent.
 --
 --   road              street name                         "Rue Joss"

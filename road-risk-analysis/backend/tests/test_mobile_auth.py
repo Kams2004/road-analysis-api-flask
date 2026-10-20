@@ -15,11 +15,11 @@ import uuid
 import httpx
 import pytest
 
-from app.models.signalement import SignalementType
-from app.schemas.auth import AuthConfigOut, CaptchaPublic, MobileRegisterIn
-from app.services import google_signin as gs
-from app.services import rate_limit
-from app.services.settings_service import SECTIONS, GoogleSigninSettings, redact
+from app.modules.m11_community.models.signalement import SignalementType
+from app.modules.m01_security.schemas import AuthConfigOut, CaptchaPublic, MobileRegisterIn
+from app.modules.m01_security import google_signin as gs
+from app.core import rate_limit
+from app.core.settings_service import SECTIONS, GoogleSigninSettings, redact
 
 CFG = GoogleSigninSettings(enabled=True, web_client_id="web.apps.googleusercontent.com",
                            android_client_id="android.apps.googleusercontent.com")
@@ -117,7 +117,7 @@ def test_new_signalement_types_for_mobile_tiles():
 
 
 def test_signalement_types_v2_for_mobile_menu():
-    from app.db.upgrade import MOBILE_ENUM_VALUES
+    from app.core.db.upgrade import MOBILE_ENUM_VALUES
     for v in ("vehicule_panne", "dos_d_ane", "route_glissante", "eboulement",
               "travaux", "animaux", "vehicule_dangereux"):
         assert SignalementType(v).value == v
@@ -169,11 +169,11 @@ PASSWORD = "Mobile-pass1"
 
 @pytest.fixture
 async def api(monkeypatch):
-    from app.api.routes import signalements as sig_routes
+    from app.modules.m11_community.routes import signalements as sig_routes
     from app.core.security import hash_token, new_token
-    from app.db.session import AsyncSessionLocal, engine, init_db
+    from app.core.db.session import AsyncSessionLocal, engine, init_db
     from app.main import app
-    from app.models.api_client import ApiClient
+    from app.modules.m12_integration.models.api_client import ApiClient
 
     await init_db()
     key = new_token("vsk_")
@@ -240,9 +240,9 @@ async def test_register_rate_limited(api, monkeypatch):
 
 @db_only
 async def test_mobile_login_enforces_mfa_for_staff(api):
-    from app.db.session import AsyncSessionLocal
+    from app.core.db.session import AsyncSessionLocal
     from app.core.security import hash_password
-    from app.models.user import User
+    from app.modules.m01_security.models.user import User
 
     email = _email()
     async with AsyncSessionLocal() as db:
@@ -293,16 +293,16 @@ async def test_combined_principal(api):
 
 
 async def _set_google(enabled: bool):
-    from app.db.session import AsyncSessionLocal
-    from app.services.settings_service import update_section
+    from app.core.db.session import AsyncSessionLocal
+    from app.core.settings_service import update_section
     async with AsyncSessionLocal() as db:
         await update_section(db, "google_signin", {**CFG.model_dump(), "enabled": enabled}, "pytest")
 
 
 @db_only
 async def test_google_sign_in(api, monkeypatch):
-    from app.db.session import AsyncSessionLocal
-    from app.models.user import User, UserStatus
+    from app.core.db.session import AsyncSessionLocal
+    from app.modules.m01_security.models.user import User, UserStatus
     from sqlalchemy import select
 
     await _set_google(False)
@@ -354,8 +354,8 @@ async def test_google_sign_in(api, monkeypatch):
 
 @db_only
 async def test_auth_events_are_audited(api):
-    from app.db.session import AsyncSessionLocal
-    from app.models.audit_log import AuditLog
+    from app.core.db.session import AsyncSessionLocal
+    from app.modules.m13_admin.models.audit_log import AuditLog
     from sqlalchemy import select
 
     email = _email()
@@ -371,11 +371,11 @@ async def test_auth_events_are_audited(api):
 def test_mobile_password_change_is_allow_listed_for_api_key_plus_user():
     """POST /auth/me/password must pass the /auth API-key allow-list and
     accept the combined principal (API key + the user's Bearer token)."""
-    from app import main
+    from app.api import router as api_router
     from app.api.deps import account_user
-    from app.api.routes import auth as auth_routes
+    from app.modules.m01_security.routes import auth as auth_routes
 
-    assert ("POST", "/auth/me/password") in main._AUTH_CLIENT
+    assert ("POST", "/auth/me/password") in api_router._AUTH_CLIENT
     route = next(r for r in auth_routes.router.routes
                  if getattr(r, "path", "").endswith("/me/password") and "POST" in getattr(r, "methods", set()))
     calls = {d.call for d in route.dependant.dependencies}

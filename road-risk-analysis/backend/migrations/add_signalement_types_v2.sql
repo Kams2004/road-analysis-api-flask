@@ -1,6 +1,6 @@
 -- Additional signalement types for the mobile report menu.
 --
--- Applied automatically at API startup by app/db/upgrade.py (idempotent);
+-- Applied automatically at API startup by app/core/db/upgrade.py (idempotent);
 -- this file mirrors it for review / manual runs.
 -- (run outside a transaction on PostgreSQL < 12)
 ALTER TYPE signalementtype ADD VALUE IF NOT EXISTS 'vehicule_panne';

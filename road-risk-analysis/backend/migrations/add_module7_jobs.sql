@@ -1,6 +1,6 @@
 -- Module 7 — video/data ingestion & processing jobs (docs/spec-module7-jobs.md)
 --
--- Applied automatically at API startup by app/db/upgrade.py (idempotent);
+-- Applied automatically at API startup by app/core/db/upgrade.py (idempotent);
 -- this file mirrors it for review / manual runs. New TABLES
 -- (cloud_connections, stream_sources, job_events) are created by SQLAlchemy
 -- create_all — their DDL is listed here for reference.

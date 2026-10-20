@@ -70,7 +70,7 @@ TAG_AUDIT = "Audit trail"
 
 
 def _review_transitions_md() -> str:
-    from app.services.detection_workflow import TRANSITIONS
+    from app.modules.m06_hazards.detection_workflow import TRANSITIONS
     rows = "\n".join(
         f"| `{frm}` | `{to}` | {', '.join(f'`{a}`' for a in sorted(actions))} |"
         for (frm, to), actions in TRANSITIONS.items()

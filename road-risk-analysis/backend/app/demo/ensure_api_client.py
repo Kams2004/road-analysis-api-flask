@@ -16,8 +16,8 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.core.security import hash_token
-from app.db.session import AsyncSessionLocal
-from app.models.api_client import ApiClient
+from app.core.db.session import AsyncSessionLocal
+from app.modules.m12_integration.models.api_client import ApiClient
 
 
 async def main() -> None:

@@ -1,5 +1,5 @@
 -- Migration: live training data (docs/TRAINING-DATA.md).
--- Applied automatically at boot by app/db/upgrade.py (TRAINING_DATA_COLUMNS)
+-- Applied automatically at boot by app/core/db/upgrade.py (TRAINING_DATA_COLUMNS)
 -- and create_all (the two tables); mirrored here for manual review.
 
 ALTER TABLE detections ADD COLUMN IF NOT EXISTS frame_clean_url VARCHAR;

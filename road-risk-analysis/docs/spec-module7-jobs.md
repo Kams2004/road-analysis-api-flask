@@ -4,7 +4,7 @@ Baseline: RRAP-07-001 … 07-014. Backend `backend/app` (FastAPI + Celery/Redis 
 
 ## 1. Job record (07-005, 07-006, 07-010)
 
-Add to `jobs` (idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in the startup upgrade module `app/db/upgrade.py`, documented in `backend/migrations/add_module7_jobs.sql`):
+Add to `jobs` (idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in the startup upgrade module `app/core/db/upgrade.py`, documented in `backend/migrations/add_module7_jobs.sql`):
 - `source_type` enum `upload | google_drive | onedrive | stream` (existing rows → upload); `source_ref` (external file id / stream id), `source_name` (display name), `connection_id` (FK cloud_connections, nullable), `stream_id` (FK stream_sources, nullable), `source_path` (local temp path of the media while retained), `submitted_by` (e-mail or "system").
 - `status` enum add `cancelled` (keep pending/processing/done/failed).
 - `started_at`, `finished_at` (exists), `cancel_requested` bool, `cancelled_at`, `cancelled_by`.

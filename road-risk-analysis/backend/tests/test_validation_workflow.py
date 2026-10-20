@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.services.detection_workflow import (
+from app.modules.m06_hazards.detection_workflow import (
     TRANSITIONS, accept_target, initial_status, is_allowed, location_status_for, reopen_target, thresholds_for,
 )
-from app.services.hazard_service import aggregate, area_radius, hazard_code, pick_hazard
-from app.services.settings_service import ValidationSettings
+from app.modules.m06_hazards.hazard_service import aggregate, area_radius, hazard_code, pick_hazard
+from app.core.settings_service import ValidationSettings
 
 # ~111 m per 0.001° of latitude
 YAOUNDE = (3.8480, 11.5021)

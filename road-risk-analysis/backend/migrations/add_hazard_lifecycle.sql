@@ -1,7 +1,7 @@
--- Module 6 — hazard lifecycle (app/services/hazards/lifecycle/): re-sightings,
+-- Module 6 — hazard lifecycle (app/modules/m06_hazards/lifecycle/): re-sightings,
 -- "not seen" video passes, driver votes, expiry and recurring spots.
 --
--- Applied automatically at API startup by app/db/upgrade.py (idempotent);
+-- Applied automatically at API startup by app/core/db/upgrade.py (idempotent);
 -- this file mirrors it for review / manual runs.
 
 ALTER TABLE hazards ADD COLUMN IF NOT EXISTS resolution_source VARCHAR;      -- manual | video_absence | votes | expiry

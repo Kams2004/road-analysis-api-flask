@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.config import settings
-from app.services.osrm import geo
-from app.services.osrm.models import (
+from app.modules.m03_maps.osrm import geo
+from app.modules.m03_maps.osrm.models import (
     MapMatchQuality,
     RoadAwareVehicleState,
     RoadContext,
@@ -19,8 +19,8 @@ from app.services.osrm.models import (
     TelemetrySnapshot,
     UpcomingSegment,
 )
-from app.services.trajectory.models import AccelerationSource, ConfidenceLevel, TrajectoryStatus
-from app.services.trajectory.predictor import predict_trajectory
+from app.modules.m10_collision.trajectory.models import AccelerationSource, ConfidenceLevel, TrajectoryStatus
+from app.modules.m10_collision.trajectory.predictor import predict_trajectory
 
 NOW = datetime.now(timezone.utc)
 KAMBO = (4.0412, 9.8107)  # real coordinate used elsewhere in this project's demo/testing

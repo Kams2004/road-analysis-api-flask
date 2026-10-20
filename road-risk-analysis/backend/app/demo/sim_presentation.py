@@ -372,7 +372,7 @@ def road_through_phone(phone: Phone, bearing):
 
 def _predicted_through(path: Path, a: float, target):
     """Mimic the backend's prediction for a unit at `a` on `path` (OSRM route
-    150 m behind → 750 m ahead along its heading, app/services/osrm/
+    150 m behind → 750 m ahead along its heading, app/modules/m03_maps/osrm/
     map_matching.py): the predicted road Path if it passes the target, else None."""
     lat, lon, h = path.at(a)
     win, _ = route([vs._destination(lat, lon, (h + 180) % 360, 150), vs._destination(lat, lon, h, 750)])

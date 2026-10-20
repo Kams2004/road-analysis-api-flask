@@ -1,6 +1,6 @@
 -- Two-stage pothole pipeline (detector + crop classifier) and the AI
 -- validation mode (RRAP-05-010/011/012/016, RRAP-06-007, RRAP-13-001/016).
--- Applied automatically at startup by app/db/upgrade.py (AI_VALIDATION_COLUMNS);
+-- Applied automatically at startup by app/core/db/upgrade.py (AI_VALIDATION_COLUMNS);
 -- kept here for manual / review purposes. Idempotent.
 --
 --   model_card_version     detector model card "name:version" (model_version stays file@sha256[:12])

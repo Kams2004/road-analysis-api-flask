@@ -56,22 +56,22 @@ from app.demo import seed_presentation as sp
 from app.demo import seed_mobile_demo as md
 from app.demo import seed_demo_exceptions as ex
 from app.core.config import settings
-from app.db.session import AsyncSessionLocal
-from app.models.api_client import ApiClient
-from app.models.cloud_connection import CloudConnection
-from app.models.cloud_import import CloudImportBatch
-from app.models.cluster_zone import ClusterZone
-from app.models.detection import Detection
-from app.models.hazard import Hazard
-from app.models.historical_event import HistoricalEventRecord
-from app.models.job import Job
-from app.models.signalement import Signalement
-from app.models.user import User
-from app.models.validation_label import ValidationLabel
-from app.models.vehicle import Vehicle
-from app.models.vehicle_road_state import VehicleRoadState
-from app.services.minio_service import get_minio
-from app.services.redis_client import get_redis
+from app.core.db.session import AsyncSessionLocal
+from app.modules.m12_integration.models.api_client import ApiClient
+from app.modules.m07_ingestion.models.cloud_connection import CloudConnection
+from app.modules.m07_ingestion.models.cloud_import import CloudImportBatch
+from app.modules.m06_hazards.models.cluster_zone import ClusterZone
+from app.modules.m06_hazards.models.detection import Detection
+from app.modules.m06_hazards.models.hazard import Hazard
+from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
+from app.modules.m07_ingestion.models.job import Job
+from app.modules.m11_community.models.signalement import Signalement
+from app.modules.m01_security.models.user import User
+from app.modules.m06_hazards.models.validation_label import ValidationLabel
+from app.modules.m10_collision.models.vehicle import Vehicle
+from app.modules.m10_collision.models.vehicle_road_state import VehicleRoadState
+from app.core.storage.minio_service import get_minio
+from app.core.storage.redis_client import get_redis
 
 SIM_PREFIX = "sim-"
 
@@ -200,7 +200,7 @@ async def purge_simulator(db) -> dict:
         r = get_redis()
         if keys:
             await r.delete(*keys)
-        from app.services.vehicle_service import GEO_KEY
+        from app.modules.m10_collision.vehicle_service import GEO_KEY
         members = [m async for m in r.zscan_iter(GEO_KEY) if str(m[0]).startswith(SIM_PREFIX)]
         if members:
             geo = await r.zrem(GEO_KEY, *[m[0] for m in members])

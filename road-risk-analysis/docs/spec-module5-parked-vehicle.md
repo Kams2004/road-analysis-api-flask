@@ -1,7 +1,7 @@
 # Module 5 — Parked / roadside vehicle detection
 
-Requirements RRAP-05-001 / 05-003 / 05-015. Code: `app/services/detection/parked_vehicle/`
-(pure, unit-tested in `tests/test_parked_vehicle.py`), driven by `app/workers/processor.py`.
+Requirements RRAP-05-001 / 05-003 / 05-015. Code: `app/modules/m05_ai_detection/parked_vehicle/`
+(pure, unit-tested in `tests/test_parked_vehicle.py`), driven by `app/modules/m07_ingestion/pipeline.py`.
 
 **No training.** A stock COCO-pretrained YOLOv8s finds vehicles. Whether a vehicle is *parked* is
 decided by physics and rules over its track. One frame cannot tell a parked car from a car stopped
@@ -125,7 +125,7 @@ evidence it measures.
 ## 5. Storage and AI validation
 
 - **`parked`**: stored as type `parked_vehicle` with the subtype. It goes through the normal AI
-  validation routing (`app.services.ai_validation`) with `verifier_score` = the score. The
+  validation routing (`app.modules.m05_ai_detection.ai_validation`) with `verifier_score` = the score. The
   `auto_accept` / `auto_reject` values on the score come from `ai_validation.type_overrides
   .parked_vehicle`, else from `auto_accept_score` / `auto_reject_score` of this section (shown as
   source `card` in `GET /models/`). `detector_accept` / `detector_reject` on the best-sighting
@@ -227,7 +227,7 @@ time. The source time of the job is not known to the platform, so it is not used
 The hazard lifecycle's video passes use the track point's `recorded_at` first. Older jobs fall
 back to recording start + `video_time_s`.
 
-DB changes: `app/db/upgrade.py` (`PARKED_VEHICLE_COLUMNS`) with the mirror
+DB changes: `app/core/db/upgrade.py` (`PARKED_VEHICLE_COLUMNS`) with the mirror
 `migrations/add_parked_vehicle.sql`:
 - `detections.recorded_at`, with an index;
 - `detections.ai_details`;

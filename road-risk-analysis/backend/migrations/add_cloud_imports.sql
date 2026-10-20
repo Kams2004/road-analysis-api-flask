@@ -1,6 +1,6 @@
 -- Cloud sources & imports (Module 7, RRAP-07-002/004)
 --
--- Applied automatically at API startup by app/db/upgrade.py
+-- Applied automatically at API startup by app/core/db/upgrade.py
 -- (CLOUD_IMPORT_COLUMNS, idempotent); this file mirrors it for review /
 -- manual runs. The two new TABLES are created by SQLAlchemy create_all —
 -- their DDL is listed here for reference.

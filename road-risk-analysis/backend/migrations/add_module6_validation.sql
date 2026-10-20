@@ -1,6 +1,6 @@
 -- Module 6 — hazard validation, clustering & evidence (docs/spec-module6-hazard-validation.md)
 --
--- Applied automatically at API startup by app/db/upgrade.py (idempotent);
+-- Applied automatically at API startup by app/core/db/upgrade.py (idempotent);
 -- this file mirrors it for review / manual runs. New TABLES (hazards,
 -- cluster_areas, detection_reviews, job_track_points) are created by
 -- SQLAlchemy create_all — their DDL is listed here for reference.

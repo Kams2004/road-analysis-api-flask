@@ -12,14 +12,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models.signalement import Signalement, SignalementType, SignalementStatus
-from app.services import hazard_service
-from app.services.clustering import boundaries, service as clustering_service, zones as geo
-from app.services.clustering.resolver import (
+from app.modules.m11_community.models.signalement import Signalement, SignalementType, SignalementStatus
+from app.modules.m06_hazards import hazard_service
+from app.modules.m06_hazards.clustering import boundaries, service as clustering_service, zones as geo
+from app.modules.m06_hazards.clustering.resolver import (
     DEFAULT_PRIORITY, Snapshot, ZoneRule, resolve, resolve_all, zone_at,
 )
-from app.services.clustering.settings import ClusteringSettings, ClusterProfile
-from app.services.settings_service import SECTIONS, CommunitySettings
+from app.modules.m06_hazards.clustering.settings import ClusteringSettings, ClusterProfile
+from app.core.settings_service import SECTIONS, CommunitySettings
 
 # A square ~2.2 km wide around (4.05, 9.70) with a ~440 m hole in the middle.
 SQUARE = [[9.69, 4.04], [9.71, 4.04], [9.71, 4.06], [9.69, 4.06], [9.69, 4.04]]
@@ -220,11 +220,11 @@ def _import_processor(monkeypatch):
         stub.YOLO = object
         monkeypatch.setitem(sys.modules, "ultralytics", stub)
     import importlib
-    return importlib.import_module("app.workers.processor")
+    return importlib.import_module("app.modules.m07_ingestion.pipeline")
 
 
 def test_processor_geo_dedup_uses_resolved_radius(monkeypatch):
-    fresh = "app.workers.processor" not in sys.modules
+    fresh = "app.modules.m07_ingestion.pipeline" not in sys.modules
     try:
         proc = _import_processor(monkeypatch)
         assert not hasattr(proc, "GEO_DEDUP_DEG")
@@ -244,10 +244,10 @@ def test_processor_geo_dedup_uses_resolved_radius(monkeypatch):
         assert not proc._is_geo_duplicate(None, None, seen, 50)
     finally:
         if fresh:   # leave no trace: other test files must still see "processor not importable"
-            sys.modules.pop("app.workers.processor", None)
-            import app.workers as workers_pkg
-            if hasattr(workers_pkg, "processor"):
-                delattr(workers_pkg, "processor")
+            sys.modules.pop("app.modules.m07_ingestion.pipeline", None)
+            import app.modules.m07_ingestion as ingestion_pkg
+            if hasattr(ingestion_pkg, "pipeline"):
+                delattr(ingestion_pkg, "pipeline")
 
 
 def _report(id_, type_=SignalementType.embouteillage, lat=4.05, lon=9.70, **kw) -> Signalement:
@@ -259,7 +259,7 @@ def _report(id_, type_=SignalementType.embouteillage, lat=4.05, lon=9.70, **kw) 
 
 
 def test_pick_merge_target_rules():
-    from app.services.signalement_service import pick_merge_target
+    from app.modules.m11_community.signalement_service import pick_merge_target
     near = _report("a", lat=4.05 + 80 / 111_320)
     nearer = _report("b", lat=4.05 + 40 / 111_320)
     other_type = _report("c", type_=SignalementType.police)
@@ -302,8 +302,8 @@ class _FakeDB:
 
 def test_signalement_create_merges_with_resolved_radius(monkeypatch):
     """POST /signalements/ resolves the radius per report type at the position and merges."""
-    from app.api.routes import signalements as route
-    from app.services import signalement_service
+    from app.modules.m11_community.routes import signalements as route
+    from app.modules.m11_community import signalement_service
 
     city = _zone(1, {"type": "Polygon", "coordinates": [SQUARE]}, name="Douala",
                  signalement_radius={"embouteillage": 120})
@@ -353,7 +353,7 @@ def test_signalement_create_merges_with_resolved_radius(monkeypatch):
 
 
 def test_merged_report_restarts_freshness():
-    from app.services import signalement_votes as votes
+    from app.modules.m11_community import signalement_votes as votes
     cfg = CommunitySettings()
     old = _report("x", reported_at=datetime(2026, 1, 1, 0, 0))
     base = votes.expires_at(old, cfg)

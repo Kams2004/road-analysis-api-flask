@@ -12,10 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services import cloud_import as ci
-from app.services import sftp_core as core
-from app.services import sftp_source as ss
-from app.services.cloud_providers import importable
+from app.modules.m07_ingestion import cloud_import as ci
+from app.modules.m07_ingestion import sftp_core as core
+from app.modules.m07_ingestion import sftp_source as ss
+from app.modules.m07_ingestion.cloud_providers import importable
 
 
 # ── secrets ──────────────────────────────────────────────────────────────────

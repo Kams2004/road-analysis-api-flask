@@ -4,7 +4,7 @@
 -- One row per vehicle — the latest road-aware position summary only.
 -- Full road geometry / upcoming segments are NOT persisted here; they're
 -- cheap to recompute from OSRM and served from the Redis-cached
--- RoadAwareVehicleState (see app/services/road_state_service.py).
+-- RoadAwareVehicleState (see app/modules/m10_collision/road_state_service.py).
 
 CREATE TABLE IF NOT EXISTS vehicle_road_states (
     vehicle_id         VARCHAR PRIMARY KEY REFERENCES vehicles(id),

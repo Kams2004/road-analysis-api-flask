@@ -1,5 +1,5 @@
 """
-Celery tasks of cloud imports (app.services.cloud_import). Same "processing"
+Celery tasks of cloud imports (app.modules.m07_ingestion.cloud_import). Same "processing"
 queue as the jobs, so the existing worker consumes them.
 
   cloud_import_item   one file: import slot → download → verify → job
@@ -15,7 +15,7 @@ import logging
 
 from celery.exceptions import Retry
 
-from app.services import job_slots
+from app.modules.m07_ingestion import job_slots
 from app.workers.celery_app import celery_app
 from app.workers.job_tasks import _run
 
@@ -28,10 +28,10 @@ SLOT_STALE_S = 10 * 60      # no heartbeat for 10 min → the download died with
 async def _prepare(db, item_id: str):
     """(capacity of the import pool, per-host pool key + capacity or None),
     or None when the item has nothing to do."""
-    from app.services import cloud_import
-    from app.models.cloud_connection import CloudConnection
-    from app.models.cloud_import import CloudImportItem
-    from app.services.settings_service import get_section
+    from app.modules.m07_ingestion import cloud_import
+    from app.modules.m07_ingestion.models.cloud_connection import CloudConnection
+    from app.modules.m07_ingestion.models.cloud_import import CloudImportItem
+    from app.core.settings_service import get_section
 
     item = await db.get(CloudImportItem, item_id)
     if item is None or item.status not in cloud_import.TRANSFER:
@@ -40,7 +40,7 @@ async def _prepare(db, item_id: str):
     host = None
     conn = await db.get(CloudConnection, item.connection_id) if item.connection_id else None
     if conn is not None and conn.provider == "sftp" and conn.sftp_host:
-        from app.services import sftp_core, sftp_source
+        from app.modules.m07_ingestion import sftp_core, sftp_source
         host = (sftp_source.host_slots_key(conn.sftp_host, conn.sftp_port or 22),
                 max(1, min(sftp_core.PER_HOST_DOWNLOADS, proc.cloud_import_concurrency)))
     return proc.cloud_import_concurrency, host
@@ -48,7 +48,7 @@ async def _prepare(db, item_id: str):
 
 @celery_app.task(bind=True, name="app.workers.celery_app.cloud_import_item", max_retries=None)
 def cloud_import_item(self, item_id: str):
-    from app.services import cloud_import
+    from app.modules.m07_ingestion import cloud_import
 
     r = job_slots.client()
     acquired = False

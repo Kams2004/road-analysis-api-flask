@@ -1,6 +1,6 @@
 """
 Out-of-order write protection for the ping-triggered background pipeline
-(see app/services/staleness_guard.py's module docstring for the scenario
+(see app/modules/m10_collision/staleness_guard.py's module docstring for the scenario
 this guards against). Tests the pure comparison directly — no Redis — same
 convention as tests/test_alerts.py and tests/test_collision.py: the Redis
 I/O wrapper around it (skip_if_stale) is "live-verified separately", this
@@ -8,7 +8,7 @@ file covers the decision logic it's built on.
 """
 from datetime import datetime, timedelta, timezone
 
-from app.services.staleness_guard import is_stale
+from app.modules.m10_collision.staleness_guard import is_stale
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 EARLIER = NOW - timedelta(seconds=5)

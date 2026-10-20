@@ -1,5 +1,5 @@
 """
-Parked / roadside vehicle detection (app.services.detection.parked_vehicle):
+Parked / roadside vehicle detection (app.modules.m05_ai_detection.parked_vehicle):
 geometry, every rule (parked, oncoming, same direction, traffic queue,
 off-road, billboard / not grounded, masks, hood, motorcycle disabled, no-GPS
 fallback capped, camera profile, wrong_side vs roadside), score
@@ -17,12 +17,12 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from app.services import ai_validation, static_check
-from app.services.detection import parked_vehicle as pv
-from app.services.detection.parked_vehicle import geometry as geo
-from app.services.detection.parked_vehicle import scoring
-from app.services.detection.parked_vehicle.settings import CameraCalibration, ParkedVehicleSettings
-from app.services.detection.parked_vehicle.severity import severity
+from app.modules.m05_ai_detection import ai_validation, static_check
+from app.modules.m05_ai_detection import parked_vehicle as pv
+from app.modules.m05_ai_detection.parked_vehicle import geometry as geo
+from app.modules.m05_ai_detection.parked_vehicle import scoring
+from app.modules.m05_ai_detection.parked_vehicle.settings import CameraCalibration, ParkedVehicleSettings
+from app.modules.m05_ai_detection.parked_vehicle.severity import severity
 
 W, H = 1280, 720
 LAT0, LON0 = 4.05, 9.70
@@ -398,7 +398,7 @@ def test_settings_defaults_and_validation():
 
 
 def test_settings_section_registered_and_merge_patch():
-    from app.services.settings_service import SECTIONS
+    from app.core.settings_service import SECTIONS
     assert SECTIONS["parked_vehicle"] is ParkedVehicleSettings
     cur = ParkedVehicleSettings().model_dump()
     merged = ParkedVehicleSettings.merge_patch(cur, {"camera": {"horizon_y": 0.5}, "min_sightings": 7,
@@ -438,7 +438,7 @@ def test_policy_thresholds_and_rule_reject():
     assert cards["parked_vehicle"] == {"auto_accept": 0.8} and cards["pothole"] == {"auto_accept": 0.9}
     # a card value wins over the settings default; ai_validation override wins over both
     assert pv.merge_policy_cards({"parked_vehicle": {"auto_accept": 0.7}}, s)["parked_vehicle"]["auto_accept"] == 0.7
-    from app.services.settings_service import AiValidationSettings, ValidationSettings
+    from app.core.settings_service import AiValidationSettings, ValidationSettings
     ai = AiValidationSettings(type_overrides={"parked_vehicle": {"auto_accept": 0.95}})
     th = ai_validation.resolve_thresholds(ai, ValidationSettings(), cards, "parked_vehicle")
     assert th.auto_accept == 0.95 and th.sources["auto_accept"] == "override"
@@ -482,7 +482,7 @@ def test_vehicle_tracker_follows_a_fast_sweeping_box():
 def processor():
     pytest.importorskip("ultralytics")             # the worker module imports it; pure tests above do not
     pytest.importorskip("cv2")
-    from app.workers import processor as proc
+    from app.modules.m07_ingestion import pipeline as proc
     proc._unload_models()
     yield proc
     proc._unload_models()
@@ -509,7 +509,7 @@ class _T:
 
 
 def _ctx(processor, pvs=None, fps=25.0):
-    from app.services.settings_service import ValidationSettings
+    from app.core.settings_service import ValidationSettings
     job = SimpleNamespace(id="job-1")
     return processor._JobContext(job, "/tmp/x.mp4", fps, ValidationSettings(), None, pvs=pvs)
 
@@ -549,7 +549,7 @@ def test_processor_recorded_at_and_policy(processor):
     assert rec.astimezone(timezone.utc).hour == 7            # Africa/Douala = UTC+1
     assert ctx.recorded_at(26, SimpleNamespace(timestamp=t0)).replace(tzinfo=None) == t0
     assert _ctx(processor).recorded_at(10, blank) is None
-    from app.services.settings_service import AiValidationSettings, ValidationSettings
+    from app.core.settings_service import AiValidationSettings, ValidationSettings
     policy = processor._policy_for_job(AiValidationSettings(), ValidationSettings(),
                                        ParkedVehicleSettings(auto_accept_score=0.75))
     th = policy.for_type("parked_vehicle")
@@ -598,7 +598,8 @@ async def test_processor_finalize_vehicle_counts_and_stores(processor, monkeypat
 
 
 def test_vehicles_slot_and_valid_models():
-    from app.services import job_service, model_registry
+    from app.modules.m07_ingestion import job_service
+    from app.modules.m05_ai_detection import model_registry
     assert model_registry.SLOTS["vehicles"] == ("parked_vehicle", "detector")
     assert "vehicles" in job_service.VALID_MODELS and "vehicles" not in job_service.DEFAULT_MODELS
     assert job_service.parse_models(None) == ["pothole", "signs", "speedbump"]
@@ -607,7 +608,7 @@ def test_vehicles_slot_and_valid_models():
 
 async def test_settings_update_section_roundtrip():
     """PUT /settings/parked_vehicle goes through settings_service.update_section."""
-    from app.services import settings_service
+    from app.core import settings_service
 
     class _DB:
         def __init__(self):

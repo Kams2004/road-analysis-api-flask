@@ -3,8 +3,8 @@ label helpers of /routes."""
 import pytest
 from pydantic import ValidationError
 
-from app.api.routes.route_sections import _city, _place, _short_name
-from app.services.settings_service import SECTIONS, RoutesSettings
+from app.modules.m03_maps.routes.route_sections import _city, _place, _short_name
+from app.core.settings_service import SECTIONS, RoutesSettings
 
 
 def test_default_sections_cover_main_corridors():

@@ -2,7 +2,7 @@
 the hazard risk-level rule (no database)."""
 from datetime import datetime
 
-from app.api.routes.stats import bucket_floor, bucket_starts, hazard_risk_level, period_window
+from app.modules.m02_dashboard.routes.stats import bucket_floor, bucket_starts, hazard_risk_level, period_window
 
 
 NOW = datetime(2026, 10, 14, 15, 30)   # a Wednesday

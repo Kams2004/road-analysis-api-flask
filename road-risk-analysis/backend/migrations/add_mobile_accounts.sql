@@ -1,6 +1,6 @@
 -- Mobile accounts & Google sign-in (docs/spec-mobile-app.md, "Backend — mobile accounts")
 --
--- Applied automatically at API startup by app/db/upgrade.py (idempotent);
+-- Applied automatically at API startup by app/core/db/upgrade.py (idempotent);
 -- this file mirrors it for review / manual runs.
 
 -- ── New signalement types for the mobile "Report a hazard" screen ───────────

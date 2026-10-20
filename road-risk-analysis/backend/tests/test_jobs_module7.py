@@ -11,12 +11,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.models.job import JobStatus
-from app.schemas.schemas import JobOut
-from app.services import cloud_storage as cs
-from app.services import job_service as js
-from app.services import job_slots
-from app.services.settings_service import CloudSettings, ProcessingSettings, SECRET_FIELDS, redact
+from app.modules.m07_ingestion.models.job import JobStatus
+from app.modules.m07_ingestion.schemas.jobs import JobOut
+from app.modules.m07_ingestion import cloud_storage as cs
+from app.modules.m07_ingestion import job_service as js
+from app.modules.m07_ingestion import job_slots
+from app.core.settings_service import CloudSettings, ProcessingSettings, SECRET_FIELDS, redact
 
 
 # ── frame sampling ───────────────────────────────────────────────────────────

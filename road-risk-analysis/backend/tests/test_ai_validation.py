@@ -13,10 +13,10 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.services import ai_validation as av, model_registry, model_stats
-from app.services.ai_validation import Policy, Thresholds, build_policy, decide, resolve_thresholds
-from app.services.detection_workflow import initial_status
-from app.services.settings_service import SECTIONS, AiValidationSettings, ValidationSettings
+from app.modules.m05_ai_detection import ai_validation as av, model_registry, model_stats
+from app.modules.m05_ai_detection.ai_validation import Policy, Thresholds, build_policy, decide, resolve_thresholds
+from app.modules.m06_hazards.detection_workflow import initial_status
+from app.core.settings_service import SECTIONS, AiValidationSettings, ValidationSettings
 
 POTHOLE = Thresholds(detector_accept=0.80, detector_reject=0.30, auto_accept=0.90, auto_reject=0.20)
 
@@ -264,7 +264,7 @@ def test_crop_box_padding():
 
 @pytest.fixture
 def processor():
-    from app.workers import processor as proc
+    from app.modules.m07_ingestion import pipeline as proc
     proc._unload_models()
     yield proc
     proc._unload_models()
@@ -383,7 +383,7 @@ class _FakeDB:
 @pytest.fixture
 async def client(monkeypatch, model_dir):
     from app.api.deps import Principal, get_principal
-    from app.db.session import get_db
+    from app.core.db.session import get_db
     from app.main import app
 
     perms = {"detections": {"view"}}

@@ -98,7 +98,7 @@ OSRM_BASE_URL=http://osrm:5000
 ```
 
 `docker-compose.demo.yml`'s `api` service already sets this. Nothing else
-changes — `app/services/osrm/client.py` talks to whatever `OSRM_BASE_URL`
+changes — `app/modules/m03_maps/osrm/client.py` talks to whatever `OSRM_BASE_URL`
 points at, so switching between the public demo server and a self-hosted
 Cameroon instance is a one-line config change, not a code change.
 
@@ -127,6 +127,6 @@ Two environment variables on the `osrm` service (see `docker-compose.osrm.yml`
 
 ## Note on stable identifiers
 
-`app/services/osrm/models.py` deliberately does not treat OSRM/OSM ids as
+`app/modules/m03_maps/osrm/models.py` deliberately does not treat OSRM/OSM ids as
 durable business keys, precisely because a dataset refresh like this can
 shift them — see that file's docstring for the reasoning.

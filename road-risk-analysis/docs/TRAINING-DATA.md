@@ -55,7 +55,7 @@ but no detector image (`training_frames.status = no_image`).
   be unboxed) → `box_reviewed` once the whole frame was reviewed in Label Studio and pushed back. Reviewed boxes
   override the decisions' boxes; if an earlier decision of that frame changes later (reopen, re-decision) the frame goes
   back to `needs_box_review` with the decisions' boxes.
-* Recording is done in the decision's transaction (`app.services.training_data.record_decision`, in a SAVEPOINT:
+* Recording is done in the decision's transaction (`app.modules.m06_hazards.training_data.record_decision`, in a SAVEPOINT:
   it can never block a validation); the MinIO writes happen after the commit (API background task, worker at the end
   of a job, Celery beat `sync_training_data` every 2 min retries failures, also on API start). Everything is
   idempotent (deterministic keys).
@@ -78,7 +78,7 @@ corrections, class / class_index / classifier_class, effective box + box_correct
 name, frame number, video time, recorded_at, GPS, confidence, model version + card, crop_key, sync status) and
 `training_frames` (type, frame_key, group, size, image/label keys, current `labels`, n_boxes, status
 active/empty/no_image, review_status, reviewed boxes + reviewer, dirty / sync error). Schema: `migrations/add_training_data.sql`
-(applied automatically by `app/db/upgrade.py`).
+(applied automatically by `app/core/db/upgrade.py`).
 
 **API** (permission `datasets`; Swagger tag *Datasets*):
 | | |

@@ -1,6 +1,6 @@
 -- Two-stage traffic-sign pipeline (detector traffic_sign/traffic_light +
 -- crop classifier of VIASafe sign codes). Applied automatically at startup by
--- app/db/upgrade.py (SIGN_CLASSIFIER_COLUMNS); kept here for manual / review
+-- app/core/db/upgrade.py (SIGN_CLASSIFIER_COLUMNS); kept here for manual / review
 -- purposes. Idempotent.
 --
 --   class_candidates   classifier top-3 for a traffic-sign crop:

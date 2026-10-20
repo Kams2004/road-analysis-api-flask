@@ -1,5 +1,5 @@
 """
-Module 6 hazard lifecycle (app.services.hazards.lifecycle,
+Module 6 hazard lifecycle (app.modules.m06_hazards.lifecycle,
 docs/spec-module6-hazard-lifecycle.md).
 
 The first part is pure: policy resolution, the valid-pass rules, absence
@@ -18,17 +18,17 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.models.hazard import HazardStatus
-from app.services.hazards.lifecycle import expiry, recurring, service, votes
-from app.services.hazards.lifecycle.policy import (
+from app.modules.m06_hazards.models.hazard import HazardStatus
+from app.modules.m06_hazards.lifecycle import expiry, recurring, service, votes
+from app.modules.m06_hazards.lifecycle.policy import (
     hazard_vehicle_class, policy_for_hazard, resolve_policy, vehicle_class_of,
 )
-from app.services.hazards.lifecycle.settings import HazardLifecycleSettings, TypePolicy
-from app.services.hazards.lifecycle.timeutil import in_daylight, recording_time, to_utc_naive
-from app.services.hazards.lifecycle.video_pass import (
+from app.modules.m06_hazards.lifecycle.settings import HazardLifecycleSettings, TypePolicy
+from app.modules.m06_hazards.lifecycle.timeutil import in_daylight, recording_time, to_utc_naive
+from app.modules.m06_hazards.lifecycle.video_pass import (
     PassRules, TrackPt, angle_diff, bearing, eligible_types, evaluate_pass, heading_at, recording_start, speed_at,
 )
-from app.services.settings_service import SECTIONS
+from app.core.settings_service import SECTIONS
 
 CFG = HazardLifecycleSettings()
 T0 = datetime(2026, 10, 1, 10, 0)     # 11:00 in Douala (UTC+1)
@@ -319,8 +319,8 @@ db_only = pytest.mark.skipif(os.environ.get("RUN_DB_TESTS") != "1",
 
 @pytest.fixture
 async def db():
-    from app.db.session import AsyncSessionLocal, engine as db_engine, init_db
-    from app.services import settings_service
+    from app.core.db.session import AsyncSessionLocal, engine as db_engine, init_db
+    from app.core import settings_service
     await init_db()
     async with AsyncSessionLocal() as session:
         await settings_service.update_section(session, "hazard_lifecycle", HazardLifecycleSettings().model_dump(),
@@ -336,8 +336,8 @@ def _spot() -> tuple[float, float]:
 
 
 async def _job(db, models="vehicles,pothole", track_at=None, start=None):
-    from app.models.job import Job, JobStatus
-    from app.models.job_track_point import JobTrackPoint
+    from app.modules.m07_ingestion.models.job import Job, JobStatus
+    from app.modules.m07_ingestion.models.job_track_point import JobTrackPoint
     now = datetime.utcnow()
     job = Job(id=str(uuid.uuid4()), filename="pytest.mp4", status=JobStatus.done, enabled_models=models,
               source_type="upload", finished_at=now, started_at=now)
@@ -357,7 +357,7 @@ async def _job(db, models="vehicles,pothole", track_at=None, start=None):
 
 async def _det(db, job, at, recorded_at, *, type_="parked_vehicle", subtype="blocking", vehicle="car",
                video_time_s=20.0, frame=100, status="pending"):
-    from app.models.detection import Detection, ReviewStatus
+    from app.modules.m06_hazards.models.detection import Detection, ReviewStatus
     det = Detection(job_id=job.id, type=type_, subtype=subtype, confidence=0.9, frame_number=frame,
                     latitude=at[0], longitude=at[1], location_status="confirmed", location_source="ocr",
                     review_status=ReviewStatus(status), video_time_s=video_time_s,
@@ -369,22 +369,22 @@ async def _det(db, job, at, recorded_at, *, type_="parked_vehicle", subtype="blo
 
 
 async def _accept(db, det):
-    from app.services import detection_workflow as wf
+    from app.modules.m06_hazards import detection_workflow as wf
     await wf.accept(db, det, wf.SYSTEM)
     await db.commit()
-    from app.models.hazard import Hazard
+    from app.modules.m06_hazards.models.hazard import Hazard
     return await db.get(Hazard, det.hazard_id)
 
 
 async def _kinds(db, hazard_id):
-    from app.services.hazards.lifecycle import events
+    from app.modules.m06_hazards.lifecycle import events
     _, rows = await events.timeline(db, hazard_id)
     return [r.kind for r in reversed(rows)]
 
 
 @db_only
 async def test_parked_car_resolved_after_two_valid_passes_then_reopened(db):
-    from app.services.hazards.lifecycle import video_pass
+    from app.modules.m06_hazards.lifecycle import video_pass
     spot = _spot()
     now = datetime.utcnow()
     j1 = await _job(db, track_at=spot)
@@ -422,7 +422,7 @@ async def test_parked_car_resolved_after_two_valid_passes_then_reopened(db):
 
 @db_only
 async def test_pending_detection_is_a_sighting_not_an_absence(db):
-    from app.services.hazards.lifecycle import video_pass
+    from app.modules.m06_hazards.lifecycle import video_pass
     spot = _spot()
     now = datetime.utcnow()
     j1 = await _job(db, track_at=spot)
@@ -439,7 +439,7 @@ async def test_pending_detection_is_a_sighting_not_an_absence(db):
 
 @db_only
 async def test_stale_late_video_is_history_only(db):
-    from app.models.detection import Detection
+    from app.modules.m06_hazards.models.detection import Detection
     spot = _spot()
     now = datetime.utcnow()
     det = await _det(db, await _job(db), spot, now - timedelta(hours=3))   # blocking car: 2 h expiry
@@ -471,7 +471,7 @@ async def test_expiry_sweep_and_driver_filter(db):
 
 @db_only
 async def test_recurring_spot_flag(db):
-    from app.services.hazards.lifecycle import service as lc
+    from app.modules.m06_hazards.lifecycle import service as lc
     spot = _spot()
     now = datetime.utcnow()
     for i in range(3):          # three cars parked here and gone, days apart
@@ -490,9 +490,9 @@ async def test_recurring_spot_flag(db):
 async def api(db):
     from app.core.security import hash_token, new_token
     from app.main import app
-    from app.models.api_client import ApiClient
-    from app.models.auth_token import AuthSession, SessionStage
-    from app.models.user import User
+    from app.modules.m12_integration.models.api_client import ApiClient
+    from app.modules.m01_security.models.auth_token import AuthSession, SessionStage
+    from app.modules.m01_security.models.user import User
     key = new_token("vsk_")
     db.add(ApiClient(name="pytest hazards", key_prefix=key[:10], key_hash=hash_token(key), created_by="pytest"))
     tokens = []

@@ -13,12 +13,12 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from app.models.cloud_connection import CloudConnection
-from app.models.cloud_import import CloudImportBatch, CloudImportItem
-from app.models.job import Job
-from app.services import cloud_import as ci
-from app.services import cloud_providers as cp
-from app.services.cloud_storage import CloudError
+from app.modules.m07_ingestion.models.cloud_connection import CloudConnection
+from app.modules.m07_ingestion.models.cloud_import import CloudImportBatch, CloudImportItem
+from app.modules.m07_ingestion.models.job import Job
+from app.modules.m07_ingestion import cloud_import as ci
+from app.modules.m07_ingestion import cloud_providers as cp
+from app.modules.m07_ingestion.cloud_storage import CloudError
 
 
 def _mock(handler):
@@ -139,7 +139,7 @@ async def test_ids_that_could_rewrite_provider_urls_are_refused():
 
 
 def test_available_providers_reports_configuration():
-    from app.services.settings_service import CloudSettings
+    from app.core.settings_service import CloudSettings
     out = {p["id"]: p for p in cp.available_providers(CloudSettings(google_client_id="g", google_client_secret="s"))}
     assert set(out) == {"google_drive", "onedrive", "sftp"}
     assert out["google_drive"]["configured"] and not out["onedrive"]["configured"]
@@ -497,7 +497,7 @@ def test_item_view_merges_live_counters_and_job():
 
 
 async def test_watched_folder_sync_creates_a_batch_of_new_files(tmp_path, monkeypatch):
-    from app.services import cloud_storage
+    from app.modules.m07_ingestion import cloud_storage
     from app.workers import celery_app  # noqa: F401 — loads job_tasks in its normal order
     from app.workers import job_tasks
 

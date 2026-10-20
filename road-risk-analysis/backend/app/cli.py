@@ -23,10 +23,10 @@ from datetime import datetime
 from sqlalchemy import func, select
 
 from app.core.security import hash_password, hash_token, new_token, password_problems
-from app.db.session import AsyncSessionLocal, init_db
-from app.models.api_client import ApiClient
-from app.models.user import User, UserStatus
-from app.services.auth_service import admin_role, seed_roles
+from app.core.db.session import AsyncSessionLocal, init_db
+from app.modules.m12_integration.models.api_client import ApiClient
+from app.modules.m01_security.models.user import User, UserStatus
+from app.modules.m01_security.auth_service import admin_role, seed_roles
 
 
 async def create_admin(email: str, name: str) -> None:
@@ -62,7 +62,7 @@ async def create_api_client(name: str) -> None:
 
 
 async def rebuild_hazards() -> None:
-    from app.services.hazard_service import rebuild_all
+    from app.modules.m06_hazards.hazard_service import rebuild_all
     await init_db()
     async with AsyncSessionLocal() as db:
         count = await rebuild_all(db)
@@ -70,7 +70,7 @@ async def rebuild_hazards() -> None:
 
 
 async def geocode_backfill(limit: int) -> None:
-    from app.services import geocoding_backfill
+    from app.modules.m03_maps import geocoding_backfill
     await init_db()
     async with AsyncSessionLocal() as db:
         before = await geocoding_backfill.pending_count(db)

@@ -6,8 +6,8 @@ from this configuration **at its own position and for its own type**. No
 module carries its own cluster distance any more; per-type values exist only
 inside this configuration.
 
-Code: `app/services/clustering/` (settings, zones, resolver, boundaries,
-service), routes `app/api/routes/clustering.py`; web page `/clustering`
+Code: `app/modules/m06_hazards/clustering/` (settings, zones, resolver, boundaries,
+service), routes `app/modules/m06_hazards/routes/clustering.py`; web page `/clustering`
 (`app/clustering/page.tsx`, `components/clustering/*`).
 
 ## 1. Configuration (settings section `clustering`)
@@ -78,7 +78,7 @@ for every type at a point ("Test a point" tab).
 | Consumer | Before | Now |
 |---|---|---|
 | Hazard clustering (`hazard_service.attach / candidate_for`, queue hints, rebuild) | smallest circular area else global radius | `ClusterContext.resolve()` → resolver; new hazards store `radius_m`, `cluster_zone_id`, `cluster_zone_name`, `cluster_environment` |
-| Processor per-job geo de-dup (`workers/processor.py`) | hard-coded `GEO_DEDUP_DEG = 0.0005` (~55 m box) | haversine ≤ radius resolved at the new detection's position for its type (pixel fallback without GPS unchanged) |
+| Processor per-job geo de-dup (`modules/m07_ingestion/pipeline.py`) | hard-coded `GEO_DEDUP_DEG = 0.0005` (~55 m box) | haversine ≤ radius resolved at the new detection's position for its type (pixel fallback without GPS unchanged) |
 | Hazard lifecycle (sightings, resolved-hazard reopen, video passes, recurring) | `ctx.radius_for` / `hazard.radius_m` | same calls, now resolver-backed; `recurring_radius_m = null` still means the hazard's own radius |
 | `POST /detections/clusters` (on-the-fly) | global radius | radius resolved at each cluster's seed; each cluster reports `radius_m` |
 | Community reports `POST /signalements/` | no merging | radius resolved per report type; a report within it of an active, fresh, unmerged report of the same type is stored with `merged_into_id`, hidden from the app's nearby / along-route lists; the primary gets `report_count + 1` and `last_reported_at` (freshness restarts). Resolution stored in `cluster_radius_m`, `cluster_environment`, `cluster_zone_id` |
@@ -128,7 +128,7 @@ becomes a 64-vertex circle sized from its bounding box (1–30 km), flagged
 
 ## 6. Migration (idempotent)
 
-`app/db/upgrade.py` `CLUSTER_ZONE_COLUMNS` (mirror:
+`app/core/db/upgrade.py` `CLUSTER_ZONE_COLUMNS` (mirror:
 `migrations/add_cluster_zones.sql`) adds the hazard / signalement columns;
 `cluster_zones` comes from `create_all`. At API start-up
 `clustering.service.migrate_legacy` runs once — the presence of the settings

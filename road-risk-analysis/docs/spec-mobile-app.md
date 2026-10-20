@@ -22,7 +22,7 @@ App: `mobile` (Expo SDK 57, expo-router, React Native 0.86, MapLibre, expo-locat
 - Bottom tab bar (Carte, Signaler, Alertes, Profil) with safe-area padding.
 
 ## Backend (FastAPI `backend/app`) — mobile accounts
-- Self-registered users are platform `users` with `account_type = "mobile"` (new column, default `"staff"` for existing rows; add via `app/db/upgrade.py`) and **no roles** (the web console then shows nothing to them). Staff accounts can also sign in on mobile.
+- Self-registered users are platform `users` with `account_type = "mobile"` (new column, default `"staff"` for existing rows; add via `app/core/db/upgrade.py`) and **no roles** (the web console then shows nothing to them). Staff accounts can also sign in on mobile.
 - `POST /auth/mobile/register` {full_name, email, password, phone?, language?} — requires a valid API key (the mobile app), password policy, e-mail unique, per-IP rate limit (Redis, e.g. 5/hour), returns the same LoginOut as /auth/login (session token).
 - `POST /auth/mobile/login` {identifier, password} — API key required instead of CAPTCHA; same lockout rules/audit as /auth/login; MFA still enforced for staff with MFA (returns mfa_required → `/auth/mfa/verify`).
 - `POST /auth/google` {id_token} — verifies the Google ID token (`https://oauth2.googleapis.com/tokeninfo?id_token=…`, check `aud` ∈ configured client IDs, `email_verified`, `exp`), finds the user by e-mail or creates a mobile account (no password), stores `google_sub`; inactive → 403. Returns LoginOut. Usable by web too later.

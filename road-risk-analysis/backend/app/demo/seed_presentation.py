@@ -56,27 +56,28 @@ from sqlalchemy import delete, func, or_, select, update
 
 from app.demo import seed_web_test as wt   # registers every mapper; synthetic dashcam scenes
 from app.core.config import settings
-from app.db.session import AsyncSessionLocal
-from app.models.audit_log import AuditLog
-from app.models.detection import Detection, LocationSource, LocationStatus, ReviewStatus
-from app.models.detection_review import DetectionReview
-from app.models.hazard import Hazard, HazardStatus
-from app.models.hazard_lifecycle import HazardEvent, HazardVote
-from app.models.historical_event import HistoricalEventRecord
-from app.models.job import Job, JobStatus, SourceType
-from app.models.job_event import JobEvent
-from app.models.job_track_point import JobTrackPoint
-from app.models.signalement import Signalement, SignalementStatus, SignalementType
-from app.models.signalement_vote import SignalementPass, SignalementVote
-from app.models.validation_label import ValidationLabel
-from app.services import hazard_service, historical_service
-from app.services.hazards.lifecycle import service as lc_service
-from app.services.hazards.lifecycle.expiry import compute_expires_at
-from app.services.hazards.lifecycle.policy import policy_for_hazard
-from app.services.historical.grid import grid_cell_id
-from app.services.historical.models import HistoricalEvent
-from app.services.historical.sources.manual import ManualEventSource
-from app.services.minio_service import get_minio, upload_image, upload_signalement_image
+from app.core.db.session import AsyncSessionLocal
+from app.modules.m13_admin.models.audit_log import AuditLog
+from app.modules.m06_hazards.models.detection import Detection, LocationSource, LocationStatus, ReviewStatus
+from app.modules.m06_hazards.models.detection_review import DetectionReview
+from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus
+from app.modules.m06_hazards.models.hazard_lifecycle import HazardEvent, HazardVote
+from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
+from app.modules.m07_ingestion.models.job import Job, JobStatus, SourceType
+from app.modules.m07_ingestion.models.job_event import JobEvent
+from app.modules.m07_ingestion.models.job_track_point import JobTrackPoint
+from app.modules.m11_community.models.signalement import Signalement, SignalementStatus, SignalementType
+from app.modules.m11_community.models.signalement_vote import SignalementPass, SignalementVote
+from app.modules.m06_hazards.models.validation_label import ValidationLabel
+from app.modules.m06_hazards import hazard_service
+from app.modules.m08_historical import historical_service
+from app.modules.m06_hazards.lifecycle import service as lc_service
+from app.modules.m06_hazards.lifecycle.expiry import compute_expires_at
+from app.modules.m06_hazards.lifecycle.policy import policy_for_hazard
+from app.modules.m08_historical.grid import grid_cell_id
+from app.modules.m08_historical.domain import HistoricalEvent
+from app.modules.m08_historical.sources.manual import ManualEventSource
+from app.core.storage.minio_service import get_minio, upload_image, upload_signalement_image
 
 TAG = "seed-presentation"
 SUFFIX = "9e5e47a7104e"

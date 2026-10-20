@@ -105,10 +105,10 @@ async def _sync_ymane_events():
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
     from app.core.config import settings
-    from app.models.historical_event import HistoricalEventRecord
-    from app.services import historical_service
-    from app.services.historical.sources.ymane import YmaneAuthError, YmaneEventSource, YmaneRequestError
-    from app.services.redis_client import get_redis
+    from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
+    from app.modules.m08_historical import historical_service
+    from app.modules.m08_historical.sources.ymane import YmaneAuthError, YmaneEventSource, YmaneRequestError
+    from app.core.storage.redis_client import get_redis
 
     if not settings.HISTORICAL_YMANE_SYNC_ENABLED:
         logger.info("[YMANE-SYNC] disabled (HISTORICAL_YMANE_SYNC_ENABLED=False) — skipping")

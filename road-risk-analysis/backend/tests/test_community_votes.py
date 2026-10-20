@@ -12,13 +12,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import settings
-from app.models.signalement import Signalement, SignalementType
-from app.services import signalement_votes as votes
-from app.services.alerts import engine
-from app.services.collision import detector, thresholds
-from app.services.collision.models import ConflictRiskLevel, ConflictStatus, VehicleConflict
-from app.services.mobile_config import clamp_radius
-from app.services.settings_service import (
+from app.modules.m11_community.models.signalement import Signalement, SignalementType
+from app.modules.m11_community import signalement_votes as votes
+from app.modules.m10_collision.alerts import engine
+from app.modules.m10_collision.collision import detector, thresholds
+from app.modules.m10_collision.collision.models import ConflictRiskLevel, ConflictStatus, VehicleConflict
+from app.modules.m12_integration.mobile_config import clamp_radius
+from app.core.settings_service import (
     SECRET_FIELDS, SECTIONS, CommunitySettings, MobileSettings, redact,
 )
 
@@ -97,7 +97,7 @@ def test_community_settings_validation():
 
 
 def test_visibility():
-    from app.models.signalement import SignalementStatus
+    from app.modules.m11_community.models.signalement import SignalementStatus
     cfg = CommunitySettings()
     now = datetime(2026, 1, 1, 12, 30)
     sig = _sig(status=SignalementStatus.actif, uncertain=False)
@@ -227,12 +227,12 @@ db_only = pytest.mark.skipif(os.environ.get("RUN_DB_TESTS") != "1",
 
 @pytest.fixture
 async def api(monkeypatch):
-    from app.api.routes import signalements as sig_routes
+    from app.modules.m11_community.routes import signalements as sig_routes
     from app.core.security import hash_token, new_token
-    from app.db.session import AsyncSessionLocal, engine as db_engine, init_db
+    from app.core.db.session import AsyncSessionLocal, engine as db_engine, init_db
     from app.main import app
-    from app.models.api_client import ApiClient
-    from app.services import settings_service
+    from app.modules.m12_integration.models.api_client import ApiClient
+    from app.core import settings_service
 
     await init_db()
     key = new_token("vsk_")
@@ -321,8 +321,8 @@ async def test_mobile_config_and_capped_radius(api):
 
 @db_only
 async def test_passes_mark_uncertain(api):
-    from app.db.session import AsyncSessionLocal
-    from app.services import settings_service
+    from app.core.db.session import AsyncSessionLocal
+    from app.core import settings_service
     async with AsyncSessionLocal() as db:
         await settings_service.update_section(db, "community", {"ignore_threshold": 2}, "pytest")
     sid = await _report(api)

@@ -19,7 +19,7 @@ Douala-Yaounde (N3) corridors, not bunched into one area.
 Severity is deliberately tiered per cluster (light/moderate/high/critical)
 rather than left to pure randomness, and each cluster's events are kept
 within a tight ~120m window (well inside one HISTORICAL_GRID_CELL_SIZE_M
-150m cell) — see app/services/historical_service.py's _risk_score: it's a
+150m cell) — see app/modules/m08_historical/historical_service.py's _risk_score: it's a
 weighted sum of event-type counts (ACCIDENT=5.0, HARD_BRAKING/
 HARSH_CORNERING=1.5, HARD_ACCELERATION=1.2, SPEEDING=1.0, IDLE=0.3) divided
 by HISTORICAL_RISK_SATURATION_WEIGHT (20.0). Spreading a cluster's events

@@ -47,10 +47,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import io
 import math
-import pkgutil
 import random
 import sys
 import uuid
@@ -65,45 +63,45 @@ from sqlalchemy import delete, func, insert, or_, select, update
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-import app.models as _models_pkg  # noqa: E402
-for _m in pkgutil.iter_modules(_models_pkg.__path__):        # register every mapper / FK target
-    importlib.import_module(f"app.models.{_m.name}")
+from app.core.db.registry import import_all_models  # noqa: E402
+import_all_models()                                          # register every mapper / FK target
 
 from app.api.deps import Principal  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
-from app.db.session import AsyncSessionLocal  # noqa: E402
-from app.models.audit_log import AuditLog  # noqa: E402
-from app.models.auth_token import AuthSession, SessionStage  # noqa: E402
-from app.models.cloud_connection import CloudConnection  # noqa: E402
-from app.models.cloud_import import CloudImportBatch, CloudImportItem  # noqa: E402
-from app.models.cluster_zone import ClusterZone  # noqa: E402
-from app.models.detection import Detection, LocationSource, LocationStatus, ReviewStatus  # noqa: E402
-from app.models.detection_review import DetectionReview  # noqa: E402
-from app.models.hazard import Hazard, HazardStatus  # noqa: E402
-from app.models.hazard_lifecycle import HazardEvent, HazardVote  # noqa: E402
-from app.models.job import Job, JobStatus  # noqa: E402
-from app.models.job_event import JobEvent  # noqa: E402
-from app.models.job_track_point import JobTrackPoint  # noqa: E402
-from app.models.signalement import Signalement, SignalementStatus, SignalementType  # noqa: E402
-from app.models.signalement_vote import SignalementPass, SignalementVote  # noqa: E402
-from app.models.user import AccountType, Role, User, UserStatus  # noqa: E402
-from app.models.validation_label import ValidationLabel  # noqa: E402
-from app.services import (  # noqa: E402
-    ai_validation, audit, detection_workflow as wf, hazard_service, model_registry, signalement_votes,
-)
-from app.services.clustering import boundaries, service as clustering_service  # noqa: E402
-from app.services.detection import parked_vehicle as pv  # noqa: E402
-from app.services.detection.parked_vehicle import geometry as pv_geo  # noqa: E402
-from app.services.hazards.lifecycle import (  # noqa: E402
+from app.core.db.session import AsyncSessionLocal  # noqa: E402
+from app.modules.m13_admin.models.audit_log import AuditLog  # noqa: E402
+from app.modules.m01_security.models.auth_token import AuthSession, SessionStage  # noqa: E402
+from app.modules.m07_ingestion.models.cloud_connection import CloudConnection  # noqa: E402
+from app.modules.m07_ingestion.models.cloud_import import CloudImportBatch, CloudImportItem  # noqa: E402
+from app.modules.m06_hazards.models.cluster_zone import ClusterZone  # noqa: E402
+from app.modules.m06_hazards.models.detection import Detection, LocationSource, LocationStatus, ReviewStatus  # noqa: E402
+from app.modules.m06_hazards.models.detection_review import DetectionReview  # noqa: E402
+from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus  # noqa: E402
+from app.modules.m06_hazards.models.hazard_lifecycle import HazardEvent, HazardVote  # noqa: E402
+from app.modules.m07_ingestion.models.job import Job, JobStatus  # noqa: E402
+from app.modules.m07_ingestion.models.job_event import JobEvent  # noqa: E402
+from app.modules.m07_ingestion.models.job_track_point import JobTrackPoint  # noqa: E402
+from app.modules.m11_community.models.signalement import Signalement, SignalementStatus, SignalementType  # noqa: E402
+from app.modules.m11_community.models.signalement_vote import SignalementPass, SignalementVote  # noqa: E402
+from app.modules.m01_security.models.user import AccountType, Role, User, UserStatus  # noqa: E402
+from app.modules.m06_hazards.models.validation_label import ValidationLabel  # noqa: E402
+from app.modules.m05_ai_detection import ai_validation, model_registry  # noqa: E402
+from app.modules.m06_hazards import detection_workflow as wf, hazard_service  # noqa: E402
+from app.modules.m11_community import signalement_votes  # noqa: E402
+from app.core import audit  # noqa: E402
+from app.modules.m06_hazards.clustering import boundaries, service as clustering_service  # noqa: E402
+from app.modules.m05_ai_detection import parked_vehicle as pv  # noqa: E402
+from app.modules.m05_ai_detection.parked_vehicle import geometry as pv_geo  # noqa: E402
+from app.modules.m06_hazards.lifecycle import (  # noqa: E402
     events as lc_events, expiry as lc_expiry, recurring as lc_recurring, service as lc_service,
     video_pass, votes as lc_votes,
 )
-from app.services.minio_service import get_minio, upload_image, upload_signalement_image  # noqa: E402
-from app.services.osrm.client import get_osrm_client  # noqa: E402
-from app.services.osrm.geo import destination, haversine_m  # noqa: E402
-from app.services.settings_service import get_section  # noqa: E402
-from app.services.signalement_service import find_merge_target  # noqa: E402
+from app.core.storage.minio_service import get_minio, upload_image, upload_signalement_image  # noqa: E402
+from app.modules.m03_maps.osrm.client import get_osrm_client  # noqa: E402
+from app.modules.m03_maps.osrm.geo import destination, haversine_m  # noqa: E402
+from app.core.settings_service import get_section  # noqa: E402
+from app.modules.m11_community.signalement_service import find_merge_target  # noqa: E402
 
 TAG = "seed-web-test"
 SUFFIX = "5eed7e575eed"
@@ -2017,7 +2015,7 @@ async def seed(db, ctx: Ctx, tester_password: Optional[str]) -> None:
 
 async def verify(db) -> None:
     import httpx
-    from app.services.auth_service import create_session
+    from app.modules.m01_security.auth_service import create_session
     like = f"%-{SUFFIX}"
     print("\n[verify] rows")
     jobs = (await db.execute(select(Job.status, func.count()).where(Job.id.like(like)).group_by(Job.status))).all()

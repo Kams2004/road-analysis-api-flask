@@ -5,10 +5,10 @@ All OSRM calls are faked — no network access, fully deterministic.
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
-from app.services.osrm import geo
-from app.services.osrm.client import OSRMUnavailableError
-from app.services.osrm.map_matching import match_vehicle_to_road
-from app.services.osrm.models import MapMatchQuality, RoadAwareVehicleState, RoadDirection, TelemetrySnapshot
+from app.modules.m03_maps.osrm import geo
+from app.modules.m03_maps.osrm.client import OSRMUnavailableError
+from app.modules.m03_maps.osrm.map_matching import match_vehicle_to_road
+from app.modules.m03_maps.osrm.models import MapMatchQuality, RoadAwareVehicleState, RoadDirection, TelemetrySnapshot
 from tests.fakes import FakeOSRMClient, match_response, nearest_response, route_window_response
 
 NOW = datetime.now(timezone.utc)

@@ -8397,7 +8397,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/app__schemas__cloud_imports__ImportIn"
+                "$ref": "#/components/schemas/app__modules__m07_ingestion__schemas__cloud_imports__ImportIn"
               }
             }
           }
@@ -19353,7 +19353,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/app__api__routes__ai_models__StatsOut"
+                  "$ref": "#/components/schemas/app__modules__m05_ai_detection__routes__ai_models__StatsOut"
                 }
               }
             }
@@ -19517,7 +19517,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/app__api__routes__stats__StatsOut"
+                  "$ref": "#/components/schemas/app__modules__m02_dashboard__routes__stats__StatsOut"
                 }
               }
             }
@@ -26816,7 +26816,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/app__api__routes__historical__ImportIn"
+                "$ref": "#/components/schemas/app__modules__m08_historical__routes__historical__ImportIn"
               }
             }
           },
@@ -27783,7 +27783,7 @@
         },
         "type": "object",
         "title": "AiValidationSettings",
-        "description": "AI validation mode (RRAP-05-012/016, RRAP-06-007, RRAP-13-001) — the\nSINGLE source of the automatic decisions the video processor takes on new\ndetections (see app.services.ai_validation):\n\n  manual     every detection goes to human review; the AI only suggests;\n  assisted   auto-accept only when the detector AND (if required) the crop\n             classifier are confident and the location is confirmed;\n             auto-reject when the classifier (or a very low detector\n             confidence) says no; everything else → review;\n  automatic  decide whenever the classifier is confident either way.\n\nThresholds per type: `type_overrides` here, else the model cards\n(app.services.model_registry), else section `validation`\n(auto_accept_above / auto_reject_below), which remains the fallback when\nno model card is installed. A random `audit_sample_rate` share of the\nautomatic decisions is left pending for a human (audit sample).\n\ntraffic_sign (two-stage: detector + sign-code classifier): the classifier\nscore is P(predicted code); thresholds per code (`type_overrides.traffic_sign\n.per_class`, else the card's `thresholds.per_class`, else the type values).\nP < auto_reject (or `unknown_sign` predicted) → subtype `unknown_sign`,\nreview; the card's reject class (`not_a_sign`) predicted confidently →\nauto-reject `ai_not_a_sign`.\n\nVideo consistency: an auto-accept needs the object in ≥\n`min_frames_for_auto_accept` sampled frames with an estimated position\ndrifting ≤ `max_static_drift_m` while the vehicle moves (else review,\n`not_static`); a pothole box centre must lie below\n`pothole_min_y_ratio` × frame height (else `off_road_area`, see below).\n\nPothole false-positive rules (app.services.static_check.pothole_rule_rejects),\non the best box of a finished track: box centre above the road-area line →\n`pothole_off_road_action` `reject` (auto-reject `ai_off_road`) or `review`\n(accept blocker `off_road_area` only); box wider than\n`pothole_max_width_ratio` of the frame, larger than `pothole_max_area_ratio`\nof it, or — with `pothole_reject_edge_touching` — touching the left/right\nborder (within 1 %) while wider than 25 % of the frame → auto-reject\n`ai_box_too_large` (roadside earth, bushes, building edges). These\nauto-rejects apply only in assisted / automatic mode; in manual mode they\nare review hints (AI suggestion)."
+        "description": "AI validation mode (RRAP-05-012/016, RRAP-06-007, RRAP-13-001) — the\nSINGLE source of the automatic decisions the video processor takes on new\ndetections (see app.modules.m05_ai_detection.ai_validation):\n\n  manual     every detection goes to human review; the AI only suggests;\n  assisted   auto-accept only when the detector AND (if required) the crop\n             classifier are confident and the location is confirmed;\n             auto-reject when the classifier (or a very low detector\n             confidence) says no; everything else → review;\n  automatic  decide whenever the classifier is confident either way.\n\nThresholds per type: `type_overrides` here, else the model cards\n(app.modules.m05_ai_detection.model_registry), else section `validation`\n(auto_accept_above / auto_reject_below), which remains the fallback when\nno model card is installed. A random `audit_sample_rate` share of the\nautomatic decisions is left pending for a human (audit sample).\n\ntraffic_sign (two-stage: detector + sign-code classifier): the classifier\nscore is P(predicted code); thresholds per code (`type_overrides.traffic_sign\n.per_class`, else the card's `thresholds.per_class`, else the type values).\nP < auto_reject (or `unknown_sign` predicted) → subtype `unknown_sign`,\nreview; the card's reject class (`not_a_sign`) predicted confidently →\nauto-reject `ai_not_a_sign`.\n\nVideo consistency: an auto-accept needs the object in ≥\n`min_frames_for_auto_accept` sampled frames with an estimated position\ndrifting ≤ `max_static_drift_m` while the vehicle moves (else review,\n`not_static`); a pothole box centre must lie below\n`pothole_min_y_ratio` × frame height (else `off_road_area`, see below).\n\nPothole false-positive rules (app.modules.m05_ai_detection.static_check.pothole_rule_rejects),\non the best box of a finished track: box centre above the road-area line →\n`pothole_off_road_action` `reject` (auto-reject `ai_off_road`) or `review`\n(accept blocker `off_road_area` only); box wider than\n`pothole_max_width_ratio` of the frame, larger than `pothole_max_area_ratio`\nof it, or — with `pothole_reject_edge_touching` — touching the left/right\nborder (within 1 %) while wider than 25 % of the frame → auto-reject\n`ai_box_too_large` (roadside earth, bushes, building edges). These\nauto-rejects apply only in assisted / automatic mode; in manual mode they\nare review hints (AI suggestion)."
       },
       "AlertLevel": {
         "type": "string",
@@ -36511,7 +36511,7 @@
           "cancelled"
         ],
         "title": "JobStatus",
-        "description": "Lifecycle (RRAP-07-005/012) — transitions live in app.services.job_service."
+        "description": "Lifecycle (RRAP-07-005/012) — transitions live in app.modules.m07_ingestion.job_service."
       },
       "JobSummaryOut": {
         "properties": {
@@ -40406,7 +40406,7 @@
           "resolved"
         ],
         "title": "ReviewStatus",
-        "description": "Detection workflow (RRAP-06-005/008) — transitions are enforced in\napp.services.detection_workflow, never by assigning this field directly."
+        "description": "Detection workflow (RRAP-06-005/008) — transitions are enforced in\napp.modules.m06_hazards.detection_workflow, never by assigning this field directly."
       },
       "RiskCount": {
         "properties": {
@@ -47059,82 +47059,7 @@
         "title": "ZoneRiskProfile",
         "description": "Aggregated historical risk for one grid cell. `historical_risk_score`\nis a deliberately simple, explainable baseline (not ML — see module\ndocstring): a normalized event rate, not a learned prediction. Step\n6.2+ is where this becomes a real model input; this is the raw material."
       },
-      "app__api__routes__ai_models__StatsOut": {
-        "properties": {
-          "generated_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Generated At"
-          },
-          "windows": {
-            "items": {
-              "$ref": "#/components/schemas/StatsWindowOut"
-            },
-            "type": "array",
-            "title": "Windows"
-          }
-        },
-        "type": "object",
-        "required": [
-          "generated_at",
-          "windows"
-        ],
-        "title": "StatsOut"
-      },
-      "app__api__routes__historical__ImportIn": {
-        "properties": {
-          "source": {
-            "type": "string",
-            "title": "Source",
-            "description": "`manual` — the events are given in `events`; `ymane` — events are fetched from the Ymane telematics API (YMANE_USERNAME / YMANE_PASSWORD) for the date range.",
-            "examples": [
-              "manual"
-            ]
-          },
-          "start": {
-            "type": "string",
-            "format": "date",
-            "title": "Start",
-            "description": "First day of the range (inclusive).",
-            "examples": [
-              "2026-09-01"
-            ]
-          },
-          "end": {
-            "type": "string",
-            "format": "date",
-            "title": "End",
-            "description": "Last day of the range (inclusive).",
-            "examples": [
-              "2026-09-30"
-            ]
-          },
-          "events": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/HistoricalEvent"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Events",
-            "description": "The events — required (non-empty) for `source=manual`, ignored otherwise."
-          }
-        },
-        "type": "object",
-        "required": [
-          "source",
-          "start",
-          "end"
-        ],
-        "title": "ImportIn",
-        "description": "Historical events to import, from a source over a date range."
-      },
-      "app__api__routes__stats__StatsOut": {
+      "app__modules__m02_dashboard__routes__stats__StatsOut": {
         "properties": {
           "total_detections": {
             "type": "integer",
@@ -47228,7 +47153,29 @@
         "title": "StatsOut",
         "description": "All-time detection and job counters."
       },
-      "app__schemas__cloud_imports__ImportIn": {
+      "app__modules__m05_ai_detection__routes__ai_models__StatsOut": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StatsWindowOut"
+            },
+            "type": "array",
+            "title": "Windows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "windows"
+        ],
+        "title": "StatsOut"
+      },
+      "app__modules__m07_ingestion__schemas__cloud_imports__ImportIn": {
         "properties": {
           "files": {
             "items": {
@@ -47297,6 +47244,59 @@
         "type": "object",
         "title": "ImportIn",
         "description": "Files and/or folders to import from the drive."
+      },
+      "app__modules__m08_historical__routes__historical__ImportIn": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "`manual` — the events are given in `events`; `ymane` — events are fetched from the Ymane telematics API (YMANE_USERNAME / YMANE_PASSWORD) for the date range.",
+            "examples": [
+              "manual"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start",
+            "description": "First day of the range (inclusive).",
+            "examples": [
+              "2026-09-01"
+            ]
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End",
+            "description": "Last day of the range (inclusive).",
+            "examples": [
+              "2026-09-30"
+            ]
+          },
+          "events": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/HistoricalEvent"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events",
+            "description": "The events — required (non-empty) for `source=manual`, ignored otherwise."
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "start",
+          "end"
+        ],
+        "title": "ImportIn",
+        "description": "Historical events to import, from a source over a date range."
       },
       "ErrorDetail": {
         "additionalProperties": true,

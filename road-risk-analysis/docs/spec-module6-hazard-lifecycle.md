@@ -1,12 +1,12 @@
 # Module 6 — Hazard lifecycle
 
-Hazards are persisted clusters of accepted AI detections (`app/services/hazard_service.py`,
+Hazards are persisted clusters of accepted AI detections (`app/modules/m06_hazards/hazard_service.py`,
 see `spec-module6-hazard-validation.md`). The **lifecycle** decides how long a hazard stays
 active and visible to drivers: it is re-sighted in later videos, resolved after valid
 "not seen" video passes, voted on by drivers, expired after a time without sightings, and
 recognised when it keeps coming back at the same place.
 
-Code: `app/services/hazards/lifecycle/` — `settings.py`, `policy.py`, `timeutil.py`,
+Code: `app/modules/m06_hazards/lifecycle/` — `settings.py`, `policy.py`, `timeutil.py`,
 `events.py`, `sightings.py`, `video_pass.py`, `votes.py`, `expiry.py`, `recurring.py`,
 `service.py`; Celery tasks in `app/workers/hazard_tasks.py`.
 
@@ -175,7 +175,7 @@ recorded_at, created_at`) — kinds `seen`, `not_seen`, `vote_still_there`, `vot
 latitude, longitude, distance_m, counted, reason, created_at`). Job event `hazard_lifecycle`
 records each job evaluation summary.
 
-Schema: `app/db/upgrade.py` (idempotent, at startup; back-fills `last_seen_at` from the
+Schema: `app/core/db/upgrade.py` (idempotent, at startup; back-fills `last_seen_at` from the
 members and `resolution_source='manual'` for already-resolved hazards), mirrored in
 `migrations/add_hazard_lifecycle.sql`. `python -m app.cli rebuild-hazards` recreates hazards
 without lifecycle history (events and votes are dropped with the hazards).

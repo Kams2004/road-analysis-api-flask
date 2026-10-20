@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # taxonomy_version; optional taxonomy.yaml in the same folder). With the
     # legacy multi-class MODEL_SIGNS (or no classifier) → single stage, as before.
     MODEL_SIGNS_CLASSIFIER: str = "/models/model_signs_classifier.pt"
-    # Parked / roadside vehicles (app.services.detection.parked_vehicle): a
+    # Parked / roadside vehicles (app.modules.m05_ai_detection.parked_vehicle): a
     # stock COCO-pretrained YOLOv8 (no fine-tuning) — only its vehicle classes
     # are used (settings `parked_vehicle.vehicle_classes`); "parked?" is decided
     # by rules over the track. Missing file → the `vehicles` model is unavailable.
@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     VEHICLE_LAST_SEEN_THROTTLE_S: int = 20  # min interval between Postgres last_seen writes per vehicle
 
     # Clustering — the radii live in the settings section `clustering`
-    # (app.services.clustering); this is only the last-resort fallback.
+    # (app.modules.m06_hazards.clustering); this is only the last-resort fallback.
     CLUSTER_RADIUS_M: float = 50.0   # default cluster radius in metres
     # Boundary search of the Cluster configuration page (Nominatim search
     # with polygon_geojson): country filter (ISO codes, comma separated,
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     CLUSTERING_BOUNDARY_URL:          str = "https://nominatim.openstreetmap.org/search"
     CLUSTERING_BOUNDARY_TIMEOUT_S:    float = 12.0
 
-    # Reverse geocoding (app.services.geocoding) — Nominatim / OpenStreetMap.
+    # Reverse geocoding (app.modules.m03_maps.geocoding) — Nominatim / OpenStreetMap.
     # Usage policy: identifying User-Agent (with a contact), ≤ 1 request/s,
     # results cached. GEOCODING_CONTACT (an e-mail) is appended to the
     # User-Agent and sent as `email=`. Disable to keep the platform offline.
@@ -127,7 +127,7 @@ class Settings(BaseSettings):
 
     # How far behind/ahead of the matched point to fetch road geometry for —
     # this window is what "current segment" + "upcoming segments" are sliced
-    # from (see app/services/osrm/map_matching.py for why: OSRM has no native
+    # from (see app/modules/m03_maps/osrm/map_matching.py for why: OSRM has no native
     # concept of a junction-to-junction "segment" over HTTP, so we build one
     # from a bounded route window instead).
     #
@@ -145,7 +145,7 @@ class Settings(BaseSettings):
 
     # Redis TTLs/throttles for the road-aware state pipeline. Vehicle state
     # (changes every ping) is kept separate from road-network lookups
-    # (changes rarely) — see app/services/road_state_service.py.
+    # (changes rarely) — see app/modules/m10_collision/road_state_service.py.
     ROAD_STATE_TTL_S:          int = 60   # cached RoadAwareVehicleState per vehicle
     ROAD_STATE_DB_THROTTLE_S:  int = 20   # min interval between Postgres road-state writes per vehicle
     OSRM_ROUTE_CACHE_TTL_S:    int = 600  # cached OSRM route-window responses, keyed by rounded position
@@ -215,7 +215,7 @@ class Settings(BaseSettings):
     # A stricter bar than COLLISION_MIN_CONFIDENCE_TO_REPORT, used only to
     # decide whether "these two vehicles share no road segment at all" is
     # trustworthy enough to dampen an otherwise-high distance/TTC severity
-    # (see app/services/collision/detector.py — this system has no
+    # (see app/modules/m10_collision/collision/detector.py — this system has no
     # elevation data, so an overpass and the road beneath it otherwise look
     # like an imminent head-on). Set to OSRM's own GOOD-match threshold:
     # below that, a "different segment" reading could just as easily be a
@@ -230,7 +230,7 @@ class Settings(BaseSettings):
     # assumption (per spec). A conflict whose time-to-closest-approach is
     # above ALERT_SAFE_TTC_S is not alerted; below that it escalates through
     # the bands down to CRITICAL. Step 4's own distance-based risk_level acts
-    # as a floor underneath these (see app/services/alerts/engine.py) so the
+    # as a floor underneath these (see app/modules/m10_collision/alerts/engine.py) so the
     # two classification layers can never disagree in a way that understates
     # urgency (e.g. a very close pair with a coincidentally large computed
     # TTC still gets treated with real urgency).
@@ -244,14 +244,14 @@ class Settings(BaseSettings):
     ALERT_TTL_S: int = 90
     # Per-vehicle set of currently-active alert pair-keys, used to detect
     # when a previously-alerted pair has stopped appearing at all (the
-    # trigger for a RESOLVED transition) — see app/services/alert_service.py.
+    # trigger for a RESOLVED transition) — see app/modules/m10_collision/alert_service.py.
     ALERT_ACTIVE_PAIRS_TTL_S: int = 90
     # Both vehicles in a pair land on the same alert record via their own,
     # independent ping-triggered pipelines — this short-lived per-pair lock
     # stops two concurrent evaluate()s (e.g. both vehicles' pings arriving
     # together) from both reading the same `previous` state and both firing
     # a transition/notification off it. A skipped evaluation is caught by
-    # the next tick, so this stays short. See app/services/alert_service.py.
+    # the next tick, so this stays short. See app/modules/m10_collision/alert_service.py.
     ALERT_PAIR_LOCK_TTL_S: int = 3
 
     # ── Historical data & AI dataset preparation (Step 6.1) ────────────────
@@ -261,15 +261,15 @@ class Settings(BaseSettings):
     HISTORICAL_GRID_CELL_SIZE_M: float = 150.0
     # Default corridor width for "risk along a planned route" queries —
     # matches the existing detections/signalements corridor convention
-    # (see AlongRouteQueryIn in app/schemas/schemas.py).
+    # (see AlongRouteQueryIn in app/modules/m06_hazards/schemas.py).
     HISTORICAL_ROUTE_CORRIDOR_M: float = 60.0
     # Weighted-event-count at which a zone's historical_risk_score saturates
     # to 1.0 — deliberately simple/explainable (a normalized count, not a
-    # learned score; see app/services/historical/models.py's ZoneRiskProfile
+    # learned score; see app/modules/m08_historical/domain.py's ZoneRiskProfile
     # docstring). Per-type weights live in historical_service.py.
     HISTORICAL_RISK_SATURATION_WEIGHT: float = 20.0
 
-    # Ymane source (app/services/historical/sources/ymane.py). Credentials
+    # Ymane source (app/modules/m08_historical/sources/ymane.py). Credentials
     # intentionally have no real default — set via .env, never commit them.
     # See that module's docstring for the current confirmed request/response
     # shape. The account used during development is currently suspended

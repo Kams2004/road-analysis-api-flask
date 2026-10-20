@@ -1,7 +1,7 @@
 import sys, re
 sys.path.insert(0, '/app')
 import cv2
-from app.services.osd_parser import _norm, _GPS_RE, _preprocess, _crop, _ocr, ROI_GPS, _TESS_GPS
+from app.modules.m05_ai_detection.osd_parser import _norm, _GPS_RE, _preprocess, _crop, _ocr, ROI_GPS, _TESS_GPS
 
 VIDEO = '/app/LTTR 458 AV_24_04 (2).mp4'
 cap = cv2.VideoCapture(VIDEO)

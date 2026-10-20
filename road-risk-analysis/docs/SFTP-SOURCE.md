@@ -180,9 +180,9 @@ server) or, on the local test container, `docker exec roaddemo_api_1 pip install
 
 ## 6. Implementation notes
 
-- `app/services/sftp_core.py` — pure rules (secrets parsing, path confinement, video filter,
+- `app/modules/m07_ingestion/sftp_core.py` — pure rules (secrets parsing, path confinement, video filter,
   dedupe key, resume offset, host-key decision, log lines), unit-tested in `tests/test_sftp_source.py`.
-- `app/services/sftp_source.py` — paramiko sessions (connect per operation; the API keeps one
+- `app/modules/m07_ingestion/sftp_source.py` — paramiko sessions (connect per operation; the API keeps one
   browse session per server for 3 min with SSH keepalive), the `SftpProvider` registered in
   `cloud_providers`, the Redis log / link state.
 - The import worker (`cloud_import.run_item`, `import_tasks`) is the same as for drives; SFTP adds

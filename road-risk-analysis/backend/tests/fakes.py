@@ -1,7 +1,7 @@
 """Test doubles for the OSRM client — no network access, fully deterministic."""
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from app.services.osrm.client import OSRMResult, OSRMUnavailableError
+from app.modules.m03_maps.osrm.client import OSRMResult, OSRMUnavailableError
 
 LatLon = Tuple[float, float]
 

@@ -1,6 +1,6 @@
 import sys
 sys.path.insert(0, '/app')
-from app.services.osd_parser import _norm, parse_gps_text
+from app.modules.m05_ai_detection.osd_parser import _norm, parse_gps_text
 
 # Test the S1S.5212 case
 tests = [

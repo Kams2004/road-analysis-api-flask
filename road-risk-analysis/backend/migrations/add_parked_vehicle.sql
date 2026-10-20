@@ -1,6 +1,6 @@
--- Parked / roadside vehicle detection (Module 5, app/services/detection/parked_vehicle)
+-- Parked / roadside vehicle detection (Module 5, app/modules/m05_ai_detection/parked_vehicle)
 -- and the recording time of every detection. Applied automatically at startup
--- by app/db/upgrade.py (PARKED_VEHICLE_COLUMNS); kept here for manual / review
+-- by app/core/db/upgrade.py (PARKED_VEHICLE_COLUMNS); kept here for manual / review
 -- purposes. Idempotent.
 --
 --   recorded_at   video recording time of the detection (timezone-aware): the

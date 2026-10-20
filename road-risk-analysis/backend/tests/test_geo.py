@@ -1,4 +1,4 @@
-from app.services.osrm import geo
+from app.modules.m03_maps.osrm import geo
 
 
 def test_haversine_one_degree_latitude():

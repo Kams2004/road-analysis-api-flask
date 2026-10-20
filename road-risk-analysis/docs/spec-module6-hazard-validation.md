@@ -35,7 +35,7 @@ New table `detection_reviews`: id, detection_id (FK, index), from_status, to_sta
 - Class correction: `predicted_type`, `predicted_subtype` (original model output, set at creation); `type`/`subtype` hold the current (possibly corrected) class.
 - Rejection (06-017): `rejection_code` (str, matches `rejection_reasons.code`), `rejection_source` (`human|auto`).
 - `hazard_id` (FK hazards.id, nullable, index).
-- Startup migration: the project uses `create_all` + hand-written SQL in `backend/migrations/`. New COLUMNS on existing tables are NOT added by create_all → add an idempotent startup step (`ALTER TABLE … ADD COLUMN IF NOT EXISTS …`) run from `init_db` (new module `app/db/upgrade.py`), and also document it in `backend/migrations/add_module6_validation.sql`. Back-fill: rows with latitude NULL → `location_status='missing'`, `review_status` pending→`location_pending`; rows with `gps_interpolated=true` → `approximate` (and pending→location_pending); others → `confirmed`, `location_source='ocr'`. `predicted_type/subtype` ← type/subtype when NULL.
+- Startup migration: the project uses `create_all` + hand-written SQL in `backend/migrations/`. New COLUMNS on existing tables are NOT added by create_all → add an idempotent startup step (`ALTER TABLE … ADD COLUMN IF NOT EXISTS …`) run from `init_db` (new module `app/core/db/upgrade.py`), and also document it in `backend/migrations/add_module6_validation.sql`. Back-fill: rows with latitude NULL → `location_status='missing'`, `review_status` pending→`location_pending`; rows with `gps_interpolated=true` → `approximate` (and pending→location_pending); others → `confirmed`, `location_source='ocr'`. `predicted_type/subtype` ← type/subtype when NULL.
 
 ## 3. Creation rules in the video processor (06-007, 06-012, 06-013, 06-020)
 
@@ -50,7 +50,7 @@ When the processor stores a detection:
 
 New table `hazards`: `id` (uuid), `code` (human id `HZ-000001`, unique, sequential), `type`, `subtype` (nullable), `status` (`active|resolved`), `latitude`, `longitude` (centroid of member detections), `radius_m` (radius rule applied), `country`, `city`, `location_name`, `detection_count`, `avg_confidence`, `max_confidence`, `first_detected_at`, `last_detected_at`, `resolved_at`, `resolved_by`, `resolution_note`, `created_at`, `updated_at`.
 
-Assignment (service `app/services/hazard_service.py`), run whenever a detection enters `validated`/`corrected` with `location_status=confirmed`:
+Assignment (service `app/modules/m06_hazards/hazard_service.py`), run whenever a detection enters `validated`/`corrected` with `location_status=confirmed`:
 1. radius = matching `cluster_areas` rule (§5) for the detection position and type, else global `ClusterConfig.radius_m`.
 2. candidate = nearest ACTIVE hazard with same `type` within radius; if the type is listed in `validation.distinct_subtype_types` (default `["traffic_sign"]`) the subtype must also match (06-011: two different signs a few metres apart stay separate hazards).
 3. attach (update centroid, counts, confidence stats, last_detected_at) or create a new hazard.

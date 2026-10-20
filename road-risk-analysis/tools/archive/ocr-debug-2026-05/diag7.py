@@ -1,7 +1,7 @@
 import sys
 sys.path.insert(0, '/app')
 import cv2, numpy as np, pytesseract
-from app.services.osd_parser import _crop, ROI_GPS, _preprocess_variants, _TESS_GPS, parse_gps_text
+from app.modules.m05_ai_detection.osd_parser import _crop, ROI_GPS, _preprocess_variants, _TESS_GPS, parse_gps_text
 
 VIDEO = '/app/LTTR 458 AV_24_04 (2).mp4'
 cap = cv2.VideoCapture(VIDEO)
