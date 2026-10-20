@@ -75,7 +75,8 @@ async def query_nearby(
     radius_m: float,
 ) -> List[str]:
     """
-    Return the IDs of validated detections whose GPS position is within
+    Return the IDs of accepted (validated/corrected) detections with a
+    confirmed location (RRAP-06-019) whose GPS position is within
     `radius_m` metres of (lat, lon).
 
     Uses a bounding-box pre-filter (cheap index scan) then applies the
@@ -89,7 +90,8 @@ async def query_nearby(
     sql = text("""
         SELECT d.id
         FROM   detections d
-        WHERE  d.review_status = 'validated'
+        WHERE  d.review_status IN ('validated', 'corrected')
+        AND    d.location_status = 'confirmed'
         AND    d.latitude  IS NOT NULL
         AND    d.longitude IS NOT NULL
         AND    d.latitude  BETWEEN CAST(:lat AS double precision) - CAST(:lat_delta AS double precision)
@@ -155,7 +157,7 @@ async def query_along_route(
     corridor_m: float,
 ) -> List[str]:
     """
-    Return the IDs of validated detections that lie within `corridor_m`
+    Return the IDs of accepted detections with a confirmed location that lie within `corridor_m`
     metres of any segment of the polyline defined by `waypoints`.
 
     Strategy
@@ -190,7 +192,8 @@ async def query_along_route(
     sql = text("""
         SELECT d.id, d.latitude, d.longitude
         FROM   detections d
-        WHERE  d.review_status = 'validated'
+        WHERE  d.review_status IN ('validated', 'corrected')
+        AND    d.location_status = 'confirmed'
         AND    d.latitude  IS NOT NULL
         AND    d.longitude IS NOT NULL
         AND    d.latitude  BETWEEN CAST(:min_lat AS double precision) - CAST(:lat_pad AS double precision)
@@ -226,13 +229,16 @@ async def query_along_route(
 
 def cluster_detections(
     detections: List[Dict[str, Any]],
-    radius_m: float,
+    radius_m,
 ) -> List[Dict[str, Any]]:
     """
     Greedy single-linkage clustering.
 
     Every detection belongs to exactly one cluster.  A detection that has no
     neighbour within `radius_m` forms a singleton cluster of size 1.
+    `radius_m` is a number or a function detection → radius (the global
+    Cluster Configuration resolved at the seed detection); each cluster
+    reports the radius it used.
 
     Each detection dict must have at least: id, latitude, longitude.
     Returns a list of cluster dicts:
@@ -252,6 +258,7 @@ def cluster_detections(
             continue
         group = [det]
         used[i] = True
+        r = radius_m(det) if callable(radius_m) else radius_m
 
         for j in range(i + 1, len(detections)):
             if used[j]:
@@ -260,7 +267,7 @@ def cluster_detections(
                 det["latitude"],  det["longitude"],
                 detections[j]["latitude"], detections[j]["longitude"],
             )
-            if dist <= radius_m:
+            if dist <= r:
                 group.append(detections[j])
                 used[j] = True
 
@@ -272,6 +279,7 @@ def cluster_detections(
             "centroid_lon":  centroid_lon,
             "count":         len(group),
             "detection_ids": [d["id"] for d in group],
+            "radius_m":      r,
         })
 
     return clusters

@@ -11,10 +11,11 @@ version: "3.9"
 # can see other vehicles "driving" around it, on the real road network,
 # without needing a second physical device.
 #
-# No detection/video pipeline here on purpose — no worker, no MinIO, no
-# model volume. Reuses the already-built app image but mounts the live
-# ./app source over it (same trick as docker-compose.yml) so current code
-# always runs even though the image itself is stale.
+# No detection/video pipeline here on purpose — no worker, no model
+# volume (MinIO only serves seeded demo media, see seed_mobile_demo.py).
+# Reuses the already-built app image but mounts the live ./app source over
+# it (same trick as docker-compose.yml) so current code always runs even
+# though the image itself is stale.
 #
 # Usage:
 #   docker-compose -f docker-compose.demo.yml up --build
@@ -65,6 +66,24 @@ services:
       retries: 10
       start_period: 30m
 
+  # Object storage for detection crops / report photos. Host port 9200 is
+  # what the web console's media proxy (MINIO_URL default
+  # http://localhost:9200) and the phone (`adb reverse tcp:9200 tcp:9200`,
+  # EXPO_PUBLIC_MINIO_URL=http://localhost:9200) read from. Buckets are made
+  # anonymous-read by app/demo/seed_mobile_demo.py so the app can load image
+  # URLs directly. Console: http://localhost:9201.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9201
+    environment:
+      MINIO_ROOT_USER: demo_minio
+      MINIO_ROOT_PASSWORD: demo_minio_password
+    volumes:
+      - demo_minio_data:/data
+    ports:
+      - "9200:9000"
+      - "9201:9201"
+
   api:
     image: road-analysis-api_api:latest
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
@@ -74,8 +93,21 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       OSRM_BASE_URL: http://osrm:5000
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: demo_minio
+      MINIO_SECRET_KEY: demo_minio_password
+      MINIO_SECURE: "false"
+      # Demo stack stays open so an unconfigured phone and the simulator keep
+      # working; login/users/roles still function for the web console.
+      AUTH_ENFORCED: "false"
+      BOOTSTRAP_ADMIN_EMAIL: admin@viasafe.local
+      BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123
     volumes:
       - ./app:/app/app:ro
+      # SFTP passwords (secrets/sftp.env). The running local container
+      # (roaddemo_api_1) was created before this line: until it is recreated,
+      # copy the file in instead — see docs/SFTP-SOURCE.md ("Local test stack").
+      - ./secrets:/app/secrets:ro
     ports:
       - "8080:8080"
     depends_on:
@@ -84,14 +116,25 @@ services:
       redis:
         condition: service_healthy
 
+  # Demo unit simulator — off by default (test phase); start it with
+  # `docker compose ... --profile demo up -d simulator`.
   simulator:
+    profiles: ["demo"]
     image: road-analysis-api_api:latest
-    command: python -m app.demo.vehicle_simulator
+    command: python -u -m app.demo.vehicle_simulator
     environment:
       API_BASE_URL: http://api:8080
       SIM_OSRM_URL: http://osrm:5000
+      # presentation = waves of units coming at the phone (every alert level,
+      # grouped alarms, units leaving — see app/demo/sim_presentation.py);
+      # roam = the original wandering units. docker-compose 1.29 cannot recreate
+      # this container on the current Docker (KeyError 'ContainerConfig') —
+      # switch modes with the docker run commands in docs/PRESENTATION.md.
+      SIM_MODE: "${SIM_MODE:-presentation}"
       SIM_NUM_VEHICLES: "6"
-      SIM_TICK_SECONDS: "2"
+      SIM_TICK_SECONDS: "${SIM_TICK_SECONDS:-1}"
+      SIM_WAVE_SECONDS: "${SIM_WAVE_SECONDS:-40}"
+      SIM_UNITS_PER_WAVE: "${SIM_UNITS_PER_WAVE:-4}"
     volumes:
       - ./app:/app/app:ro
     depends_on:
@@ -101,3 +144,4 @@ services:
 
 volumes:
   demo_db_data:
+  demo_minio_data:

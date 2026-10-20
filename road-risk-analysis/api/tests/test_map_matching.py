@@ -313,3 +313,45 @@ async def test_stable_position_reuses_cached_match_without_calling_osrm_again():
 
     assert len(client.match_calls) == 1  # no new OSRM call
     assert second.road_context.road_name == first.road_context.road_name
+
+
+async def test_turn_around_is_rematched_even_without_moving_far():
+    route_resp, *_ = a_route_window(KAMBO)
+    route_resp2, *_ = a_route_window(KAMBO, bearing=270.0)
+    client = FakeOSRMClient(
+        match_responses=[match_response(KAMBO, confidence=0.9, bearing_after=90.0),
+                         match_response(KAMBO, confidence=0.9, bearing_after=270.0)],
+        route_responses=[route_resp, route_resp2],
+    )
+    first = await match_vehicle_to_road(telemetry(heading=90.0, ts=NOW), previous=a_previous_state(), client=client)
+    nudged = geo.destination(*KAMBO, 270.0, 4.0)       # 4 m back, now heading west
+    second = await match_vehicle_to_road(
+        telemetry(lat=nudged[0], lon=nudged[1], heading=270.0, ts=NOW + timedelta(seconds=1)),
+        previous=first, client=client,
+    )
+    assert len(client.match_calls) == 2
+    assert second.road_context.road_bearing_deg == 270.0
+
+
+async def test_slow_vehicle_is_rematched_once_it_drifted_from_the_cached_match():
+    """Small steps (each under OSRM_MATCH_MIN_DISTANCE_M) must not keep the
+    first match forever: once the vehicle is that far from where the cached
+    match was made, OSRM is asked again."""
+    route_resp, *_ = a_route_window(KAMBO)
+    later = geo.destination(*KAMBO, 90.0, 30.0)
+    route_resp2, *_ = a_route_window(later)
+    client = FakeOSRMClient(
+        match_responses=[match_response(KAMBO, confidence=0.9, bearing_after=90.0),
+                         match_response(later, confidence=0.9, bearing_after=90.0)],
+        route_responses=[route_resp, route_resp2],
+    )
+    state = await match_vehicle_to_road(telemetry(ts=NOW), previous=a_previous_state(), client=client)
+    for step in (1, 2, 3):                                   # 10 m per second, eastwards
+        p = geo.destination(*KAMBO, 90.0, 10.0 * step)
+        state = await match_vehicle_to_road(
+            telemetry(lat=p[0], lon=p[1], heading=90.0, ts=NOW + timedelta(seconds=step)),
+            previous=state, client=client,
+        )
+    assert len(client.match_calls) == 2
+    assert geo.haversine_m(state.road_context.matched_latitude, state.road_context.matched_longitude,
+                           *later) < 1.0

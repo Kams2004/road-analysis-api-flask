@@ -128,6 +128,15 @@ class OSRMClient:
         logger.debug("OSRM /route %.0fms code=%s", result.latency_ms, result.data.get("code"))
         return result
 
+    async def route_overview(self, points: Sequence[LatLon], alternatives: bool = True) -> OSRMResult:
+        """GET /route for display: full geometry + up to a few alternatives,
+        no steps (the historical route-risk preview in the web console)."""
+        if len(points) < 2:
+            raise ValueError("route_overview() requires at least two points")
+        params = f"geometries=geojson&overview=full&steps=false&alternatives={'true' if alternatives else 'false'}"
+        path = f"/route/v1/{self.profile}/{_coords_param(points)}?{params}"
+        return await self._get(path)
+
     async def nearest(self, point: LatLon) -> OSRMResult:
         """GET /nearest — lightweight fallback when /match can't produce a
         usable result at all (e.g. a single isolated ping with no history)."""

@@ -18,6 +18,12 @@ on the map without needing a second physical device. It:
 
 Pure standard library — no extra dependency to install into the shared app
 image just to run a demo script.
+
+Modes (SIM_MODE, or --mode):
+  roam          (default) the behaviour above — units wander around the phone.
+  presentation  units come at the phone in waves so the collision alerts show
+                every level, a grouped alarm and units leaving (see
+                app/demo/sim_presentation.py for its SIM_* settings).
 """
 import bisect
 import json
@@ -89,7 +95,12 @@ def _request(method: str, path: str, body: dict | None = None, base_url: str = A
         f"{base_url}{path}",
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"} if data else {},
+        headers={
+            **({"Content-Type": "application/json"} if data else {}),
+            # Needed once the API runs with AUTH_ENFORCED=true — create one with
+            # `python -m app.cli create-api-client --name simulator`.
+            **({"X-API-Key": os.environ["API_KEY"]} if os.environ.get("API_KEY") else {}),
+        },
     )
     with urllib.request.urlopen(req, timeout=8) as resp:
         raw = resp.read()
@@ -115,7 +126,7 @@ def _osrm_route(lat1: float, lon1: float, lat2: float, lon2: float):
 
 class FakeVehicle:
     def __init__(self, vehicle_type: str):
-        self.id = str(uuid.uuid4())
+        self.id = f"sim-{uuid.uuid4()}"   # "sim-" ids are never mistaken for a phone
         self.vehicle_type = vehicle_type
         self.lat = 0.0
         self.lon = 0.0
@@ -190,16 +201,20 @@ class FakeVehicle:
         self.heading = _bearing_to(lat1, lon1, lat2, lon2)
 
     def ping(self):
-        _request(
-            "POST",
-            f"/vehicles/{self.id}/ping",
-            {
-                "latitude": self.lat,
-                "longitude": self.lon,
-                "speed_mps": round(self.speed, 2),
-                "heading": round(self.heading, 1),
-            },
-        )
+        body = {
+            "latitude": self.lat,
+            "longitude": self.lon,
+            "speed_mps": round(self.speed, 2),
+            "heading": round(self.heading, 1),
+        }
+        try:
+            _request("POST", f"/vehicles/{self.id}/ping", body)
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            # Unknown id: the database was reset since we registered — register again.
+            self.register()
+            _request("POST", f"/vehicles/{self.id}/ping", body)
 
 
 def find_anchor(known_ids: set[str]):
@@ -210,7 +225,8 @@ def find_anchor(known_ids: set[str]):
         print(f"[simulator] /vehicles/live unreachable: {e}")
         return None
 
-    real = [v for v in live.get("items", []) if v["vehicle_id"] not in known_ids]
+    real = [v for v in live.get("items", [])
+            if v["vehicle_id"] not in known_ids and not v["vehicle_id"].startswith("sim-")]
     if not real:
         return None
     real.sort(key=lambda v: v["ts"], reverse=True)
@@ -219,6 +235,13 @@ def find_anchor(known_ids: set[str]):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="Demo vehicle simulator")
+    ap.add_argument("--mode", choices=("roam", "presentation"), default=os.environ.get("SIM_MODE", "roam"))
+    if ap.parse_args().mode == "presentation":
+        from app.demo import sim_presentation
+        sim_presentation.main()
+        return
     print(f"[simulator] starting — {NUM_VEHICLES} fake vehicles against {API_BASE_URL}, "
           f"routing via {OSRM_BASE_URL}")
     fleet = [FakeVehicle(VEHICLE_TYPES[i % len(VEHICLE_TYPES)]) for i in range(NUM_VEHICLES)]

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.services import road_state_service, staleness_guard, trajectory_service, vehicle_service
-from app.services.collision import detector
+from app.services.collision import detector, thresholds
 from app.services.collision.models import ConflictRiskLevel, VehicleConflict, VehicleConflictReport
 from app.services.redis_client import get_redis
 from app.services.trajectory.models import Trajectory
@@ -85,6 +85,7 @@ async def compute_and_store(
     cost — find nearby vehicles and assess conflicts against each.
     Raises road_state_service.NoTelemetryError if this vehicle isn't live."""
     started = time.monotonic()
+    cfg = await thresholds.refresh()
 
     live = await vehicle_service.get_live(vehicle_id)
     if live is None:
@@ -94,10 +95,11 @@ async def compute_and_store(
         own_trajectory = await trajectory_service.get_trajectory(vehicle_id, db)
 
     candidates = await vehicle_service.query_nearby(
-        live["latitude"], live["longitude"], settings.COLLISION_CANDIDATE_RADIUS_M, vehicle_id,
+        live["latitude"], live["longitude"], cfg.candidate_radius_m, vehicle_id,
     )
 
     conflicts: List[VehicleConflict] = []
+    cleared: List[str] = []
     for candidate in candidates:
         other_id = candidate["vehicle_id"]
         try:
@@ -107,8 +109,12 @@ async def compute_and_store(
             # (dropped out of the live set) — skip it, don't fail the report.
             continue
         conflict = detector.assess_conflict(vehicle_id, own_trajectory, other_id, other_trajectory)
-        if conflict is not None and conflict.risk_level != ConflictRiskLevel.NONE:
+        if conflict is None:
+            continue
+        if conflict.risk_level != ConflictRiskLevel.NONE:
             conflicts.append(conflict)
+        elif conflict.clear_immediately:
+            cleared.append(other_id)
 
     conflicts.sort(
         key=lambda c: (-_RISK_SEVERITY[c.risk_level], c.distance_at_closest_approach_m or float("inf"))
@@ -120,6 +126,7 @@ async def compute_and_store(
         generated_at=datetime.now(timezone.utc),
         highest_risk=highest,
         conflicts=conflicts,
+        cleared_vehicle_ids=cleared,
     )
     await _store_cached(report, own_trajectory.telemetry_timestamp)
 

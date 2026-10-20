@@ -57,7 +57,25 @@ def _should_reuse_cache(telemetry: TelemetrySnapshot, previous: Optional[RoadAwa
         telemetry.latitude, telemetry.longitude,
         previous.telemetry.latitude, previous.telemetry.longitude,
     )
-    return dist <= settings.OSRM_MATCH_MIN_DISTANCE_M
+    if dist > settings.OSRM_MATCH_MIN_DISTANCE_M:
+        return False
+    # A turn-around (or any sharp heading change) changes the travel direction
+    # on the road even without moving far: the cached FORWARD/REVERSE would
+    # keep predicting the vehicle towards where it came from.
+    if telemetry.heading is not None and previous.telemetry.heading is not None:
+        if geo.heading_diff_deg(telemetry.heading, previous.telemetry.heading) > 45.0:
+            return False
+    # A reused state carries the NEW telemetry but the OLD road context, so
+    # comparing only with the previous ping lets a slowly moving vehicle
+    # (≤ OSRM_MATCH_MIN_DISTANCE_M between pings) keep an ever-older match
+    # forever — its matched point, and so its predicted trajectory, stays
+    # behind. Also bound the drift from where the cached match was made
+    # (distance to the matched point beyond the original GPS-to-road offset).
+    ctx = previous.road_context
+    drift = geo.haversine_m(
+        telemetry.latitude, telemetry.longitude, ctx.matched_latitude, ctx.matched_longitude,
+    ) - ctx.raw_to_matched_distance_m
+    return drift <= settings.OSRM_MATCH_MIN_DISTANCE_M
 
 
 def _classify_quality(confidence: Optional[float], raw_to_matched_m: float) -> MapMatchQuality:

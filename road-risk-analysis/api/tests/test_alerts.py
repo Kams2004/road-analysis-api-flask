@@ -74,15 +74,31 @@ def test_escalation_from_warning_to_critical():
     assert second.first_detected_at == first.first_detected_at  # origin time preserved through escalation
 
 
-def test_de_escalation_from_critical_to_warning():
+def test_de_escalation_from_critical_to_warning_is_held_then_applied():
     critical_conflict = make_conflict(risk_level=ConflictRiskLevel.CRITICAL, ttc=2.0)
     first = engine.evaluate(critical_conflict, previous=None, now=NOW)
 
     warning_conflict = make_conflict(risk_level=ConflictRiskLevel.MODERATE, ttc=10.0)
-    second = engine.evaluate(warning_conflict, previous=first, now=NOW + timedelta(seconds=3))
+    held = engine.evaluate(warning_conflict, previous=first, now=NOW + timedelta(seconds=1))
+    assert held.level == AlertLevel.CRITICAL          # hysteresis: not yet
+    assert held.transition == AlertTransition.UNCHANGED
+    assert held.pending_level == AlertLevel.WARNING
 
+    second = engine.evaluate(warning_conflict, previous=held, now=NOW + timedelta(seconds=4))
     assert second.level == AlertLevel.WARNING
     assert second.transition == AlertTransition.DE_ESCALATED
+    assert second.pending_level is None
+
+
+def test_flicker_back_up_cancels_pending_de_escalation():
+    first = engine.evaluate(make_conflict(risk_level=ConflictRiskLevel.CRITICAL), previous=None, now=NOW)
+    held = engine.evaluate(make_conflict(risk_level=ConflictRiskLevel.MODERATE, ttc=10.0), previous=first,
+                           now=NOW + timedelta(seconds=1))
+    back = engine.evaluate(make_conflict(risk_level=ConflictRiskLevel.CRITICAL), previous=held,
+                           now=NOW + timedelta(seconds=2))
+    assert back.level == AlertLevel.CRITICAL
+    assert back.transition == AlertTransition.UNCHANGED
+    assert back.pending_since is None
 
 
 def test_resolve_marks_terminal_state():
@@ -138,18 +154,11 @@ def test_new_conflict_after_resolution_gets_a_fresh_id():
 
 # ── TTC banding + Step 4 risk floor ─────────────────────────────────────────
 
-def test_ttc_bands_match_configured_thresholds():
-    just_above_safe = make_conflict(risk_level=ConflictRiskLevel.LOW, ttc=settings.ALERT_SAFE_TTC_S + 1)
-    assert engine.classify_level(just_above_safe) == AlertLevel.MONITOR
-
-    warning = make_conflict(risk_level=ConflictRiskLevel.LOW, ttc=settings.ALERT_SAFE_TTC_S - 1)
-    assert engine.classify_level(warning) == AlertLevel.WARNING
-
-    high_warning = make_conflict(risk_level=ConflictRiskLevel.LOW, ttc=settings.ALERT_WARNING_TTC_S - 1)
-    assert engine.classify_level(high_warning) == AlertLevel.HIGH_WARNING
-
-    critical = make_conflict(risk_level=ConflictRiskLevel.LOW, ttc=settings.ALERT_HIGH_WARNING_TTC_S - 1)
-    assert engine.classify_level(critical) == AlertLevel.CRITICAL
+def test_ttc_alone_no_longer_escalates():
+    # A short TTC with a wide miss distance (detector rated it LOW) must not
+    # become CRITICAL in the alert layer.
+    conflict = make_conflict(risk_level=ConflictRiskLevel.LOW, ttc=1.0, distance=100.0)
+    assert engine.classify_level(conflict) == AlertLevel.MONITOR
 
 
 def test_risk_level_floor_prevents_understating_urgency():

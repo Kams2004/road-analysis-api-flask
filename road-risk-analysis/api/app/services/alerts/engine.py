@@ -16,7 +16,6 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from app.core.config import settings
 from app.services.alerts.models import (
     AlertLevel,
     AlertLifecycleStatus,
@@ -24,6 +23,7 @@ from app.services.alerts.models import (
     ConflictAlert,
     RecommendedAction,
 )
+from app.services.collision import thresholds
 from app.services.collision.models import ConflictRiskLevel, ConflictStatus, VehicleConflict
 
 LEVEL_SEVERITY = {
@@ -54,24 +54,11 @@ _RISK_LEVEL_FLOOR = {
 
 
 def classify_level(conflict: VehicleConflict) -> AlertLevel:
-    """Primarily TTC-banded, per spec — with Step 4's distance-derived
-    risk_level as a floor (see module docstring)."""
-    floor = _RISK_LEVEL_FLOOR.get(conflict.risk_level, AlertLevel.SAFE)
-
-    ttc = conflict.time_to_closest_approach_s
-    if conflict.risk_level == ConflictRiskLevel.NONE or ttc is None:
-        return floor
-
-    if ttc <= settings.ALERT_HIGH_WARNING_TTC_S:
-        ttc_level = AlertLevel.CRITICAL
-    elif ttc <= settings.ALERT_WARNING_TTC_S:
-        ttc_level = AlertLevel.HIGH_WARNING
-    elif ttc <= settings.ALERT_SAFE_TTC_S:
-        ttc_level = AlertLevel.WARNING
-    else:
-        ttc_level = AlertLevel.MONITOR
-
-    return ttc_level if LEVEL_SEVERITY[ttc_level] >= LEVEL_SEVERITY[floor] else floor
+    """Step 4 already rates a conflict on distance-at-CPA AND TTC together
+    (plus the closing / road-context / lane gates — see detector.py), so the
+    alert level is a direct mapping of its risk_level. TTC alone no longer
+    escalates: a pair whose CPA is 1 s away but 100 m wide is not CRITICAL."""
+    return _RISK_LEVEL_FLOOR.get(conflict.risk_level, AlertLevel.SAFE)
 
 
 def _new_conflict_id(now: datetime) -> str:
@@ -82,20 +69,22 @@ def _reason_text(conflict: VehicleConflict, level: AlertLevel) -> str:
     if level == AlertLevel.SAFE:
         return "no significant predicted conflict"
     parts = []
-    if conflict.segment_overlap_ahead or conflict.same_current_segment:
-        parts.append("shared road segment")
-    elif conflict.confidence >= settings.COLLISION_SEGMENT_TRUST_CONFIDENCE:
-        # No shared segment, and confident enough in the match to trust that
-        # — detector.py has already capped severity for this case (see
-        # COLLISION_SEGMENT_TRUST_CONFIDENCE), but the alert still deserves
-        # an honest reason rather than implying a stronger read than this
-        # actually is.
-        parts.append("close in raw position only — no confirmed shared road (e.g. an over/underpass)")
+    relation = conflict.road_relation
+    if relation == "same_road" or (relation is None and (conflict.segment_overlap_ahead or conflict.same_current_segment)):
+        parts.append("same road")
+    elif relation == "connected":
+        parts.append("predicted paths meet (junction)")
+    elif relation == "unrelated":
+        parts.append("very close, but on an unconnected road (e.g. an over/underpass)")
+    if conflict.closing_speed_mps:
+        parts.append(f"closing at {conflict.closing_speed_mps:.1f} m/s")
     heading = conflict.relative_heading_deg
     if heading is not None and heading >= 135:
         parts.append("opposing trajectories predicted to converge")
     elif heading is not None and 45 <= heading < 135:
         parts.append("crossing trajectories predicted to converge")
+    elif heading is not None:
+        parts.append("closing on the vehicle ahead")
     if not parts:
         parts.append("predicted trajectories converge within the prediction horizon")
     return "; ".join(parts).capitalize()
@@ -111,6 +100,18 @@ def evaluate(
     record and what changed this tick."""
     level = classify_level(conflict)
     was_active = previous is not None and previous.status != AlertLifecycleStatus.RESOLVED
+
+    # Hysteresis: escalate immediately, de-escalate only once the lower
+    # level has persisted for deescalate_after_s (avoids flicker between
+    # adjacent levels as the CPA estimate jitters tick to tick).
+    pending_level = None
+    pending_since = None
+    if was_active and level != AlertLevel.SAFE and LEVEL_SEVERITY[level] < LEVEL_SEVERITY[previous.level]:
+        hold_s = thresholds.current().deescalate_after_s
+        since = previous.pending_since if previous.pending_since is not None else now
+        if (now - since).total_seconds() < hold_s:
+            pending_level, pending_since = level, since
+            level = previous.level
 
     if level == AlertLevel.SAFE:
         status = AlertLifecycleStatus.RESOLVED
@@ -149,6 +150,10 @@ def evaluate(
         closing_speed_mps=conflict.closing_speed_mps,
         relative_heading_deg=conflict.relative_heading_deg,
         road_type=conflict.road_type_a or conflict.road_type_b,
+        encounter=conflict.encounter,
+        road_relation=conflict.road_relation,
+        pending_level=pending_level,
+        pending_since=pending_since,
         same_current_segment=conflict.same_current_segment,
         segment_overlap_ahead=conflict.segment_overlap_ahead,
         map_match_confidence=conflict.confidence,
@@ -174,6 +179,8 @@ def resolve(previous: ConflictAlert, now: datetime) -> ConflictAlert:
         "transition": AlertTransition.RESOLVED,
         "reason": "trajectories no longer predicted to conflict",
         "recommended_action": RecommendedAction.NONE,
+        "pending_level": None,
+        "pending_since": None,
         "last_updated_at": now,
         "resolved_at": now,
     })

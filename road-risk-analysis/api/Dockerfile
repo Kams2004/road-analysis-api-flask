@@ -22,6 +22,12 @@ RUN pip install --no-cache-dir --timeout=600 --retries=10 \
     pip install --no-cache-dir --timeout=600 --retries=10 \
     paddlepaddle==2.6.2 paddleocr==2.8.1
 
+# Kept as its own layer so adding it doesn't rebuild the heavy ML layer above.
+RUN pip install --no-cache-dir --timeout=600 --retries=10 "cryptography>=42.0.0"
+
+# SFTP video sources — again its own small layer: the torch / ML layers above stay cached.
+RUN pip install --no-cache-dir --timeout=600 --retries=10 "paramiko==4.0.0"
+
 COPY . .
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

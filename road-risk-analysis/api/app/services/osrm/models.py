@@ -33,10 +33,13 @@ import hashlib
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MapMatchQuality(str, enum.Enum):
+    """`GOOD` (confident match), `DEGRADED` (low confidence / large offset),
+    `FAILED` (no usable match), `UNAVAILABLE` (OSRM unreachable), `STALE`
+    (telemetry too old to be a current position)."""
     GOOD = "GOOD"                # high-confidence match, safe to use directly
     DEGRADED = "DEGRADED"        # matched, but low confidence / large GPS-to-road offset
     FAILED = "FAILED"            # OSRM responded but could not produce a usable match
@@ -45,6 +48,8 @@ class MapMatchQuality(str, enum.Enum):
 
 
 class RoadDirection(str, enum.Enum):
+    """Direction of travel relative to the road segment's geometry:
+    `FORWARD`, `REVERSE` or `UNKNOWN`."""
     FORWARD = "FORWARD"
     REVERSE = "REVERSE"
     UNKNOWN = "UNKNOWN"
@@ -53,58 +58,66 @@ class RoadDirection(str, enum.Enum):
 class RoadGeometry(BaseModel):
     """GeoJSON LineString — the format the rest of this project already uses
     for route geometry (see AlongRouteQueryIn / the mobile app's OSRM usage)."""
-    type: str = "LineString"
-    coordinates: List[Tuple[float, float]]  # [lon, lat] pairs, GeoJSON order
+    type: str = Field("LineString", description="Always `LineString`.")
+    coordinates: List[Tuple[float, float]] = Field(..., description=(  # [lon, lat] pairs, GeoJSON order
+        "`[longitude, latitude]` pairs (GeoJSON order, WGS84 degrees)."))
 
 
 class UpcomingSegment(BaseModel):
-    road_segment_id: str
-    road_name: Optional[str] = None
-    distance_from_vehicle_m: float
-    length_m: float
-    geometry: RoadGeometry
+    """A road segment ahead of the vehicle on its matched route window."""
+    road_segment_id: str = Field(..., description="Segment id (deterministic hash, stable for a road dataset).")
+    road_name: Optional[str] = Field(None, description="Road name.")
+    distance_from_vehicle_m: float = Field(..., description="Distance from the vehicle to the segment start, metres.")
+    length_m: float = Field(..., description="Segment length, metres.")
+    geometry: RoadGeometry = Field(..., description="Segment geometry.")
 
 
 class RoadContext(BaseModel):
-    road_segment_id: str
-    road_name: Optional[str] = None
-    road_type: Optional[str] = None  # best-effort; not always exposed by the OSRM profile in use
+    """The road segment a vehicle is matched to. A "segment" is one OSRM route
+    step (a stretch with a single name/bearing), not a junction-to-junction
+    OSM way."""
+    road_segment_id: str = Field(..., description="Segment id (deterministic hash, stable for a road dataset).")
+    road_name: Optional[str] = Field(None, description="Road name.")
+    road_type: Optional[str] = Field(None, description="Road class, best-effort (often null).")  # best-effort; not always exposed by the OSRM profile in use
 
-    direction: RoadDirection
-    road_bearing_deg: Optional[float] = None
+    direction: RoadDirection = Field(..., description="`FORWARD`, `REVERSE` or `UNKNOWN`.")
+    road_bearing_deg: Optional[float] = Field(None, description="Bearing of the road at the matched point, degrees clockwise from north.")
 
-    matched_latitude: float
-    matched_longitude: float
-    raw_to_matched_distance_m: float
+    matched_latitude: float = Field(..., description="Position snapped to the road, latitude (degrees).")
+    matched_longitude: float = Field(..., description="Position snapped to the road, longitude (degrees).")
+    raw_to_matched_distance_m: float = Field(..., description="Distance between the GPS fix and the snapped position, metres.")
 
-    distance_along_segment_m: float
-    distance_to_segment_end_m: float
-    segment_length_m: float
+    distance_along_segment_m: float = Field(..., description="Distance from the segment start to the vehicle, metres.")
+    distance_to_segment_end_m: float = Field(..., description="Distance from the vehicle to the segment end, metres.")
+    segment_length_m: float = Field(..., description="Segment length, metres.")
 
-    geometry: RoadGeometry
-    upcoming_segments: List[UpcomingSegment] = []
+    geometry: RoadGeometry = Field(..., description="Segment geometry.")
+    upcoming_segments: List[UpcomingSegment] = Field([], description="Next segments ahead, nearest first.")
 
 
 class TelemetrySnapshot(BaseModel):
-    vehicle_id: str
-    latitude: float
-    longitude: float
-    speed_mps: Optional[float] = None
-    heading: Optional[float] = None
-    accuracy_m: Optional[float] = None
-    acceleration_mps2: Optional[float] = None  # device-reported; Step 3 falls back to a derived estimate if absent
-    timestamp: datetime
+    """The telemetry the road context was computed from."""
+    vehicle_id: str = Field(..., description="Vehicle id.")
+    latitude: float = Field(..., description="WGS84 latitude (degrees).")
+    longitude: float = Field(..., description="WGS84 longitude (degrees).")
+    speed_mps: Optional[float] = Field(None, description="Speed, m/s.")
+    heading: Optional[float] = Field(None, description="Heading, degrees clockwise from north (0–360).")
+    accuracy_m: Optional[float] = Field(None, description="GPS horizontal accuracy, metres.")
+    acceleration_mps2: Optional[float] = Field(None, description=(  # device-reported; Step 3 falls back to a derived estimate if absent
+        "Device-reported acceleration, m/s² (null if not measured)."))
+    timestamp: datetime = Field(..., description="Timestamp of the fix.")
 
 
 class RoadAwareVehicleState(BaseModel):
-    vehicle_id: str
-    telemetry: TelemetrySnapshot
-    road_context: Optional[RoadContext] = None
-    match_quality: MapMatchQuality
-    match_confidence: Optional[float] = None
-    match_error: Optional[str] = None
-    osrm_latency_ms: Optional[float] = None
-    computed_at: datetime
+    """A live vehicle's latest telemetry together with its map-matched road context."""
+    vehicle_id: str = Field(..., description="Vehicle id.")
+    telemetry: TelemetrySnapshot = Field(..., description="Telemetry the match was computed from.")
+    road_context: Optional[RoadContext] = Field(None, description="Matched road context; null when the match failed.")
+    match_quality: MapMatchQuality = Field(..., description="`GOOD`, `DEGRADED`, `FAILED`, `UNAVAILABLE` or `STALE`.")
+    match_confidence: Optional[float] = Field(None, description="OSRM match confidence, 0–1.")
+    match_error: Optional[str] = Field(None, description="Why matching failed, if it did.")
+    osrm_latency_ms: Optional[float] = Field(None, description="OSRM response time, milliseconds.")
+    computed_at: datetime = Field(..., description="When the state was computed (UTC).")
 
 
 def stable_segment_id(road_name: Optional[str], start: Tuple[float, float], end: Tuple[float, float]) -> str:

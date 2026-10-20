@@ -314,3 +314,19 @@ def test_speed_is_clamped_to_vehicle_type_limit():
     state = make_state(speed_mps=200.0, segment_length_m=100_000)  # absurd sensor-error speed
     traj = predict_trajectory(state, vehicle_type="private", now=NOW, horizons_s=[1])
     assert traj.initial_speed_mps <= settings.TRAJECTORY_MAX_SPEED_MPS_BY_TYPE["private"]
+
+
+# ── Window geometry starting on a side road: path still starts at the vehicle ─
+
+def test_path_starts_at_matched_point_when_segment_geometry_starts_ahead_of_it():
+    """Step 2's window can join the vehicle's road a few dozen metres ahead
+    (its "behind" end snapped to a side street): the current segment's
+    geometry then starts there. A stationary vehicle must still be predicted
+    where it is, not at that junction."""
+    junction = geo.destination(*KAMBO, 0.0, 35.0)
+    end = geo.destination(*junction, 0.0, 400.0)
+    state = make_state(speed_mps=0.0, heading=0.0, bearing=0.0, distance_along_segment_m=0.9,
+                       segment_length_m=400.0, current_coords=[junction, end])
+    traj = predict_trajectory(state, now=NOW, horizons_s=[1, 5])
+    for p in traj.points:
+        assert geo.haversine_m(p.latitude, p.longitude, *KAMBO) < 1.0

@@ -24,56 +24,58 @@ celery_app.conf.update(
         # (celery -A app.workers.celery_app worker -Q processing) already
         # consumes it, no separate worker needed for this task.
         "app.workers.celery_app.sync_ymane_events": {"queue": "processing"},
+        # Module 7 housekeeping and automatic sources (app/workers/job_tasks.py)
+        "app.workers.celery_app.watchdog_stale_jobs":    {"queue": "processing"},
+        "app.workers.celery_app.cleanup_failed_media":   {"queue": "processing"},
+        "app.workers.celery_app.sync_cloud_connections": {"queue": "processing"},
+        "app.workers.celery_app.sync_cloud_connection":  {"queue": "processing"},
+        "app.workers.celery_app.cloud_import_item":      {"queue": "processing"},
+        "app.workers.celery_app.capture_streams":        {"queue": "processing"},
+        "app.workers.celery_app.capture_stream_segment": {"queue": "processing"},
+        # Module 6 hazard lifecycle (app/workers/hazard_tasks.py)
+        "app.workers.celery_app.evaluate_job_hazards":   {"queue": "processing"},
+        "app.workers.celery_app.hazard_lifecycle_tick":  {"queue": "processing"},
+        # Live training dataset (app/workers/training_tasks.py)
+        "app.workers.celery_app.sync_training_data":     {"queue": "processing"},
     },
     beat_schedule={
         "sync-ymane-historical-events": {
             "task": "app.workers.celery_app.sync_ymane_events",
             "schedule": settings.HISTORICAL_YMANE_SYNC_INTERVAL_S,
         },
+        # Jobs stuck in processing (crashed worker) → failed (RRAP-07-010)
+        "job-stale-watchdog": {
+            "task": "app.workers.celery_app.watchdog_stale_jobs",
+            "schedule": 300.0,
+        },
+        # Media of failed/cancelled jobs past processing.retain_failed_hours
+        "job-failed-media-cleanup": {
+            "task": "app.workers.celery_app.cleanup_failed_media",
+            "schedule": 3600.0,
+        },
+        # Checks every minute which folders are due (cloud.sync_interval_minutes)
+        "cloud-storage-sync": {
+            "task": "app.workers.celery_app.sync_cloud_connections",
+            "schedule": 60.0,
+        },
+        # (Re)starts segment capture of active streams with no capture running
+        "stream-capture": {
+            "task": "app.workers.celery_app.capture_streams",
+            "schedule": 60.0,
+        },
+        # Hazard expiry + catch-up of unevaluated done jobs; runs at most every
+        # hazard_lifecycle.expiry_check_minutes (checked every minute)
+        "hazard-lifecycle-tick": {
+            "task": "app.workers.celery_app.hazard_lifecycle_tick",
+            "schedule": 60.0,
+        },
+        # Training-data objects not written after a decision (MinIO down …)
+        "training-data-sync": {
+            "task": "app.workers.celery_app.sync_training_data",
+            "schedule": 120.0,
+        },
     },
 )
-
-
-@celery_app.task(
-    bind=True,
-    name="app.workers.celery_app.process_video",
-    max_retries=3,
-    default_retry_delay=30,
-)
-def process_video(self, job_id: str, tmp_path: str, enabled: list):
-    """
-    Celery task — runs the processing loop for a single job.
-    Retries up to 3 times on unexpected failure (30s delay between retries).
-    """
-    try:
-        # Always create a fresh event loop — asyncpg connections are loop-bound
-        # and cannot be reused across tasks in the same worker process.
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_run(job_id, tmp_path, enabled))
-        finally:
-            loop.close()
-    except Exception as exc:
-        logger.error(f"[Job {job_id}] Task failed: {exc}", exc_info=True)
-        raise self.retry(exc=exc)
-
-
-async def _run(job_id: str, tmp_path: str, enabled: list):
-    from app.core.config import settings
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-    from app.workers.processor import process_source
-    from app.models.job import Job
-
-    # Fresh engine per task — never reuse the module-level engine across event loops
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with SessionLocal() as db:
-            job = await db.get(Job, job_id)
-            await process_source(job, tmp_path, db, enabled)
-    finally:
-        await engine.dispose()
 
 
 # ── Periodic Ymane historical-event sync ────────────────────────────────────
@@ -162,3 +164,11 @@ async def _sync_ymane_events():
                 )
     finally:
         await engine.dispose()
+
+
+# Module 7 tasks (process_video, watchdog, cleanup, cloud sync, stream capture)
+# live in their own module; importing it registers them on celery_app.
+from app.workers import job_tasks  # noqa: E402,F401
+from app.workers import hazard_tasks  # noqa: E402,F401 — Module 6 hazard lifecycle
+from app.workers import import_tasks  # noqa: E402,F401 — cloud imports (input sources)
+from app.workers import training_tasks  # noqa: E402,F401 — live training dataset

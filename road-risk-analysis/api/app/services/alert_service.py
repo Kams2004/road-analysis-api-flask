@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.services import collision_service, vehicle_service
 from app.services.alerts import engine
+from app.services.collision import thresholds
 from app.services.alerts.models import AlertLifecycleStatus, AlertTransition, ConflictAlert
 from app.services.alerts.notifier import get_notification_adapter
 from app.services.redis_client import get_redis
@@ -92,6 +93,7 @@ async def process_vehicle(vehicle_id: str, db: AsyncSession) -> List[ConflictAle
     the alert engine, and resolve any previously-active pair that dropped
     out entirely. Returns every alert touched this call (new, updated, or
     resolved) — an empty list means nothing changed."""
+    cfg = await thresholds.refresh()
     report = await collision_service.get_conflicts(vehicle_id, db)
     now = datetime.now(timezone.utc)
 
@@ -119,6 +121,8 @@ async def process_vehicle(vehicle_id: str, db: AsyncSession) -> List[ConflictAle
         finally:
             await _unlock_pair(key)
 
+    cleared = set(report.cleared_vehicle_ids)
+    held_keys: set = set()
     r = get_redis()
     active_key = _active_pairs_key(vehicle_id)
     previously_active = await r.smembers(active_key)
@@ -132,6 +136,15 @@ async def process_vehicle(vehicle_id: str, db: AsyncSession) -> List[ConflictAle
             previous = await _load_alert(key)
             if previous is None or previous.status == AlertLifecycleStatus.RESOLVED:
                 continue
+            other_id = previous.vehicle_b_id if previous.vehicle_a_id == vehicle_id else previous.vehicle_a_id
+            # Resolve hysteresis: a pair that merely slipped below the
+            # thresholds is held for resolve_after_s (flicker guard); one
+            # assessed as separating / passing / on an unrelated road is
+            # resolved at once.
+            age_s = (now - previous.last_updated_at).total_seconds()
+            if other_id not in cleared and age_s < cfg.resolve_after_s:
+                held_keys.add(key)
+                continue
             resolved = engine.resolve(previous, now)
             await _store_alert(key, resolved)
             await _notify_if_changed(resolved)
@@ -140,8 +153,9 @@ async def process_vehicle(vehicle_id: str, db: AsyncSession) -> List[ConflictAle
             await _unlock_pair(key)
 
     await r.delete(active_key)
-    if current_keys:
-        await r.sadd(active_key, *current_keys)
+    keep = current_keys | held_keys
+    if keep:
+        await r.sadd(active_key, *keep)
         await r.expire(active_key, settings.ALERT_ACTIVE_PAIRS_TTL_S)
 
     if touched:

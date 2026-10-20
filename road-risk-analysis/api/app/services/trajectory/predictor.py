@@ -30,10 +30,12 @@ runway, and the trajectory truncates accordingly. This is an honest
 limitation of Step 2's output, not a bug here.
 """
 import bisect
+import math
 from datetime import datetime, timezone
 from typing import List, Optional, Sequence, Tuple
 
 from app.core.config import settings
+from app.services.collision import thresholds
 from app.services.osrm import geo
 from app.services.osrm.models import (
     MapMatchQuality,
@@ -74,6 +76,7 @@ def _build_forward_path(road_context: RoadContext) -> Tuple[List[LatLon], List[f
     current_cum = geo.cumulative_distances_m(current_coords)
 
     coords, cum = _slice_from(current_coords, current_cum, road_context.distance_along_segment_m)
+    coords, cum = _start_at_matched_point(road_context, coords, cum)
     segment_ids: List[Optional[str]] = [road_context.road_segment_id] * len(coords)
 
     for seg in road_context.upcoming_segments:
@@ -108,8 +111,25 @@ def _build_backward_path(road_context: RoadContext) -> Tuple[List[LatLon], List[
             coords.append(c)
             cum.append(pos - d)
 
+    coords, cum = _start_at_matched_point(road_context, coords, cum)
     segment_ids: List[Optional[str]] = [road_context.road_segment_id] * len(coords)
     return coords, cum, segment_ids
+
+
+def _start_at_matched_point(road_context: RoadContext, coords: List[LatLon],
+                            cum: List[float]) -> Tuple[List[LatLon], List[float]]:
+    """Make the walked path start at the matched position. Step 2's route
+    window can begin on a neighbouring road (its "behind" end snapped to a
+    side street) and join this one a few dozen metres ahead; the slice then
+    starts at that junction, not at the vehicle — a stationary vehicle was
+    predicted to stand there (seen: 35 m ahead on the N5 at Kambo)."""
+    matched = (road_context.matched_latitude, road_context.matched_longitude)
+    if not coords:
+        return [matched], [0.0]
+    gap = geo.haversine_m(*matched, *coords[0])
+    if gap <= 2.0:
+        return coords, cum
+    return [matched] + coords, [0.0] + [c + gap for c in cum]
 
 
 def _segment_id_at(cum: List[float], segment_ids: List[Optional[str]], target_m: float) -> Optional[str]:
@@ -121,6 +141,15 @@ def _segment_id_at(cum: List[float], segment_ids: List[Optional[str]], target_m:
 
 
 # ── Kinematics ───────────────────────────────────────────────────────────────
+
+def _travel_bearing(coords: List[LatLon], cum: List[float], look_ahead_m: float = 10.0) -> Optional[float]:
+    """Direction of travel at the start of the walked path (a few metres
+    ahead, to smooth over a tiny first sub-segment)."""
+    if len(coords) < 2 or cum[-1] <= 0.5:
+        return None
+    ahead = geo.point_at_distance(coords, cum, min(look_ahead_m, cum[-1]))
+    return geo.bearing_deg(coords[0][0], coords[0][1], ahead[0], ahead[1])
+
 
 def _speed_limit_mps(vehicle_type: Optional[str]) -> float:
     if vehicle_type and vehicle_type in settings.TRAJECTORY_MAX_SPEED_MPS_BY_TYPE:
@@ -201,11 +230,12 @@ def _confidence(
 ) -> float:
     score = _QUALITY_FACTOR.get(match_quality, 0.0)
 
-    if age_s <= settings.TRAJECTORY_FRESH_TELEMETRY_S:
+    cfg = thresholds.current()
+    if age_s <= cfg.fresh_after_s:
         score *= 1.0
-    elif age_s <= settings.TRAJECTORY_STALE_TELEMETRY_S:
-        span = settings.TRAJECTORY_STALE_TELEMETRY_S - settings.TRAJECTORY_FRESH_TELEMETRY_S
-        frac = (age_s - settings.TRAJECTORY_FRESH_TELEMETRY_S) / span if span > 0 else 1.0
+    elif age_s <= cfg.stale_after_s:
+        span = cfg.stale_after_s - cfg.fresh_after_s
+        frac = (age_s - cfg.fresh_after_s) / span if span > 0 else 1.0
         score *= max(0.2, 1.0 - 0.8 * frac)
     else:
         score *= 0.05
@@ -299,7 +329,7 @@ def predict_trajectory(
         path_coords, path_cum, path_segments = _build_forward_path(road_context)
     path_total = path_cum[-1] if path_cum else 0.0
 
-    is_stale = age_s > settings.TRAJECTORY_STALE_TELEMETRY_S
+    is_stale = age_s > thresholds.current().stale_after_s
 
     points: List[TrajectoryPoint] = []
     truncated = False
@@ -343,7 +373,7 @@ def predict_trajectory(
         status = TrajectoryStatus.STALE
     elif (
         state.match_quality == MapMatchQuality.DEGRADED
-        or age_s > settings.TRAJECTORY_FRESH_TELEMETRY_S
+        or age_s > thresholds.current().fresh_after_s
         or truncated
         or confidence < 0.5
     ):
@@ -357,8 +387,27 @@ def predict_trajectory(
     elif truncated:
         reason = "known road geometry ended before the full prediction horizon"
 
+    travel_bearing = _travel_bearing(path_coords, path_cum)
+    lateral = None
+    if travel_bearing is not None:
+        off = geo.haversine_m(road_context.matched_latitude, road_context.matched_longitude,
+                              telemetry.latitude, telemetry.longitude)
+        if off > 0.05:
+            brg = geo.bearing_deg(road_context.matched_latitude, road_context.matched_longitude,
+                                  telemetry.latitude, telemetry.longitude)
+            lateral = off * math.sin(math.radians(brg - travel_bearing))
+        else:
+            lateral = 0.0
+
     return Trajectory(
         **base,
+        road_name=road_context.road_name,
+        match_quality=state.match_quality.value,
+        matched_latitude=road_context.matched_latitude,
+        matched_longitude=road_context.matched_longitude,
+        travel_bearing_deg=travel_bearing,
+        lateral_offset_m=lateral,
+        gps_accuracy_m=telemetry.accuracy_m,
         status=status,
         confidence=confidence,
         confidence_level=_confidence_level(confidence),

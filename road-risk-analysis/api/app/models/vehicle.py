@@ -7,6 +7,8 @@ from app.db.session import Base
 
 
 class VehicleType(str, enum.Enum):
+    """Kind of connected vehicle: `bus`, `taxi`, `truck`, `private` (private
+    car, the default) or `moto` (motorcycle / moto-taxi)."""
     bus     = "bus"
     taxi    = "taxi"
     truck   = "truck"

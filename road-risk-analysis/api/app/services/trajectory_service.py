@@ -23,6 +23,7 @@ from app.services.osrm.models import RoadAwareVehicleState
 from app.services.redis_client import get_redis
 from app.services.trajectory.models import Trajectory
 from app.services.trajectory.predictor import predict_trajectory
+from app.services.collision import thresholds
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ async def compute_and_store(vehicle_id: str, road_state: RoadAwareVehicleState) 
     task has one on hand already, at no extra OSRM cost), predict and cache
     this vehicle's trajectory."""
     started = time.monotonic()
+    await thresholds.refresh()
 
     live = await vehicle_service.get_live(vehicle_id)
     vehicle_type = live.get("vehicle_type") if live else None

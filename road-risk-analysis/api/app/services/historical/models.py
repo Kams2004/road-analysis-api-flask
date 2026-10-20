@@ -38,7 +38,7 @@ import enum
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HistoricalEventType(str, enum.Enum):
@@ -56,22 +56,30 @@ class HistoricalEventType(str, enum.Enum):
 
 class HistoricalEvent(BaseModel):
     """One driving event, in canonical form, before map-matching."""
-    source: str                          # e.g. "ymane", "manual"
-    source_event_id: str                 # source's own id — used for idempotent re-import
-    event_type: HistoricalEventType
-    occurred_at: datetime
+    source: str = Field(..., description="Source name, e.g. `manual` or `ymane`.",  # e.g. "ymane", "manual"
+                        examples=["manual"])
+    source_event_id: str = Field(..., description=(  # source's own id — used for idempotent re-import
+        "The source's own event id; `source` + `source_event_id` make re-imports idempotent."),
+        examples=["evt-000123"])
+    event_type: HistoricalEventType = Field(..., description=(
+        "`SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION` "
+        "or `OTHER`."), examples=["HARD_BRAKING"])
+    occurred_at: datetime = Field(..., description="When the event happened (UTC if no offset).")
 
-    latitude: float
-    longitude: float
+    latitude: float = Field(..., description="WGS84 latitude (degrees).", examples=[4.0511])
+    longitude: float = Field(..., description="WGS84 longitude (degrees).", examples=[9.7679])
 
-    vehicle_external_id: Optional[str] = None  # the SOURCE's vehicle identifier — not our Vehicle.id (Step 1)
-    driver_external_id: Optional[str] = None
+    vehicle_external_id: Optional[str] = Field(None, description=(  # the SOURCE's vehicle identifier — not our Vehicle.id (Step 1)
+        "The source's vehicle identifier (not a platform vehicle id)."))
+    driver_external_id: Optional[str] = Field(None, description="The source's driver identifier.")
 
-    speed_mps: Optional[float] = None
-    speed_limit_mps: Optional[float] = None
-    severity: Optional[str] = None       # raw severity/level from the source, if any — not yet normalized
+    speed_mps: Optional[float] = Field(None, description="Speed at the event, m/s.")
+    speed_limit_mps: Optional[float] = Field(None, description="Speed limit at the event, m/s.")
+    severity: Optional[str] = Field(None, description=(  # raw severity/level from the source, if any — not yet normalized
+        "Raw severity from the source, not normalised."))
 
-    raw: Dict[str, Any] = {}             # untouched source payload for this event — forward-compatible, debuggable
+    raw: Dict[str, Any] = Field({}, description=(  # untouched source payload for this event — forward-compatible, debuggable
+        "Untouched source payload, kept for reference."))
 
 
 class MapMatchedHistoricalEvent(BaseModel):
@@ -87,18 +95,20 @@ class MapMatchedHistoricalEvent(BaseModel):
 
 
 class ImportSummary(BaseModel):
-    source: str
-    date_range: Tuple[date, date]
-    fetched: int
-    matched: int
-    inserted: int
-    skipped_duplicates: int
-    errors: List[str] = []
+    """Result of an import run."""
+    source: str = Field(..., description="Source imported from.")
+    date_range: Tuple[date, date] = Field(..., description="`[start, end]` imported (inclusive).")
+    fetched: int = Field(..., description="Events received from the source.")
+    matched: int = Field(..., description="Events map-matched onto the road network.")
+    inserted: int = Field(..., description="New events stored.")
+    skipped_duplicates: int = Field(..., description="Events already imported earlier (skipped).")
+    errors: List[str] = Field([], description="Per-event problems (the batch continues).")
 
 
 class EventTypeCount(BaseModel):
-    event_type: HistoricalEventType
-    count: int
+    """Number of events of one type."""
+    event_type: HistoricalEventType = Field(..., description="Event type.")
+    count: int = Field(..., description="Number of events.")
 
 
 class ZoneRiskProfile(BaseModel):
@@ -106,12 +116,15 @@ class ZoneRiskProfile(BaseModel):
     is a deliberately simple, explainable baseline (not ML — see module
     docstring): a normalized event rate, not a learned prediction. Step
     6.2+ is where this becomes a real model input; this is the raw material."""
-    grid_cell_id: str
-    center_latitude: float
-    center_longitude: float
-    total_events: int
-    events_by_type: List[EventTypeCount]
-    earliest_event_at: Optional[datetime] = None
-    latest_event_at: Optional[datetime] = None
-    historical_risk_score: float  # 0..1, see historical_service._risk_score
-    road_name: Optional[str] = None  # most common matched road name in this cell, if any
+    grid_cell_id: str = Field(..., description="Geographic grid cell id (`HISTORICAL_GRID_CELL_SIZE_M` cells).")
+    center_latitude: float = Field(..., description="Cell centre, latitude (degrees).")
+    center_longitude: float = Field(..., description="Cell centre, longitude (degrees).")
+    total_events: int = Field(..., description="Events in the cell.")
+    events_by_type: List[EventTypeCount] = Field(..., description="Events per type.")
+    earliest_event_at: Optional[datetime] = Field(None, description="Oldest event.")
+    latest_event_at: Optional[datetime] = Field(None, description="Most recent event.")
+    historical_risk_score: float = Field(..., description=(  # 0..1, see historical_service._risk_score
+        "Risk score 0–1: type-weighted event count divided by `HISTORICAL_RISK_SATURATION_WEIGHT`, capped at 1."),
+        examples=[0.42])
+    road_name: Optional[str] = Field(None, description=(  # most common matched road name in this cell, if any
+        "Most common matched road name in the cell."))

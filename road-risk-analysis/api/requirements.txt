@@ -28,3 +28,9 @@ numpy>=1.23.0
 paddlepaddle==2.6.2
 paddleocr==2.8.1
 setuptools>=68.0.0
+
+# Auth (Module 1)
+cryptography>=42.0.0
+
+# SFTP video sources (own Dockerfile layer, after cryptography)
+paramiko==4.0.0

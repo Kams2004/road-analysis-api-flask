@@ -52,6 +52,12 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "http://api:8080")
 OSRM_URL = os.environ.get("SEED_DEMO_OSRM_URL", "https://router.project-osrm.org")
 SEED = int(os.environ.get("SEED_DEMO_EXCEPTIONS_SEED", "11"))
 
+# source_event_id prefixes (source='manual') written by this script and by its
+# earlier versions — what `python -m app.demo.purge_demo` removes:
+#   demo-tier-  (this version), demo-n5- / demo-route- (the two replaced batches),
+#   demo-douala_ (an intermediate version: demo-douala_bafoussam-N, demo-douala_yaounde-N).
+PURGE_PREFIXES = ("demo-tier-", "demo-n5-", "demo-route-", "demo-douala_")
+
 # (origin, destination, label) — real driving routes; events are placed
 # using the actual OSRM-returned road geometry between them.
 ROUTES = [

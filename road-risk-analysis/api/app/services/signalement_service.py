@@ -85,3 +85,39 @@ async def query_signalements_along_route(
                 matched.append(sig_id)
                 break
     return matched
+
+
+# ── Clustering of community reports (global Cluster Configuration) ──────────
+# A new report joins an existing one when it is of the same type, within the
+# radius resolved at the NEW report's position for that report type
+# (app.services.clustering: zone → urban/rural profile → per-type value),
+# and the existing report is a visible primary (active, fresh, not itself
+# merged). The nearest such report wins.
+
+def pick_merge_target(candidates, sig_type: str, lat: float, lon: float, radius_m: float, is_visible):
+    """Nearest visible primary report of `sig_type` within `radius_m`, or None (pure)."""
+    from app.services.clustering.zones import haversine_m
+    best, best_d = None, None
+    for s in candidates:
+        s_type = s.type.value if hasattr(s.type, "value") else str(s.type)
+        if s_type != sig_type or getattr(s, "merged_into_id", None) or not is_visible(s):
+            continue
+        d = haversine_m(lat, lon, s.latitude, s.longitude)
+        if d <= radius_m and (best_d is None or d < best_d):
+            best, best_d = s, d
+    return best
+
+
+async def find_merge_target(db: AsyncSession, sig_type: str, lat: float, lon: float, radius_m: float,
+                            community_cfg):
+    """The active report a new `sig_type` report at (lat, lon) merges into, or None."""
+    from datetime import datetime
+    from sqlalchemy import select
+    from app.models.signalement import Signalement
+    from app.services import signalement_votes as votes
+    ids = await query_signalements_nearby(db, lat, lon, radius_m)
+    if not ids:
+        return None
+    rows = (await db.execute(select(Signalement).where(Signalement.id.in_(ids)))).scalars().all()
+    now = datetime.utcnow()
+    return pick_merge_target(rows, sig_type, lat, lon, radius_m, lambda s: votes.is_visible(s, community_cfg, now))

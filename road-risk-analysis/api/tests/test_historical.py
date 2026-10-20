@@ -223,3 +223,45 @@ def test_aggregate_by_cell_groups_and_sorts_by_risk():
     assert profiles[0].total_events == 1
     assert profiles[1].total_events == 2
     assert profiles[1].road_name == "Route de Kambo"
+
+
+# ── Route preview proxy (web Historical Risk Analysis) ──────────────────────
+
+class _RouteOSRM:
+    def __init__(self, data):
+        self.data = data
+        self.calls = []
+
+    async def route_overview(self, points, alternatives=True):
+        from app.services.osrm.client import OSRMResult
+        self.calls.append((list(points), alternatives))
+        return OSRMResult(self.data, 5.0)
+
+
+async def test_route_preview_returns_latlon_geometry_and_alternatives(monkeypatch):
+    from app.api.routes import historical as routes
+    fake = _RouteOSRM({"code": "Ok", "routes": [
+        {"geometry": {"coordinates": [[9.70, 4.05], [9.71, 4.06]]}, "distance": 1500.0, "duration": 180.0},
+        {"geometry": {"coordinates": [[9.70, 4.05], [9.72, 4.06]]}, "distance": 1900.0, "duration": 240.0},
+    ]})
+    monkeypatch.setattr(routes, "get_osrm_client", lambda: fake)
+
+    out = await routes.route_preview(from_="4.05,9.70", to="4.06,9.71", alternatives=True)
+
+    assert fake.calls[0][0] == [(4.05, 9.70), (4.06, 9.71)]
+    assert len(out.routes) == 2
+    assert out.routes[0].geometry[0] == (4.05, 9.70)        # lat, lon order
+    assert out.routes[0].distance_m == 1500.0
+
+
+async def test_route_preview_rejects_bad_input_and_no_route(monkeypatch):
+    from fastapi import HTTPException
+    from app.api.routes import historical as routes
+    monkeypatch.setattr(routes, "get_osrm_client", lambda: _RouteOSRM({"code": "NoRoute", "routes": []}))
+
+    with pytest.raises(HTTPException) as e:
+        await routes.route_preview(from_="nope", to="4.06,9.71", alternatives=True)
+    assert e.value.status_code == 422
+    with pytest.raises(HTTPException) as e:
+        await routes.route_preview(from_="4.05,9.70", to="4.06,9.71", alternatives=True)
+    assert e.value.status_code == 404

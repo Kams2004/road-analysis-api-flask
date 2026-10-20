@@ -18,7 +18,23 @@ class Settings(BaseSettings):
     MODEL_POTHOLE:     str = "/models/model_pothole.pt"
     MODEL_SIGNS:       str = "/models/model_signs.pt"
     MODEL_SPEEDBUMP:   str = "/models/model_speedbump.pt"
-    MODEL_CLASSIFIER:  str = "/models/model_pothole_classifier.pt"
+    # Two-stage pothole pipeline (RRAP-05-010/011): crop classifier that
+    # verifies each detector box (P(pothole)). A `<weights>.json` model card
+    # next to each .pt is read when present (version, thresholds, imgsz …).
+    # Missing / unloadable classifier → single-stage pipeline, as before.
+    MODEL_POTHOLE_CLASSIFIER: str = ""   # empty → MODEL_CLASSIFIER (legacy name)
+    MODEL_CLASSIFIER:  str = "/models/model_pothole_classifier.pt"   # deprecated alias
+    # Two-stage traffic-sign pipeline: MODEL_SIGNS is then a 2-class detector
+    # (traffic_sign, traffic_light) and this classifier names each sign crop
+    # with a VIASafe sign code (card: per-class thresholds, crop_pad_ratio,
+    # taxonomy_version; optional taxonomy.yaml in the same folder). With the
+    # legacy multi-class MODEL_SIGNS (or no classifier) → single stage, as before.
+    MODEL_SIGNS_CLASSIFIER: str = "/models/model_signs_classifier.pt"
+    # Parked / roadside vehicles (app.services.detection.parked_vehicle): a
+    # stock COCO-pretrained YOLOv8 (no fine-tuning) — only its vehicle classes
+    # are used (settings `parked_vehicle.vehicle_classes`); "parked?" is decided
+    # by rules over the track. Missing file → the `vehicles` model is unavailable.
+    MODEL_VEHICLES: str = "/models/model_vehicles.pt"
 
     # Processing
     TEMP_DIR:            str   = "/tmp/road_analysis"
@@ -26,6 +42,9 @@ class Settings(BaseSettings):
     CONF_THRESHOLD:      float = 0.25
     IOU_THRESHOLD:       float = 0.4
     DEDUP_DISTANCE_PX:   int   = 50
+    # Time zone of the dashcam OSD date-time (camera local time) — used to
+    # store detections.recorded_at timezone-aware.
+    OSD_TIMEZONE:        str   = "Africa/Douala"
 
     # Celery / Redis
     CELERY_BROKER_URL:      str = "redis://localhost:6379/0"
@@ -36,11 +55,37 @@ class Settings(BaseSettings):
     VEHICLE_LIVE_TTL_S:     int = 45   # a vehicle drops off the live set if it stops pinging for this long
     VEHICLE_LAST_SEEN_THROTTLE_S: int = 20  # min interval between Postgres last_seen writes per vehicle
 
-    # Clustering
+    # Clustering — the radii live in the settings section `clustering`
+    # (app.services.clustering); this is only the last-resort fallback.
     CLUSTER_RADIUS_M: float = 50.0   # default cluster radius in metres
+    # Boundary search of the Cluster configuration page (Nominatim search
+    # with polygon_geojson): country filter (ISO codes, comma separated,
+    # "" = worldwide), endpoint, timeout.
+    CLUSTERING_BOUNDARY_COUNTRYCODES: str = "cm"
+    CLUSTERING_BOUNDARY_URL:          str = "https://nominatim.openstreetmap.org/search"
+    CLUSTERING_BOUNDARY_TIMEOUT_S:    float = 12.0
 
-    # Watchdog
+    # Reverse geocoding (app.services.geocoding) — Nominatim / OpenStreetMap.
+    # Usage policy: identifying User-Agent (with a contact), ≤ 1 request/s,
+    # results cached. GEOCODING_CONTACT (an e-mail) is appended to the
+    # User-Agent and sent as `email=`. Disable to keep the platform offline.
+    GEOCODING_ENABLED:      bool  = True
+    GEOCODING_URL:          str   = "https://nominatim.openstreetmap.org/reverse"
+    GEOCODING_CONTACT:      str   = ""
+    GEOCODING_LANGUAGE:     str   = ""      # Accept-Language ("" = local names)
+    GEOCODING_TIMEOUT_S:    float = 6.0
+    GEOCODING_MIN_INTERVAL_S: float = 1.0
+    # Back-fill of detections stored before structured addresses existed:
+    # at API start-up, at most this many lookups in the background (0 = off).
+    GEOCODING_BACKFILL_ON_STARTUP: int = 300
+
+    # Watchdog — beat runs it every 5 min (app.workers.job_tasks.watchdog_stale_jobs)
     STALE_JOB_MINUTES: int = 60
+
+    # Module 7 — hard upper bound of parallel jobs: the worker's --concurrency
+    # (docker-compose.yml reads the same variable). The runtime limit is
+    # settings section `processing.max_concurrent_jobs` (≤ this value in practice).
+    WORKER_CONCURRENCY: int = 4
 
     # ── OSRM road-intelligence layer (collision-prevention Step 2) ─────────
     # Defaults to the public OSRM demo server so the integration works out of
@@ -257,9 +302,36 @@ class Settings(BaseSettings):
     # by too many attempts.
     HISTORICAL_YMANE_SYNC_MAX_CONSECUTIVE_FAILURES: int = 2
 
+    # ── Platform security / users (Module 1) ───────────────────────────────
+    # Master switch. When False every route stays open exactly as before
+    # (used by docker-compose.demo.yml so the simulator and an unconfigured
+    # phone keep working); login, users and roles still function.
+    AUTH_ENFORCED: bool = True
+    # Encrypts secrets stored in the system_settings table (SMTP password,
+    # CAPTCHA secret, Google key). MUST be set to a long random value in
+    # production — changing it later makes stored secrets unreadable.
+    SECRET_KEY: str = "dev-insecure-secret-change-me"
+    # Base URL of the web console, used to build password-reset links.
+    WEB_BASE_URL: str = "http://localhost:3000"
+    # Comma-separated browser origins allowed by CORS. The web console goes
+    # through its server-side proxy and the native app is not subject to
+    # CORS, so only dev origins are needed here by default.
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8081"
+    # First administrator, created on startup only when no user exists yet.
+    BOOTSTRAP_ADMIN_EMAIL:    str = ""
+    BOOTSTRAP_ADMIN_PASSWORD: str = ""
+    # Self-registration from the mobile app (POST /auth/mobile/register):
+    # attempts allowed per client IP per hour (Redis counter).
+    MOBILE_REGISTER_PER_HOUR: int = 5
+
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+    @property
+    def pothole_classifier_path(self) -> str:
+        """MODEL_POTHOLE_CLASSIFIER, falling back to the legacy MODEL_CLASSIFIER."""
+        return self.MODEL_POTHOLE_CLASSIFIER or self.MODEL_CLASSIFIER
 
 
 settings = Settings()

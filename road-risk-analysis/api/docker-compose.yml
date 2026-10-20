@@ -11,6 +11,7 @@ services:
     volumes:
       - ./models:/models:ro
       - ./app:/app/app:ro
+      - ./secrets:/app/secrets:ro      # SFTP passwords (secrets/sftp.env), never in the image
       - /tmp/road_analysis:/tmp/road_analysis
     depends_on:
       redis:
@@ -19,12 +20,15 @@ services:
 
   worker:
     build: .
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q processing
+    # Hard upper bound of jobs running at once; the runtime limit is the
+    # `processing.max_concurrent_jobs` platform setting (Settings → Platform).
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-4} -Q processing
     network_mode: host
     env_file: .env
     volumes:
       - ./models:/models:ro
       - ./app:/app/app:ro
+      - ./secrets:/app/secrets:ro
       - /tmp/road_analysis:/tmp/road_analysis
     depends_on:
       redis:
@@ -33,8 +37,9 @@ services:
 
   beat:
     build: .
-    # Schedules periodic tasks (currently: Ymane historical-event sync,
-    # off by default — see settings.HISTORICAL_YMANE_SYNC_ENABLED) onto the
+    # Schedules periodic tasks (Ymane historical-event sync — off by default,
+    # see settings.HISTORICAL_YMANE_SYNC_ENABLED — plus the Module 7 stale-job
+    # watchdog, failed-media cleanup, cloud folder sync and stream capture) onto the
     # same "processing" queue the `worker` service already consumes. This
     # container only enqueues on schedule; it never executes tasks itself.
     command: celery -A app.workers.celery_app beat --loglevel=info

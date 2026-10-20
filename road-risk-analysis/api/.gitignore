@@ -17,3 +17,11 @@ road-risk-analysis-interface/
 # Compiled/downloaded OSRM road dataset — regeneratable via osrm/prepare_cameroon.sh
 osrm/data/*
 !osrm/data/.gitkeep
+
+# Secrets (SFTP passwords / private keys) — created on each machine, never committed
+secrets/*.env
+secrets/*.key
+secrets/*_ed25519
+secrets/*_rsa
+secrets/*_ecdsa
+!secrets/*.example
