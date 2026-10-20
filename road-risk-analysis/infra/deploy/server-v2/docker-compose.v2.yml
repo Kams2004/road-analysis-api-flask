@@ -1,0 +1,166 @@
+# VIASafe v2 — complete, separate stack for the server (project name: viasafe-v2).
+#
+# Runs NEXT TO the existing production deployment without touching it:
+#   - own Docker project / network / volumes / container names (viasafe-v2-*)
+#   - own Postgres, Redis, MinIO and Cameroon OSRM (internal only, no host port)
+#   - only three host ports, all configurable in .env (defaults 18080 / 13000 / 19200)
+# Production keeps the host network ports it already uses (8080 API, 6379 Redis,
+# the frontend, native Postgres/MinIO) — none of them is bound here.
+#
+# Started by deploy.sh (which checks the ports are free first):
+#   docker compose -p viasafe-v2 -f docker-compose.v2.yml --env-file .env up -d --build
+#
+# Server layout (written by push.sh), paths below are relative to this file
+# (~/viasafe-v2/infra/deploy/server-v2):
+#   ~/viasafe-v2/backend    API / worker image build context
+#   ~/viasafe-v2/web        web console image build context
+#   ~/viasafe-v2/infra      this kit, osrm/ image, secrets/ (sftp.env, chmod 600)
+#   ~/viasafe-v2/ai/models  installed weights + cards (mounted read-only on /models)
+#   ~/viasafe-v2/docs       documentation
+
+name: viasafe-v2
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql+asyncpg://viasafe:${DB_PASSWORD}@db:5432/viasafe
+  REDIS_URL: redis://redis:6379/2
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  OSRM_BASE_URL: http://osrm:5000
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_USER}
+  MINIO_SECRET_KEY: ${MINIO_PASSWORD}
+  MINIO_SECURE: "false"
+  AUTH_ENFORCED: "true"
+  SECRET_KEY: ${SECRET_KEY}
+  BOOTSTRAP_ADMIN_EMAIL: ${ADMIN_EMAIL}
+  BOOTSTRAP_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+  HISTORICAL_YMANE_SYNC_ENABLED: "false"
+  TEMP_DIR: /tmp/road_analysis
+  OMP_NUM_THREADS: "2"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: viasafe
+      POSTGRES_USER: viasafe
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U viasafe -d viasafe"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  # Self-preparing: the first boot downloads the Cameroon extract (~220 MB) and
+  # compiles it (several minutes); later boots reuse the osrm_data volume.
+  osrm:
+    build:
+      context: ../../osrm
+    image: viasafe-v2-osrm:cameroon
+    environment:
+      OSRM_REGION: cameroon
+    volumes:
+      - osrm_data:/data
+    restart: unless-stopped
+
+  minio:
+    # MinIO no longer publishes images on Docker Hub: this exact image is shipped
+    # from the dev PC (see push.sh --minio) and is never pulled.
+    image: minio/minio:latest
+    pull_policy: never
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MEDIA_PORT:-19200}:9000"     # read-only demo images for the mobile app
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../../../backend
+    image: viasafe-v2-api:latest
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    environment: *api-env
+    volumes:
+      - ../../../ai/models:/models:ro
+      - ../../secrets:/app/secrets:ro     # SFTP passwords: ~/viasafe-v2/infra/secrets/sftp.env (chmod 600)
+      - uploads:/tmp/road_analysis
+    ports:
+      - "${API_PORT:-18080}:8080"
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  worker:
+    image: viasafe-v2-api:latest
+    command: celery -A app.workers.celery_app worker -Q processing --concurrency=${WORKER_CONCURRENCY:-2} --loglevel=info
+    environment: *api-env
+    volumes:
+      - ../../../ai/models:/models:ro
+      - ../../secrets:/app/secrets:ro
+      - uploads:/tmp/road_analysis
+    depends_on: [api]
+    restart: unless-stopped
+
+  beat:
+    image: viasafe-v2-api:latest
+    command: celery -A app.workers.celery_app beat --loglevel=info -s /tmp/celerybeat-schedule
+    environment: *api-env
+    depends_on: [api]
+    restart: unless-stopped
+
+  # Demo units for the collision module (waves towards the phone).
+  # Test phase: OFF by default — only started with `--profile demo`
+  # (./deploy.sh --with-demo).
+  simulator:
+    profiles: ["demo"]
+    image: viasafe-v2-api:latest
+    command: python -u -m app.demo.vehicle_simulator
+    environment:
+      API_BASE_URL: http://api:8080
+      API_KEY: ${SIM_API_KEY}
+      SIM_OSRM_URL: http://osrm:5000
+      SIM_MODE: ${SIM_MODE:-presentation}
+      SIM_NUM_VEHICLES: "6"
+      SIM_TICK_SECONDS: "1"
+      SIM_WAVE_SECONDS: "40"
+      SIM_UNITS_PER_WAVE: "4"
+    depends_on: [api, osrm]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../../../web
+      args:
+        NEXT_PUBLIC_API_URL: http://${PUBLIC_HOST}:${API_PORT:-18080}
+    image: viasafe-v2-web:latest
+    environment:
+      API_URL: http://api:8080
+      MINIO_URL: http://minio:9000
+      COOKIE_SECURE: "false"
+    ports:
+      - "${WEB_PORT:-13000}:3001"
+    depends_on: [api]
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  osrm_data:
+  minio_data:
+  uploads:

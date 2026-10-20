@@ -1,0 +1,54 @@
+# road-risk-analysis/ — project-wide ignore rules.
+# Tracked by the home-rooted repo: backend/ infra/ docs/ tools/ README.md .gitignore
+# (allow-list in ~/.gitignore). Everything else here is a separate repo or local data.
+
+# ── Separate repositories (have their own git) / local data ──────────────────
+/web/
+/mobile/
+/ai/
+/data/
+/logs/
+
+# ── Secrets — never committed ────────────────────────────────────────────────
+.env
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+**/kaggle.json
+/infra/secrets/*
+!/infra/secrets/README.md
+!/infra/secrets/*.example
+/infra/deploy/server-v2/.env
+/infra/local/
+
+# ── Infra data ───────────────────────────────────────────────────────────────
+# Compiled / downloaded OSRM road dataset (partly root-owned) — regeneratable
+# via infra/osrm/prepare_cameroon.sh or the self-preparing osrm image.
+/infra/osrm/data/*
+!/infra/osrm/data/.gitkeep
+/infra/wheels/
+
+# ── Tools: keep the scripts, not their outputs ──────────────────────────────
+/tools/pothole_v1/*
+!/tools/pothole_v1/run_test.sh
+!/tools/pothole_v1/test_video.py
+
+# ── Heavy / generated ───────────────────────────────────────────────────────
+**/venv/
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+*.pyc
+*.pt
+*.pth
+*.onnx
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar
+*.tar.gz
+**/work/
+**/runs/
+.DS_Store

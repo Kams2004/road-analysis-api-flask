@@ -1,0 +1,9 @@
+# backend/ — FastAPI app, Celery worker, tests, SQL migrations.
+# Project-wide rules (secrets, models, data, logs, sub-repos) live in ../.gitignore.
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.pt
+*.pth
+.DS_Store

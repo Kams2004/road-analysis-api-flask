@@ -7,13 +7,19 @@
 # Default-deny: ignore everything at this level, then explicitly
 # re-allow only the real project directory.
 #
-# road-analysis-api was reorganized into road-risk-analysis/api (2026-10-14).
-# Only that one subfolder is allowlisted — road-risk-analysis/model-training
-# and road-risk-analysis/parked-vehicle-detection are deliberately left
-# ignored here: each has its own independent .git repo and must never be
-# swept into this (home-directory-rooted) repo as a nested/embedded one.
+# road-analysis-api was reorganized into road-risk-analysis/api (2026-10-14),
+# then split into top-level modules (2026-10-20): backend/ infra/ docs/ tools/
+# are tracked here. road-risk-analysis/{web,mobile,ai} are deliberately left
+# ignored: each has its own independent .git repo and must never be swept
+# into this (home-directory-rooted) repo as a nested/embedded one; data/ and
+# logs/ are local only. Finer rules: road-risk-analysis/.gitignore.
 /*
 !/.gitignore
 !/road-risk-analysis/
 /road-risk-analysis/*
-!/road-risk-analysis/api/
+!/road-risk-analysis/backend/
+!/road-risk-analysis/infra/
+!/road-risk-analysis/docs/
+!/road-risk-analysis/tools/
+!/road-risk-analysis/README.md
+!/road-risk-analysis/.gitignore

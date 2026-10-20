@@ -1,0 +1,13 @@
+# Build context = backend/ (see infra/docker-compose*.yml, infra/deploy/server-v2).
+# Weights are mounted at run time (ai/models -> /models), secrets too
+# (infra/secrets -> /app/secrets): neither is ever baked into an image.
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.pt
+*.pth
+.DS_Store
+.idea/
+.vscode/
+secrets/
