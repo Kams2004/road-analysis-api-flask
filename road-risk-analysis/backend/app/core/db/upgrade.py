@@ -8,6 +8,7 @@ COLUMNS / enum values on tables that already exist are added here with
 Each block is mirrored in backend/migrations/ for manual / review purposes.
 """
 import logging
+import re
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -270,16 +271,34 @@ REJECTION_KIND_COLUMNS = [
     "ALTER TABLE training_samples ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
+_ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
+
+
+async def _existing_columns(conn) -> set[tuple[str, str]]:
+    rows = await conn.exec_driver_sql(
+        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()")
+    return {(t, c) for t, c in rows.all()}
+
+
 async def run(engine: AsyncEngine) -> None:
     async with engine.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
         for stmt in MODULE6_ENUM_VALUES + MODULE7_ENUM_VALUES + MOBILE_ENUM_VALUES:
             await conn.exec_driver_sql(stmt)
     async with engine.begin() as conn:
+        # ALTER TABLE takes an exclusive table lock even when the column already exists
+        # (IF NOT EXISTS is checked under the lock): skipping existing columns keeps an
+        # API restart from deadlocking with a worker that is inserting detections.
+        existing = await _existing_columns(conn)
+        skipped = 0
         for stmt in (MODULE6_COLUMNS + MODULE6_BACKFILL + MODULE7_COLUMNS + MOBILE_COLUMNS + COMMUNITY_COLUMNS
                      + AI_VALIDATION_COLUMNS + SIGN_CLASSIFIER_COLUMNS
                      + HAZARD_LIFECYCLE_COLUMNS + HAZARD_LIFECYCLE_BACKFILL + PARKED_VEHICLE_COLUMNS
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
                      + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS):
+            m = _ADD_COLUMN.match(stmt)
+            if m and (m.group(1).lower(), m.group(2).lower()) in existing:
+                skipped += 1
+                continue
             await conn.exec_driver_sql(stmt)
-    logger.info("Schema upgrade checked")
+    logger.info("Schema upgrade checked (%d existing columns skipped)", skipped)
