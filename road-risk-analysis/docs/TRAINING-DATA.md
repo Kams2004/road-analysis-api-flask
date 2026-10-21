@@ -38,11 +38,28 @@ but no detector image (`training_frames.status = no_image`).
 |---|---|---|---|
 | accept (`validated`) | `decision=accepted`, class from the detector card | box added to the frame label | `<type>/classifier/<class>/<id>.jpg` |
 | accept with `bbox` / correct (class, box or location) (`corrected`) | `decision=corrected`, `corrections=["box","class","location"]`; the **corrected box overrides** the predicted one; a class correction moves the sample to the new type | box (corrected) in the label of the new type | crop of the corrected box, in the new class folder |
-| reject (with reason) | `decision=rejected`, `reason_code`, no detector class | contributes **no box**: a frame with only rejections = **background** (empty `.txt`); if other accepted boxes exist on the same frame they stay | `<type>/classifier/not_<type>/<id>.jpg` (`not_pothole`, `not_speed_bump`, signs: `not_a_sign`, or the classifier card's reject class) |
+| reject, reason of kind `false_positive` | `decision=rejected`, `reason_code`, `rejection_kind=false_positive`, no detector class | contributes **no box**: a frame with only such rejections = **background** (empty `.txt`); if other accepted boxes exist on the same frame they stay | `<type>/classifier/not_<type>/<id>.jpg` (`not_pothole`, `not_speed_bump`, signs: `not_a_sign`, or the classifier card's reject class) |
+| reject, reason of kind `real_redundant` | `decision=rejected`, `rejection_kind=real_redundant`, detector class like an accepted one | **positive**: its box (the corrected one if any) is added to the frame label | `<type>/classifier/<class>/<id>.jpg` — the positive class |
+| reject, reason of kind `unusable` | `decision=rejected`, `rejection_kind=unusable`, `excluded=true` (listed in the manifest for traceability) | **nothing**: no box, and no frame is created just for it (a frame left with only unusable rejections is removed) | none (an earlier crop is deleted) |
 | automatic decision (AI mode) | same, `decided_by=system`, `reviewer=system` | same | same |
 | reopen | `state=superseded` | box removed; a frame with no active decision left is **deleted** from the bucket | crop deleted |
 | resolve / unresolve | unchanged (still accepted) | — | — |
 
+* **Rejection kinds.** Every rejection reason (`rejection_reasons.kind`, `GET /rejection-reasons`) says what a
+  rejection teaches the models:
+
+  | kind | meaning | built-in reasons |
+  |---|---|---|
+  | `false_positive` — *AI mistake (teaches the model)* | the AI was wrong: a **negative** example | not_road_side, ai_verifier, ai_off_road, ai_box_too_large, shadow, water_reflection, manhole, road_marking, dirt_patch, crack_or_tyre_marks, road_patch, broken_edge, vegetation, debris, ai_not_a_sign, person_as_sign, bike_as_stop (*Vehicle / motorbike part*), pole_as_sign, street_light, billboard, vehicle_sticker, tree_as_sign, road_edge, ditch, pothole_or_damage, marking_or_crossing, ai_not_grounded, ai_traffic_queue, ai_moving_vehicle (parked vehicles: "not parked" → negative of the parked-vehicle classifier), not_a_vehicle |
+  | `real_redundant` — *Real but redundant* | the object is real, the detection is only redundant: a **positive** sample | duplicate, speed_bump_ok |
+  | `unusable` — *Can't judge* | the object cannot be judged: **excluded** from training | image_quality, out_of_frame, low_confidence, sign_not_visible |
+
+  Custom reasons default to `false_positive`; their kind can be set when created and changed later
+  (`PATCH /rejection-reasons/{id}`, Settings → Hazards → Rejection reasons), which re-files the past rejections with
+  that code. The built-in table lives in `app/modules/m06_hazards/rejection_seeds.py` (seeded idempotently at start).
+  Samples filed before kinds existed are re-filed once at API start; to recompute all of them (idempotent):
+  `python -m app.cli resync-training-rejections` (prints crops per class / frames / excluded before and after and
+  writes the bucket objects: redundant crops move to the positive folder, unusable crops and frames are removed).
 * **Several detections on the same frame** (same type) → **one** detector sample whose label holds every
   accepted / corrected box. Each type has its own detector dataset (a pothole frame and a sign frame of the same video
   frame are two samples).
@@ -83,7 +100,7 @@ active/empty/no_image, review_status, reviewed boxes + reviewer, dirty / sync er
 **API** (permission `datasets`; Swagger tag *Datasets*):
 | | |
 |---|---|
-| `GET /datasets/training/summary` | per type: accepted / corrected / rejected, detector frames (positive / background), crops per class, box_reviewed / needs_box_review, sync state |
+| `GET /datasets/training/summary` | per type: accepted / corrected / rejected (of which `excluded` = unusable, `redundant_positive` = real_redundant), detector frames (positive / background), crops per class, box_reviewed / needs_box_review, sync state |
 | `GET /datasets/samples?detection_type=&decision=&review_status=&state=&decided_by=&since=&skip=&limit=` | the samples (paginated, `total`) |
 | `GET /datasets/export?type=pothole&format=manifest\|yolo[&since=&review_status=&decided_by=]` | JSON manifest with download paths, or a zip (bucket layout + `data.yaml`, `frames.csv`, `samples.csv`, `manifest.json`) |
 | `GET /datasets/files/<key>` | one object of the bucket |

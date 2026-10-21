@@ -37,6 +37,8 @@ class TrainingSample(Base):
     reviewer:     Mapped[str | None] = mapped_column(String, nullable=True)
     reviewed_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reason_code:  Mapped[str | None] = mapped_column(String, nullable=True)   # rejection_code
+    rejection_kind: Mapped[str | None] = mapped_column(String, nullable=True)  # false_positive | real_redundant | unusable
+    excluded:     Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # unusable: no files
     corrections:  Mapped[list | None] = mapped_column(JSON, nullable=True)    # ["box", "class", "location"]
 
     # labels

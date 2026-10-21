@@ -176,8 +176,11 @@ def register_routes(app: FastAPI) -> None:
             ("DELETE", "/cluster-areas/{area_id}"): ("settings", EDIT),
         },
     )])
+    # Editing a reason (its kind re-files training data) is a settings change.
     app.include_router(rejection_reasons.router, prefix="/rejection-reasons", tags=[doc.TAG_REJECTION],
-                       dependencies=[module_guard("validations")])
+                       dependencies=[module_guard("validations", overrides={
+                           ("PATCH", "/rejection-reasons/{reason_id}"): ("settings", EDIT),
+                       })])
     app.include_router(signalements.router, prefix="/signalements", tags=[doc.TAG_SIGNALEMENTS], dependencies=[module_guard(
         "signalements",
         read_posts={"/signalements/nearby", "/signalements/along-route"},

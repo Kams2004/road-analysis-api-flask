@@ -11,6 +11,9 @@ class RejectionReason(Base):
     Built-in reasons are seeded at startup (is_custom=False).
     User-added reasons have is_custom=True.
     detection_type = "all" means the reason applies to every type.
+    kind = what a rejection with this reason teaches the training data
+    (app.modules.m06_hazards.training_data.layout.REJECTION_KINDS):
+    false_positive | real_redundant | unusable.
     """
     __tablename__ = "rejection_reasons"
 
@@ -20,4 +23,6 @@ class RejectionReason(Base):
     label:          Mapped[str]      = mapped_column(String)                # human label e.g. "Not road-side"
     description:    Mapped[str]      = mapped_column(String)
     is_custom:      Mapped[bool]     = mapped_column(Boolean, default=False)
+    kind:           Mapped[str]      = mapped_column(String, default="false_positive",
+                                                     server_default="false_positive")
     created_at:     Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -22480,6 +22480,164 @@
         "x-api-key": false
       }
     },
+    "/rejection-reasons/{reason_id}": {
+      "patch": {
+        "tags": [
+          "Rejection reasons"
+        ],
+        "summary": "Edit a custom rejection reason",
+        "description": "Edit the label, description or kind of a custom reason. Changing the kind\nre-files the training samples of past rejections with this code\n(docs/TRAINING-DATA.md).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `settings:edit`",
+        "operationId": "update_reason",
+        "parameters": [
+          {
+            "name": "reason_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Reason Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectionReasonUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RejectionReasonOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks settings:edit",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "settings",
+                        "action": "edit"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Rejection reason not found",
+                    "value": {
+                      "detail": "Rejection reason not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Built-in rejection reasons cannot be edited",
+                    "value": {
+                      "detail": "Built-in rejection reasons cannot be edited"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "settings:edit",
+        "x-api-key": false
+      }
+    },
     "/signalements/": {
       "post": {
         "tags": [
@@ -39957,6 +40115,17 @@
             "examples": [
               "Standing water, no road damage visible"
             ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "false_positive",
+              "real_redundant",
+              "unusable"
+            ],
+            "title": "Kind",
+            "description": "What a rejection with this reason teaches the training data: `false_positive` (AI mistake → negative example), `real_redundant` (real object, redundant → positive sample) or `unusable` (cannot be judged → not used for training).",
+            "default": "false_positive"
           }
         },
         "type": "object",
@@ -40013,6 +40182,19 @@
             "title": "Is Custom",
             "description": "`false` for the seeded reasons, `true` for those added by users."
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "false_positive",
+              "real_redundant",
+              "unusable"
+            ],
+            "title": "Kind",
+            "description": "What a rejection with this reason teaches the training data: `false_positive` (AI mistake → negative example), `real_redundant` (real object, redundant → positive sample) or `unusable` (cannot be judged → not used for training).",
+            "examples": [
+              "false_positive"
+            ]
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -40028,10 +40210,59 @@
           "label",
           "description",
           "is_custom",
+          "kind",
           "created_at"
         ],
         "title": "RejectionReasonOut",
         "description": "A rejection reason offered to validators."
+      },
+      "RejectionReasonUpdate": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "Short label shown to validators."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "Longer explanation."
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "false_positive",
+                  "real_redundant",
+                  "unusable"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind",
+            "description": "What a rejection with this reason teaches the training data: `false_positive` (AI mistake → negative example), `real_redundant` (real object, redundant → positive sample) or `unusable` (cannot be judged → not used for training)."
+          }
+        },
+        "type": "object",
+        "title": "RejectionReasonUpdate",
+        "description": "Changes to a custom rejection reason (omitted fields are kept)."
       },
       "ReopenIn": {
         "properties": {
@@ -44288,6 +44519,24 @@
             "title": "Reason Code",
             "description": "Rejection reason code (rejected samples)."
           },
+          "rejection_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Kind",
+            "description": "Kind of the rejection reason: `false_positive` (negative), `real_redundant` (positive) or `unusable` (excluded)."
+          },
+          "excluded": {
+            "type": "boolean",
+            "title": "Excluded",
+            "description": "`true` = not used for training (unusable rejection, no files).",
+            "default": false
+          },
           "corrections": {
             "anyOf": [
               {
@@ -44318,7 +44567,7 @@
               }
             ],
             "title": "Class Name",
-            "description": "Detector class (`null` when rejected)."
+            "description": "Detector class (`null` unless positive)."
           },
           "class_index": {
             "anyOf": [
@@ -44531,7 +44780,19 @@
           "rejected": {
             "type": "integer",
             "title": "Rejected",
-            "description": "Active rejected samples (classifier negatives, detector background)."
+            "description": "Active rejected samples, every kind (false_positive ones are classifier negatives / detector background)."
+          },
+          "excluded": {
+            "type": "integer",
+            "title": "Excluded",
+            "description": "Rejections of kind `unusable`: kept for traceability, no files.",
+            "default": 0
+          },
+          "redundant_positive": {
+            "type": "integer",
+            "title": "Redundant Positive",
+            "description": "Rejections of kind `real_redundant`, filed as positive samples.",
+            "default": 0
           },
           "superseded": {
             "type": "integer",

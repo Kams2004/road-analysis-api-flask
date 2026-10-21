@@ -96,7 +96,8 @@ def _image_size(frame_jpeg: bytes) -> tuple[Optional[int], Optional[int]]:
 def _view(s: TrainingSample) -> layout.SampleView:
     box = (s.bbox_x1, s.bbox_y1, s.bbox_x2, s.bbox_y2)
     return layout.SampleView(s.id, s.state, s.decision, s.class_index, s.class_name,
-                             box if all(v is not None for v in box) else None)
+                             box if all(v is not None for v in box) else None,
+                             kind=s.rejection_kind, excluded=bool(s.excluded))
 
 
 def _sync_frame_objects(fr: TrainingFrame, samples: list[TrainingSample], dets: dict[str, Detection]) -> dict:
@@ -130,8 +131,8 @@ def _sync_frame_objects(fr: TrainingFrame, samples: list[TrainingSample], dets: 
     for s in samples:
         if s.sync_status == "synced":
             continue
-        want = (layout.crop_key(t, s.classifier_class, s.id)
-                if s.state == "active" and s.detection_type == t else None)
+        want = (layout.crop_key(t, s.classifier_class, s.id)          # unusable rejection: no crop
+                if s.state == "active" and s.detection_type == t and not s.excluded else None)
         if want is None:
             _remove(s.crop_key)
             out["crops"][s.id] = None

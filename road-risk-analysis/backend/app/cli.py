@@ -80,6 +80,53 @@ async def geocode_backfill(limit: int) -> None:
           f"{st.hazards_updated} hazard(s) refreshed ({st.stopped_reason}); pending {before} → {after}")
 
 
+async def _training_counts(db) -> dict:
+    from sqlalchemy import func, select
+    from app.modules.m06_hazards.models.training_sample import TrainingFrame, TrainingSample
+    out: dict = {}
+    for t, cls, n in (await db.execute(select(TrainingSample.detection_type, TrainingSample.classifier_class,
+                                              func.count()).where(TrainingSample.state == "active",
+                                                                  TrainingSample.crop_key.is_not(None))
+                                       .group_by(TrainingSample.detection_type, TrainingSample.classifier_class)
+                                       )).all():
+        out.setdefault(t, {}).setdefault("crops", {})[cls] = n
+    for t, n in (await db.execute(select(TrainingSample.detection_type, func.count()).where(
+            TrainingSample.state == "active", TrainingSample.excluded.is_(True))
+            .group_by(TrainingSample.detection_type))).all():
+        out.setdefault(t, {})["excluded"] = n
+    positive = TrainingFrame.n_boxes > 0
+    for t, n_boxes, n in (await db.execute(select(TrainingFrame.detection_type, positive, func.count())
+                                           .where(TrainingFrame.status == "active")
+                                           .group_by(TrainingFrame.detection_type, positive))).all():
+        out.setdefault(t, {})["positive_frames" if n_boxes else "background_frames"] = n
+    return out
+
+
+async def resync_training_rejections(only_unclassified: bool) -> None:
+    """Re-file the training samples of rejected detections by reason kind and
+    write the bucket objects (docs/TRAINING-DATA.md). Idempotent."""
+    import json
+    from app.modules.m06_hazards import training_data
+    from app.modules.m06_hazards.training_data import sync
+    await init_db()
+    from app.modules.m06_hazards.rejection_seeds import seed_rejection_reasons
+    async with AsyncSessionLocal() as db:
+        await seed_rejection_reasons(db)              # built-in reasons and kinds up to date
+        before = await _training_counts(db)
+        res = await training_data.resync_rejections(db, only_unclassified=only_unclassified)
+        synced = failed = 0
+        while True:
+            st = await sync.sync_dirty(db, limit=500)
+            synced, failed = synced + st["synced"], failed + st["failed"]
+            if not st["frames"] or st["synced"] == 0:
+                break
+        after = await _training_counts(db)
+    print(f"Rejected samples checked: {res['checked']}, re-filed: {res['changed']}; "
+          f"frames synced: {synced}, failed: {failed}")
+    print("before:", json.dumps(before, sort_keys=True))
+    print("after: ", json.dumps(after, sort_keys=True))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -91,11 +138,16 @@ def main() -> None:
     sub.add_parser("rebuild-hazards")
     g = sub.add_parser("geocode-backfill")
     g.add_argument("--limit", type=int, default=500)
+    r = sub.add_parser("resync-training-rejections",
+                       help="re-file rejected training samples by reason kind (idempotent)")
+    r.add_argument("--only-unclassified", action="store_true")
     args = parser.parse_args()
     if args.cmd == "create-admin":
         asyncio.run(create_admin(args.email, args.name))
     elif args.cmd == "rebuild-hazards":
         asyncio.run(rebuild_hazards())
+    elif args.cmd == "resync-training-rejections":
+        asyncio.run(resync_training_rejections(args.only_unclassified))
     elif args.cmd == "geocode-backfill":
         asyncio.run(geocode_backfill(args.limit))
     else:

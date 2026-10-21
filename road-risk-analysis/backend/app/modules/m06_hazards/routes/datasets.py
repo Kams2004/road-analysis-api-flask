@@ -87,7 +87,10 @@ class TrainingTypeSummaryOut(BaseModel):
                                          examples=[["pothole"]])
     accepted:          int = Field(description="Active samples accepted as predicted.")
     corrected:         int = Field(description="Active samples accepted after a box / class / location correction.")
-    rejected:          int = Field(description="Active rejected samples (classifier negatives, detector background).")
+    rejected:          int = Field(description="Active rejected samples, every kind (false_positive ones are "
+                                       "classifier negatives / detector background).")
+    excluded:          int = Field(0, description="Rejections of kind `unusable`: kept for traceability, no files.")
+    redundant_positive: int = Field(0, description="Rejections of kind `real_redundant`, filed as positive samples.")
     superseded:        int = Field(description="Samples of reopened detections (removed from the dataset).")
     by_human:          int = Field(description="Active samples decided by a validator.")
     by_system:         int = Field(description="Active samples decided automatically (AI validation mode).")
@@ -118,9 +121,12 @@ class TrainingSampleOut(BaseModel):
     decided_by:       str = Field(description="`human` or `system` (automatic decision).")
     reviewer:         Optional[str] = Field(None, description="Who decided.")
     reason_code:      Optional[str] = Field(None, description="Rejection reason code (rejected samples).")
+    rejection_kind:   Optional[str] = Field(None, description="Kind of the rejection reason: `false_positive` "
+                                            "(negative), `real_redundant` (positive) or `unusable` (excluded).")
+    excluded:         bool = Field(False, description="`true` = not used for training (unusable rejection, no files).")
     corrections:      Optional[list[str]] = Field(None, description="What was corrected: `box`, `class`, "
                                                                     "`location`.", examples=[["box"]])
-    class_name:       Optional[str] = Field(None, description="Detector class (`null` when rejected).")
+    class_name:       Optional[str] = Field(None, description="Detector class (`null` unless positive).")
     class_index:      Optional[int] = Field(None, description="YOLO class id in `<type>/detector/classes.txt`.")
     classifier_class: str = Field(description="Classifier folder of the crop.", examples=["not_pothole"])
     bbox_x1:          Optional[float] = Field(None, description="Effective box (the corrected one when corrected), "

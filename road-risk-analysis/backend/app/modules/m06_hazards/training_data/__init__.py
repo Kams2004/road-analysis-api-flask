@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.modules.m06_hazards.models.detection import MANUAL_LOCATION_SOURCES, Detection
 from app.modules.m07_ingestion.models.job import Job
+from app.modules.m06_hazards.models.rejection_reason import RejectionReason
 from app.modules.m06_hazards.models.training_sample import TrainingFrame, TrainingSample
 from app.modules.m06_hazards.training_data import layout
 
@@ -59,7 +60,21 @@ def _signature(row: Optional[TrainingSample]) -> tuple:
     if row is None:
         return ()
     return (row.state, row.decision, row.detection_type, row.frame_key, row.class_index,
-            row.bbox_x1, row.bbox_y1, row.bbox_x2, row.bbox_y2)
+            row.bbox_x1, row.bbox_y1, row.bbox_x2, row.bbox_y2, row.classifier_class,
+            row.rejection_kind, bool(row.excluded))
+
+
+async def reason_kind(db: AsyncSession, code: Optional[str], det_type: str) -> str:
+    """Kind of a rejection reason code for a detection type (its own reason
+    first, then the `all` one, then the built-in table); no / unknown code →
+    false_positive (the behaviour before kinds existed)."""
+    if not code:
+        return layout.DEFAULT_REJECTION_KIND
+    rows = (await db.execute(select(RejectionReason.detection_type, RejectionReason.kind).where(
+        RejectionReason.code == code, RejectionReason.detection_type.in_((det_type, "all"))))).all()
+    kinds = dict(rows)
+    from app.modules.m06_hazards.rejection_seeds import seed_kind
+    return layout.rejection_kind(kinds.get(det_type) or kinds.get("all") or seed_kind(code, det_type))
 
 
 async def _frame(db: AsyncSession, det_type: str, key: str) -> Optional[TrainingFrame]:
@@ -119,8 +134,10 @@ async def _record(db: AsyncSession, det: Detection, job: Optional[Job], actor_ty
     source = (job.source_name or job.filename) if job is not None else None
     key = layout.frame_key(source, det.job_id, det.video_time_s, det.frame_number)
     classes, reject, _, _ = card_info(det.type)
+    kind = await reason_kind(db, det.rejection_code, det.type) if decision == "rejected" else None
+    role = layout.sample_role(decision, kind)
     cls_name, cls_idx = (layout.detector_class(det.type, det.subtype, det.ai_details, classes)
-                         if decision in layout.ACCEPTED_DECISIONS else (None, None))
+                         if role == "positive" else (None, None))
     box = layout.effective_box((det.bbox_x1, det.bbox_y1, det.bbox_x2, det.bbox_y2), det.corrected_bbox)
     system = (actor_type == "system") if actor_type else (det.reviewed_by in (None, "system"))
 
@@ -134,9 +151,10 @@ async def _record(db: AsyncSession, det: Detection, job: Optional[Job], actor_ty
     row.decided_by = "system" if system else "human"
     row.reviewer, row.reviewed_at = det.reviewed_by, det.reviewed_at
     row.reason_code = det.rejection_code if decision == "rejected" else None
+    row.rejection_kind, row.excluded = kind, role == "excluded"
     row.corrections = layout.corrections_of(det, MANUAL_LOCATION_SOURCES) or None
     row.class_name, row.class_index = cls_name, cls_idx
-    row.classifier_class = layout.classifier_class(det.type, det.subtype, decision, reject)
+    row.classifier_class = layout.classifier_class(det.type, det.subtype, decision, reject, kind)
     row.bbox_x1, row.bbox_y1, row.bbox_x2, row.bbox_y2 = box if box else (None, None, None, None)
     row.box_corrected = bool(det.corrected_bbox)
     row.frame_number, row.video_time_s, row.recorded_at = det.frame_number, det.video_time_s, det.recorded_at
@@ -152,4 +170,40 @@ async def _record(db: AsyncSession, det: Detection, job: Optional[Job], actor_ty
     if old_frame and old_frame != (det.type, key):
         await _touch_frame(db, *old_frame, reset_review=True)
     if changed or row.sync_status == "pending":
-        await _touch_frame(db, det.type, key, det=det, job=job, reset_review=bool(before) and changed)
+        if row.excluded and await _frame(db, det.type, key) is None:
+            # unusable: no frame is created just for it; nothing to write
+            if not row.crop_key:
+                row.sync_status, row.synced_at = "synced", now
+            await db.flush()
+            return
+        await _touch_frame(db, det.type, key, det=det if not row.excluded else None, job=job,
+                           reset_review=bool(before) and changed)
+
+
+async def resync_rejections(db: AsyncSession, *, only_unclassified: bool = False,
+                            codes: Optional[list[str]] = None) -> dict:
+    """Re-file the training samples of rejected detections by the current kind
+    of their reason (false_positive → negative, real_redundant → positive,
+    unusable → excluded). Marks the affected frames dirty — the sync then
+    moves / removes the bucket objects. Idempotent: an unchanged sample
+    touches nothing. `only_unclassified`: only samples filed before kinds
+    existed (start-up); `codes`: only these reason codes (a kind was edited)."""
+    q = select(TrainingSample).where(TrainingSample.decision == "rejected", TrainingSample.state == "active")
+    if only_unclassified:
+        q = q.where(TrainingSample.rejection_kind.is_(None))
+    if codes is not None:
+        q = q.where(TrainingSample.reason_code.in_(list(codes)))
+    rows = (await db.execute(q.order_by(TrainingSample.id))).scalars().all()
+    checked = changed = 0
+    for row in rows:
+        det = await db.get(Detection, row.id)
+        if det is None:
+            continue
+        checked += 1
+        before = _signature(row)
+        await record_decision(db, det, actor_type="system" if row.decided_by == "system" else "user")
+        await db.refresh(row)                            # expired if the SAVEPOINT was rolled back
+        if _signature(row) != before:
+            changed += 1
+    await db.commit()
+    return {"checked": checked, "changed": changed}

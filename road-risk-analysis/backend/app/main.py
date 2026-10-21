@@ -10,9 +10,7 @@ from app.core import audit as audit_service
 from app.core.db.session import init_db, AsyncSessionLocal
 from app.modules.m01_security.auth_service import seed_roles, bootstrap_admin
 from app.modules.m06_hazards import hazard_service
-from app.modules.m06_hazards.models.rejection_reason import RejectionReason
 from app.modules.m07_ingestion.watchdog import mark_stale_jobs
-from sqlalchemy import select
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +27,15 @@ async def lifespan(app: FastAPI):
             import logging as _l
             _l.getLogger(__name__).warning(f"Watchdog: {marked} stale job(s) marked as failed")
         await _seed_rejection_reasons(db)
+        try:   # once: training samples of rejections filed before reason kinds existed
+            from app.modules.m06_hazards import training_data
+            n = await training_data.resync_rejections(db, only_unclassified=True)
+            if n["changed"]:
+                logging.getLogger(__name__).info(f"Training data: {n['changed']} rejected sample(s) re-filed by reason kind")
+        except Exception:
+            await db.rollback()
+            logging.getLogger(__name__).exception("Training data: re-filing rejections by kind failed — "
+                                                  "run `python -m app.cli resync-training-rejections`")
         await seed_roles(db)
         await bootstrap_admin(db)
         try:
@@ -110,53 +117,5 @@ async def audit_mutations(request: Request, call_next):
 register_routes(app)
 
 
-SEED_REASONS = [
-    # ── applies to all types ───────────────────────────────────────────────
-    ("all", "not_road_side",      "Not road-side",         "Detection is outside the road area (farm land, courtyard, private property)"),
-    ("all", "image_quality",     "Poor image quality",    "Frame is too blurry, dark, or overexposed to confirm"),
-    ("all", "duplicate",         "Duplicate detection",   "Same hazard already captured in a nearby frame"),
-    ("all", "out_of_frame",      "Out of frame",          "Object is partially cut off and cannot be confirmed"),
-    ("all", "low_confidence",    "Low confidence",        "Automatically rejected: confidence below the configured threshold"),
-    ("all", "ai_verifier",       "Rejected by AI verifier", "Automatically rejected: the crop classifier judged it is not this hazard type"),
-    # ── pothole ────────────────────────────────────────────────────────────
-    ("pothole", "shadow",           "Shadow / lighting",   "Dark patch caused by shadow, not a pothole"),
-    ("pothole", "water_reflection", "Water reflection",    "Puddle reflection misidentified as a pothole"),
-    ("pothole", "manhole",          "Manhole / drain",     "Manhole cover or drain grating, not a pothole"),
-    ("pothole", "road_marking",     "Road marking",        "Painted road marking misidentified as a pothole"),
-    ("pothole", "dirt_patch",       "Dirt / gravel patch", "Dirt or gravel patch on the road surface"),
-    ("pothole", "ai_off_road",      "Off the road area",   "Automatically rejected: the box lies above the road-area line (trees, sky, roadside), not on the road surface"),
-    ("pothole", "ai_box_too_large", "Box too large / roadside", "Automatically rejected: the box is too large for a pothole, or a wide box touching the image side (roadside earth, bushes, building edge)"),
-    # ── traffic sign ──────────────────────────────────────────────────────
-    ("traffic_sign", "ai_not_a_sign",    "Not a traffic sign", "Automatically rejected: the sign classifier judged the crop is not a traffic sign (sticker, billboard, person, vehicle, tree …)"),
-    ("traffic_sign", "person_as_sign",   "Person as sign",   "A pedestrian or person misidentified as a traffic sign"),
-    ("traffic_sign", "bike_as_stop",     "Bike as stop sign", "A bicycle or motorbike misidentified as a stop sign"),
-    ("traffic_sign", "pole_as_sign",     "Pole / post",       "Utility pole or fence post misidentified as a sign"),
-    ("traffic_sign", "street_light",     "Street light",      "Street light or lamp post misidentified as a sign"),
-    ("traffic_sign", "sign_not_visible", "Sign not visible",  "Sign is present but too distant or obstructed to read"),
-    # ── speed bump ────────────────────────────────────────────────────────
-    ("speed_bump", "road_edge",    "Road edge / curb",   "Road edge or kerb misidentified as a speed bump"),
-    ("speed_bump", "ditch",        "Ditch / trench",      "Drainage ditch or trench across the road"),
-    ("speed_bump", "speed_bump_ok","Already validated",  "Speed bump detected but previously validated nearby"),
-    # ── parked vehicle (rules of app.modules.m05_ai_detection.parked_vehicle) ────
-    ("parked_vehicle", "ai_off_road",       "Off the road",       "Automatically rejected: the vehicle stands too far from the road (yard, garage, fuel station, car park)"),
-    ("parked_vehicle", "ai_not_grounded",   "Not a real vehicle", "Automatically rejected: the vehicle does not stand on the ground (billboard / poster, car on a carrier, reflection)"),
-    ("parked_vehicle", "ai_traffic_queue",  "Traffic queue",      "Automatically rejected: vehicle stopped in traffic ahead of us, not parked"),
-    ("parked_vehicle", "ai_moving_vehicle", "Moving vehicle",     "Rejected: the vehicle was moving (same direction or oncoming), not parked"),
-]
-
-
-async def _seed_rejection_reasons(db):
-    from sqlalchemy import select
-    for det_type, code, label, description in SEED_REASONS:
-        exists = (await db.execute(
-            select(RejectionReason).where(
-                RejectionReason.code == code,
-                RejectionReason.detection_type == det_type,
-            )
-        )).scalar_one_or_none()
-        if not exists:
-            db.add(RejectionReason(
-                detection_type=det_type, code=code,
-                label=label, description=description, is_custom=False,
-            ))
-    await db.commit()
+# Built-in rejection reasons and their kinds: app.modules.m06_hazards.rejection_seeds
+from app.modules.m06_hazards.rejection_seeds import SEED_REASONS, seed_rejection_reasons as _seed_rejection_reasons  # noqa: E402,F401

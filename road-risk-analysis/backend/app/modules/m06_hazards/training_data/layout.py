@@ -25,6 +25,34 @@ DECISIONS = ("accepted", "corrected", "rejected")
 ACCEPTED_DECISIONS = ("accepted", "corrected")
 REVIEW_STATUSES = ("needs_box_review", "box_reviewed")
 
+# Kind of a rejection reason (rejection_reasons.kind) — what a rejection teaches:
+#   false_positive  AI mistake → negative sample (crop in the reject class, the
+#                   frame is background for the type unless it has accepted boxes)
+#   real_redundant  the object is real but redundant (duplicate, already
+#                   validated) → positive sample, exactly like an accepted one
+#   unusable        not judgeable (blur, cut off, too far …) → no sample: no
+#                   crop, no box, no frame created for it (kept in the manifest
+#                   with excluded = true for traceability)
+REJECTION_KINDS = ("false_positive", "real_redundant", "unusable")
+DEFAULT_REJECTION_KIND = "false_positive"
+
+
+def rejection_kind(kind: Optional[str]) -> str:
+    """Normalised kind; unknown / missing → false_positive (the historical behaviour)."""
+    return kind if kind in REJECTION_KINDS else DEFAULT_REJECTION_KIND
+
+
+def sample_role(decision: str, kind: Optional[str] = None) -> str:
+    """positive | negative | excluded — the training role of a decision."""
+    if decision in ACCEPTED_DECISIONS:
+        return "positive"
+    k = rejection_kind(kind)
+    if k == "real_redundant":
+        return "positive"
+    if k == "unusable":
+        return "excluded"
+    return "negative"
+
 # Detector classes when the type's detector has no model card listing them.
 DEFAULT_DETECTOR_CLASSES: dict[str, list[str]] = {
     "pothole":        ["pothole"],
@@ -103,10 +131,11 @@ def reject_class(det_type: str, card_reject_class: Optional[str] = None) -> str:
 
 
 def classifier_class(det_type: str, subtype: Optional[str], decision: str,
-                     card_reject_class: Optional[str] = None) -> str:
+                     card_reject_class: Optional[str] = None, kind: Optional[str] = None) -> str:
     """Folder of the crop in <type>/classifier/: the accepted class (sign code
-    for traffic signs) or the type's reject class."""
-    if decision == "rejected":
+    for traffic signs) — also for a real_redundant rejection — or the type's
+    reject class (false_positive; unusable ones keep it but get no crop)."""
+    if sample_role(decision, kind) != "positive":
         return reject_class(det_type, card_reject_class)
     if det_type == "traffic_sign" and subtype:
         return safe_name(subtype)
@@ -174,18 +203,25 @@ class SampleView:
     class_index: Optional[int]
     class_name: Optional[str]
     box: Optional[tuple]          # effective pixel box
+    kind: Optional[str] = None    # rejection kind (rejected samples)
+    excluded: bool = False        # unusable rejection: no training contribution
+
+    @property
+    def role(self) -> str:
+        return "excluded" if self.excluded else sample_role(self.decision, self.kind)
 
 
 def frame_boxes(samples: Sequence[SampleView], width: Optional[int], height: Optional[int],
                 reviewed: Optional[list[dict]] = None) -> list[dict]:
     """Boxes of a detector frame: the Label Studio reviewed boxes when present,
-    else every active accepted/corrected sample with a class (rejected ones
-    contribute nothing → a frame with only rejections is background)."""
+    else every active positive sample with a class — accepted / corrected and
+    real_redundant rejections (false_positive rejections contribute nothing →
+    a frame with only those is background; unusable ones are ignored)."""
     if reviewed is not None:
         return [dict(b) for b in reviewed]
     out = []
     for s in sorted(samples, key=lambda s: s.id):
-        if s.state != "active" or s.decision not in ACCEPTED_DECISIONS or s.class_index is None or s.box is None:
+        if s.state != "active" or s.role != "positive" or s.class_index is None or s.box is None:
             continue
         yb = yolo_box(*s.box, width or 0, height or 0)
         if yb is None:
@@ -196,9 +232,10 @@ def frame_boxes(samples: Sequence[SampleView], width: Optional[int], height: Opt
 
 
 def frame_status(samples: Sequence[SampleView], has_image: bool) -> str:
-    """active (image + label written) | empty (no active decision → objects
-    removed) | no_image (decided, but the detection has no clean frame)."""
-    if not any(s.state == "active" for s in samples):
+    """active (image + label written) | empty (no active usable decision →
+    objects removed; unusable rejections alone never make a frame) | no_image
+    (decided, but the detection has no clean frame)."""
+    if not any(s.state == "active" and s.role != "excluded" for s in samples):
         return "empty"
     return "active" if has_image else "no_image"
 

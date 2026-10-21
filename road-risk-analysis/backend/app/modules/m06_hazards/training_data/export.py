@@ -24,6 +24,7 @@ FILES_PREFIX = "/datasets/files/"
 
 SAMPLE_FIELDS = (
     "id", "detection_type", "decision", "state", "decided_by", "reviewer", "reviewed_at", "reason_code",
+    "rejection_kind", "excluded",
     "corrections", "class_name", "class_index", "classifier_class", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2",
     "box_corrected", "frame_key", "group_key", "job_id", "source_name", "frame_number", "video_time_s",
     "recorded_at", "latitude", "longitude", "confidence", "model_version", "model_card_version", "crop_key",
@@ -65,7 +66,7 @@ async def summary(db: AsyncSession) -> list[dict]:
     def entry(t: str) -> dict:
         return out.setdefault(t, {
             "detection_type": t, "accepted": 0, "corrected": 0, "rejected": 0, "superseded": 0,
-            "by_human": 0, "by_system": 0, "classifier_crops": 0, "crops_by_class": {},
+            "by_human": 0, "by_system": 0, "excluded": 0, "redundant_positive": 0, "classifier_crops": 0, "crops_by_class": {},
             "detector_frames": 0, "positive_frames": 0, "background_frames": 0, "boxes": 0,
             "box_reviewed": 0, "needs_box_review": 0, "frames_without_image": 0,
             "sync_pending": 0, "sync_failed": 0, "last_synced_at": None, "last_decision_at": None})
@@ -73,17 +74,23 @@ async def summary(db: AsyncSession) -> list[dict]:
     rows = (await db.execute(select(
         TrainingSample.detection_type, TrainingSample.state, TrainingSample.decision, TrainingSample.decided_by,
         TrainingSample.sync_status, TrainingSample.classifier_class, TrainingSample.crop_key.is_not(None),
+        TrainingSample.rejection_kind, TrainingSample.excluded,
         func.count(), func.max(TrainingSample.synced_at), func.max(TrainingSample.updated_at),
     ).group_by(TrainingSample.detection_type, TrainingSample.state, TrainingSample.decision,
                TrainingSample.decided_by, TrainingSample.sync_status, TrainingSample.classifier_class,
-               TrainingSample.crop_key.is_not(None)))).all()
-    for t, state, decision, by, sync, cls, has_crop, n, synced, updated in rows:
+               TrainingSample.crop_key.is_not(None), TrainingSample.rejection_kind,
+               TrainingSample.excluded))).all()
+    for t, state, decision, by, sync, cls, has_crop, kind, excluded, n, synced, updated in rows:
         e = entry(t)
         if state == "superseded":
             e["superseded"] += n
         else:
             e[decision] = e.get(decision, 0) + n
             e["by_human" if by == "human" else "by_system"] += n
+            if excluded:
+                e["excluded"] += n
+            elif decision == "rejected" and kind == "real_redundant":
+                e["redundant_positive"] += n
             if has_crop:
                 e["classifier_crops"] += n
                 e["crops_by_class"][cls] = e["crops_by_class"].get(cls, 0) + n
@@ -131,7 +138,9 @@ def _frame_query(det_type: str, review_status: Optional[str], since: Optional[da
 async def manifest(db: AsyncSession, det_type: str, *, review_status: Optional[str] = None,
                    since: Optional[datetime] = None, decided_by: Optional[str] = None) -> dict:
     """Detector frames + classifier samples of a type, with file URLs
-    (`/datasets/files/<key>`, relative to the API base URL)."""
+    (`/datasets/files/<key>`, relative to the API base URL). Samples of
+    unusable rejections are listed with `excluded` = true and no crop (traceability
+    only); real_redundant rejections are positives (classifier_class = the class)."""
     frames = (await db.execute(_frame_query(det_type, review_status, since))).scalars().all()
     reviews = {f.frame_key: f.review_status for f in frames}
     sq = select(TrainingSample).where(TrainingSample.detection_type == det_type, TrainingSample.state == "active")

@@ -260,6 +260,16 @@ TRAINING_DATA_COLUMNS = [
     "ALTER TABLE detections ADD COLUMN IF NOT EXISTS corrected_bbox JSON",
 ]
 
+# ── Rejection reason kinds (migrations/add_rejection_kinds.sql) ─────────────
+# What a rejection teaches the training data (docs/TRAINING-DATA.md). Seeded
+# reasons get their kind from app.main.SEED_REASONS at start-up; existing
+# samples are re-filed once by training_data.resync_rejections.
+REJECTION_KIND_COLUMNS = [
+    "ALTER TABLE rejection_reasons ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT 'false_positive'",
+    "ALTER TABLE training_samples ADD COLUMN IF NOT EXISTS rejection_kind VARCHAR",
+    "ALTER TABLE training_samples ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE",
+]
+
 async def run(engine: AsyncEngine) -> None:
     async with engine.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
@@ -270,6 +280,6 @@ async def run(engine: AsyncEngine) -> None:
                      + AI_VALIDATION_COLUMNS + SIGN_CLASSIFIER_COLUMNS
                      + HAZARD_LIFECYCLE_COLUMNS + HAZARD_LIFECYCLE_BACKFILL + PARKED_VEHICLE_COLUMNS
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
-                     + TRAINING_DATA_COLUMNS + SFTP_COLUMNS):
+                     + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS):
             await conn.exec_driver_sql(stmt)
     logger.info("Schema upgrade checked")
