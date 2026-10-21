@@ -2,7 +2,10 @@
 Video/image processing worker.
 Runs models frame by frame, saves detections to PostgreSQL + MinIO.
 
-OSD: extract_osd() runs on every processed frame.
+OSD: the job's OsdReader (osd_parser) reads the overlay of every processed frame
+with the layout of the equipment (forced, or auto-detected on the first frames —
+event `osd_layout`, job.osd_layout); an unreadable GPS / time is re-read on image
+variants then on the frames ±1–2 s around (_NeighbourFrames).
   - raw_gps_text is always saved (exact OCR output).
   - latitude/longitude are saved when NMEA parse succeeds, else None.
   - Every valid (non-interpolated) fix is stored in job_track_points — the
@@ -136,7 +139,8 @@ from app.modules.m05_ai_detection.parked_vehicle import geometry as pv_geo
 from app.modules.m03_maps.osrm.client import OSRMUnavailableError, get_osrm_client
 from app.modules.m07_ingestion.job_service import CANCEL_CHECK_EVERY, PermanentJobError
 from app.core.storage.minio_service import upload_image
-from app.modules.m05_ai_detection.osd_parser import extract_osd, reset_last, OSDData, GpsVoter
+from app.modules.m05_ai_detection.osd_parser import OsdReader, reset_last, OSDData, GpsVoter
+from app.modules.m05_ai_detection.osd_settings import OsdSettings, layout_for_job
 from app.modules.m03_maps.geocoding import empty_address, has_address, reverse_geocode_details
 from app.core.settings_service import (
     AiValidationSettings, ProcessingSettings, ValidationSettings, get_section,
@@ -341,6 +345,46 @@ def _frame_to_jpeg(frame: np.ndarray) -> bytes:
     return buf.tobytes()
 
 
+def _clip_writer(out_base: str, fps: float, w: int, h: int):
+    """(write(frame), close() → (path, content type) | None) of a browser-playable clip:
+    H.264 MP4 through the ffmpeg binary when the image has it, else VP8 WebM through
+    OpenCV (its pip wheel has no H.264 encoder — 'avc1' fails with codec_id=27)."""
+    import shutil
+    import subprocess
+    fps = fps if fps and 1 <= fps <= 120 else 25.0
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        path = out_base + ".mp4"
+        proc = subprocess.Popen(
+            [ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}",
+             "-r", f"{fps:.3f}", "-i", "-", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+             "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "+faststart", path],
+            stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def write(frame):
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+
+        def close():
+            proc.stdin.close()
+            err = proc.stderr.read().decode(errors="replace")
+            ok = proc.wait(timeout=120) == 0 and Path(path).exists() and Path(path).stat().st_size > 0
+            if not ok:
+                logger.warning(f"Context clip: ffmpeg failed ({err.strip()[:200]})")
+            return (path, "video/mp4") if ok else None
+        return write, close
+    path = out_base + ".webm"
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"VP80"), fps, (w, h))
+    if not writer.isOpened():
+        logger.warning("Context clip: no video encoder available (ffmpeg missing, VP8 unavailable)")
+        return None, None
+
+    def close():
+        writer.release()
+        ok = Path(path).exists() and Path(path).stat().st_size > 0
+        return (path, "video/webm") if ok else None
+    return writer.write, close
+
+
 def _save_context_clip(
     source_path: str,
     job_id: str,
@@ -352,59 +396,66 @@ def _save_context_clip(
     seconds: int = 5,
 ) -> Optional[str]:
     """
-    Extract a ±`seconds` video clip around frame_num from source_path and upload to MinIO.
-    The detection frame is replaced with the annotated version (bounding box drawn).
-    Only called for detections whose location is not confirmed (location_pending).
+    Extract a ±`seconds` video clip around frame_num from source_path and upload it
+    (H.264 MP4, else VP8 WebM — both play in the browser). The detection frame is
+    replaced with the annotated version (bounding box drawn). Called for detections
+    whose location is not confirmed (location_pending): the validator sees the
+    overlay before / after the detection to correct the position.
     """
-    window = int(fps * seconds)
-    start  = max(0, frame_num - window)
-    end    = frame_num + window
+    import tempfile
+    window = int((fps or 25.0) * seconds)
+    start  = max(0, frame_num - 1 - window)        # frame_num is 1-based, positions 0-based
+    end    = frame_num - 1 + window
 
     cap = cv2.VideoCapture(source_path)
     if not cap.isOpened():
         return None
-
     w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out_path = f"/tmp/clip_{det_id[:8]}.mp4"
-
-    writer = cv2.VideoWriter(
-        out_path,
-        cv2.VideoWriter_fourcc(*"avc1"),
-        fps,
-        (w, h),
-    )
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-    for fn in range(start, end + 1):
-        ret, f = cap.read()
-        if not ret:
-            break
-        if fn == frame_num:
-            # Use the annotated frame so the verificator sees the detection box
-            f = annotated_frame.copy()
-        cv2.putText(f, f"frame {fn}", (10, h - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-        writer.write(f)
-
-    writer.release()
-    cap.release()
-
+    out_base = str(Path(tempfile.gettempdir()) / f"clip_{det_id[:8]}")
+    result = None
+    try:
+        write, close = _clip_writer(out_base, fps, w, h)
+        if write is None:
+            return None
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        try:
+            for fn in range(start, end + 1):
+                ret, f = cap.read()
+                if not ret:
+                    break
+                if fn == frame_num - 1 and annotated_frame is not None \
+                        and annotated_frame.shape[:2] == f.shape[:2]:
+                    # Use the annotated frame so the validator sees the detection box
+                    f = annotated_frame.copy()
+                cv2.putText(f, f"frame {fn + 1}", (10, h - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                write(f)
+        finally:
+            result = close()
+    except Exception as e:
+        logger.warning(f"Context clip encoding failed: {e}")
+    finally:
+        cap.release()
+    if result is None:
+        for ext in (".mp4", ".webm"):
+            Path(out_base + ext).unlink(missing_ok=True)
+        return None
+    out_path, content_type = result
     clip_name = (
         f"job-{job_id[:8]}_"
         f"det-{det_id[:8]}_"
-        f"f{frame_num:06d}_pm{seconds}s.mp4"
+        f"f{frame_num:06d}_pm{seconds}s{Path(out_path).suffix}"
     )
     minio_path = f"{job_id}/context_clips/{det_type}/{clip_name}"
     try:
         with open(out_path, "rb") as fh:
-            clip_url = upload_image(fh.read(), minio_path)
-        Path(out_path).unlink(missing_ok=True)
-        return clip_url
+            return upload_image(fh.read(), minio_path, content_type=content_type)
     except Exception as e:
         logger.warning(f"Context clip upload failed: {e}")
-        Path(out_path).unlink(missing_ok=True)
         return None
+    finally:
+        Path(out_path).unlink(missing_ok=True)
 
 
 def _save_clean_frame(ctx: "_JobContext", frame: np.ndarray, frame_num: int) -> Optional[str]:
@@ -443,6 +494,50 @@ def _save_crop(frame, x1, y1, x2, y2, job_id: str, det_type: str, det_id: str, f
         return None
 
 
+class _NeighbourFrames:
+    """Frames around a processed frame (±1–2 s), read on demand from a second capture of
+    the media — the overlay of a frame can be unreadable during a colour transition."""
+
+    def __init__(self, path: str, fps: float, total: int):
+        self.path, self.fps, self.total = path, fps, total
+        self.cap = None
+        self.pos = -1                     # index (0-based) of the next frame the capture returns
+        self.cache: dict[int, np.ndarray] = {}
+
+    def at(self, frame_num: int, offset_s: float) -> Optional[np.ndarray]:
+        idx = frame_num - 1 + int(round(offset_s * self.fps))
+        if idx < 0 or (self.total and idx >= self.total):
+            return None
+        if idx in self.cache:
+            return self.cache[idx]
+        try:
+            if self.cap is None:
+                self.cap = cv2.VideoCapture(self.path)
+                self.pos = 0
+            if not 0 <= idx - self.pos <= 2 * self.fps:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                self.pos = idx
+            while self.pos < idx:
+                self.cap.grab()
+                self.pos += 1
+            ok, frame = self.cap.read()
+            self.pos += 1
+        except Exception as exc:                 # never fail the job for a retry read
+            logger.debug(f"neighbour frame {idx}: {exc}")
+            return None
+        if not ok:
+            return None
+        if len(self.cache) > 8:
+            self.cache.clear()
+        self.cache[idx] = frame
+        return frame
+
+    def close(self) -> None:
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+
 class _JobContext:
     """Per-job state shared by every stored detection."""
 
@@ -469,6 +564,29 @@ class _JobContext:
         self.vehicle_class_ids: Optional[list[int]] = None
         self.osrm_down: Optional[str] = None
         self.clean_frames: dict[int, Optional[str]] = {}    # frame number → clean frame URL
+        self.osd_reader: Optional[OsdReader] = None
+        self.neighbours: Optional["_NeighbourFrames"] = None
+
+    def read_osd(self, frame: np.ndarray, frame_num: int, voter: GpsVoter) -> OSDData:
+        """OSD of a processed frame (job reader, neighbour frames for unreadable overlays)."""
+        if self.osd_reader is None:
+            self.osd_reader = OsdReader(voter=voter)
+        t = self.video_time(frame_num)
+        nb = (lambda off: self.neighbours.at(frame_num, off)) if self.neighbours is not None else None
+        return self.osd_reader.read(frame, float(frame_num) if t is None else t, nb)
+
+    def osd_events(self, db) -> None:
+        """Record the layout decisions of the reader (event `osd_layout`, job.osd_layout)."""
+        if self.osd_reader is None:
+            return
+        for ev in self.osd_reader.pop_events():
+            self.job.osd_layout = ev["layout"]
+            if ev.get("timezone"):
+                try:
+                    self.osd_tz = ZoneInfo(ev["timezone"])
+                except Exception:
+                    pass
+            job_service.record_event(db, self.job.id, "osd_layout", details=ev)
 
     def video_time(self, frame_num: int) -> Optional[float]:
         return round((frame_num - 1) / self.fps, 3) if self.fps else None
@@ -524,7 +642,8 @@ async def _store_detection(db, ctx: _JobContext, det_id: str, model_key: str, de
     `rule_reject` (code, reason): a rule set already rejected it (parked
     vehicles stored for review) — the mode / audit sampling still apply."""
     job = ctx.job
-    loc_status, loc_source = wf.location_status_for(osd.latitude, osd.longitude, osd.gps_interpolated)
+    loc_status, loc_source = wf.location_status_for(osd.latitude, osd.longitude, osd.gps_interpolated,
+                                                    osd.gps_source)
     if rule_reject is not None:
         decision = ai_validation.rule_reject(ctx.policy, rule_reject[0], rule_reject[1], loc_status,
                                              ctx.rng.random())
@@ -705,6 +824,16 @@ async def process_source(
         if not ctx.vehicle_class_ids:
             logger.warning(f"[Job {job.id}] vehicles model has none of the classes {pvs.vehicle_classes} "
                            f"({_class_names(_models[pv.MODEL_KEY])[:10]}…) — parked-vehicle detection skipped")
+    osd_cfg: OsdSettings = await get_section(db, "osd")  # type: ignore[assignment]
+    layout, layout_method = layout_for_job(osd_cfg, job.osd_layout_requested, job.source_type,
+                                           (job.stream_id, job.connection_id))
+    ctx.osd_reader = OsdReader(
+        osd_cfg.available(), forced=layout, method=layout_method, by_vehicle=osd_cfg.by_vehicle,
+        box=osd_cfg.gps_box, voter=voter, probe_frames=osd_cfg.probe_frames,
+        full_frame_fallback=osd_cfg.full_frame_fallback,
+        neighbour_offsets=(-1.0, 1.0, -2.0, 2.0) if osd_cfg.neighbour_retry else ())
+    if osd_cfg.neighbour_retry and total > 1 and fps:
+        ctx.neighbours = _NeighbourFrames(source_path, fps, total)
     track: list = []
     stats = _Stats()
     logger.info(f"[Job {job.id}] Video opened — {total} frames @ {fps:.1f}fps, sampling {skips}")
@@ -716,8 +845,12 @@ async def process_source(
                                     geo_seen, px_seen, total, heartbeat)
     finally:
         cap.release()
+        if ctx.neighbours is not None:
+            ctx.neighbours.close()
         _unload_models()
     frame_num, cancelled = outcome
+    ctx.osd_reader.finish()
+    ctx.osd_events(db)
     await _flush_track(db, track)
     stats.apply(job, frame_num)
 
@@ -736,7 +869,8 @@ async def process_source(
     job.status      = JobStatus.done
     job.finished_at = datetime.utcnow()
     job_service.record_event(db, job.id, "done", details={
-        "processed": frame_num, "detections": stats.count, "by_model": stats.by_model, **stats.event_details()})
+        "processed": frame_num, "detections": stats.count, "by_model": stats.by_model, **stats.event_details(),
+        "osd": ctx.osd_reader.summary()})
     await db.commit()
     await _sync_training_data(db, job.id)
     logger.info(f"[Job {job.id}] DONE — {stats.count} detections in {frame_num} frames"
@@ -1038,7 +1172,8 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
             continue
 
         # Extract OSD from clean frame before any annotation
-        osd = extract_osd(frame, voter)
+        osd = ctx.read_osd(frame, frame_num, voter)
+        ctx.osd_events(db)
         logger.debug(
             f"[Job {job.id}] frame={frame_num} raw={osd.raw_gps_text!r} "
             f"lat={osd.latitude} lon={osd.longitude}"
@@ -1047,7 +1182,7 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
         if osd.latitude is not None and osd.longitude is not None and not osd.gps_interpolated:
             track.append({"job_id": job.id, "frame_number": frame_num, "video_time_s": ctx.video_time(frame_num),
                           "latitude": osd.latitude, "longitude": osd.longitude,
-                          "speed_kmh": osd.speed_kmh, "source": "ocr",
+                          "speed_kmh": osd.speed_kmh, "source": osd.gps_source or "ocr",
                           "recorded_at": ctx.recorded_at(frame_num, osd)})
             if len(track) >= TRACK_BATCH:
                 await _flush_track(db, track)

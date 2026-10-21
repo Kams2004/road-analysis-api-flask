@@ -67,12 +67,16 @@ def is_allowed(from_status: Optional[str], to_status: str, action: str) -> bool:
     return action in TRANSITIONS.get((from_status or "", to_status), frozenset())
 
 
-def location_status_for(lat: Optional[float], lon: Optional[float], interpolated: bool) -> tuple[str, str]:
-    """(location_status, location_source) of a fresh processor detection."""
+def location_status_for(lat: Optional[float], lon: Optional[float], interpolated: bool,
+                        gps_source: Optional[str] = None) -> tuple[str, str]:
+    """(location_status, location_source) of a fresh processor detection. A fix read on
+    the neighbour frames (overlay hidden on the frame itself) counts as confirmed."""
     if lat is None or lon is None:
         return LocationStatus.missing.value, LocationSource.none.value
     if interpolated:
         return LocationStatus.approximate.value, LocationSource.interpolated.value
+    if gps_source == LocationSource.ocr_neighbour.value:
+        return LocationStatus.confirmed.value, LocationSource.ocr_neighbour.value
     return LocationStatus.confirmed.value, LocationSource.ocr.value
 
 

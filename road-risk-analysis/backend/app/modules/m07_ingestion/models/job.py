@@ -71,6 +71,9 @@ class Job(Base):
     detections_by_model: Mapped[dict | None]  = mapped_column(JSON, nullable=True)      # {"pothole": 3, …}
     fps:                 Mapped[float | None] = mapped_column(Float, nullable=True)
     duration_s:          Mapped[float | None] = mapped_column(Float, nullable=True)     # video length
+    # Dashcam overlay layout (RRAP-05-014): job option (null = auto / settings) and the one used
+    osd_layout_requested: Mapped[str | None] = mapped_column(String, nullable=True)
+    osd_layout:           Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Content fingerprint of the media ("sha256:<hex>", app.modules.m07_ingestion.fingerprint):
     # the same video processed twice is refused (409 duplicate_video) unless forced.

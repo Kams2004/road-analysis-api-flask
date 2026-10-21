@@ -61,8 +61,10 @@ class DetectionOut(BaseModel):
     gps_interpolated:  Optional[bool]  = Field(None, description="Position interpolated from neighbouring frames.")
     location_status:   Optional[str]   = Field(None, description="`confirmed`, `approximate` (interpolated proposal) "
                                                                  "or `missing`.", examples=["confirmed"])
-    location_source:   Optional[str]   = Field(None, description="`ocr`, `interpolated`, `map_pin`, `trajectory`, "
-                                                                 "`ocr_text` or `none`.", examples=["ocr"])
+    location_source:   Optional[str]   = Field(None, description="`ocr`, `ocr_neighbour` (OSD read "
+                                                                 "on the frames ±1–2 s around), `interpolated`, "
+                                                                 "`map_pin`, `trajectory`, `ocr_text` or `none`.",
+                                                                 examples=["ocr"])
     object_latitude:   Optional[float] = Field(None, description="Estimated latitude of the detected OBJECT "
                                                                  "(`latitude` / `longitude` are the recording "
                                                                  "vehicle's GPS fix): vehicle fix + range along "

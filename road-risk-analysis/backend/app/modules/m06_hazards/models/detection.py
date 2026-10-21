@@ -31,6 +31,7 @@ class LocationStatus(str, enum.Enum):
 class LocationSource(str, enum.Enum):
     ocr          = "ocr"            # OSD text read by the processor
     interpolated = "interpolated"   # GPS voter window
+    ocr_neighbour = "ocr_neighbour" # OSD read on frames ±1–2 s around (overlay unreadable on the frame)
     map_pin      = "map_pin"        # validator dropped a pin
     trajectory   = "trajectory"     # validator picked a point of the vehicle track
     ocr_text     = "ocr_text"       # validator typed the OSD text

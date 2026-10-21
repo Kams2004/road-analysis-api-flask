@@ -86,6 +86,8 @@ MODULE7_COLUMNS = [
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS detections_by_model JSON",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS fps DOUBLE PRECISION",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duration_s DOUBLE PRECISION",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS osd_layout_requested VARCHAR",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS osd_layout VARCHAR",
     "CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs (status)",
     "CREATE INDEX IF NOT EXISTS ix_jobs_created_at ON jobs (created_at)",
     "CREATE INDEX IF NOT EXISTS ix_jobs_connection_id ON jobs (connection_id)",

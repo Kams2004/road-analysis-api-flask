@@ -30,6 +30,10 @@ RUN pip install --no-cache-dir --timeout=600 --retries=10 "cryptography>=42.0.0"
 # SFTP video sources — again its own small layer: the torch / ML layers above stay cached.
 RUN pip install --no-cache-dir --timeout=600 --retries=10 "paramiko==4.0.0"
 
+# ffmpeg: H.264 context clips (browser-playable) — its own small layer, after the ML layers.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

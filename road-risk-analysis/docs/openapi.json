@@ -3849,7 +3849,7 @@
           "Platform settings"
         ],
         "summary": "Get every settings section",
-        "description": "Every settings section (`captcha`, `smtp`, `maps`, `security`, `validation`, `ai_validation`, `processing`, `cloud`, `google_signin`, `community`, `mobile`, `collision`, `routes`, `hazard_lifecycle`, `parked_vehicle`, `clustering`) with its current values (defaults when\nnever saved). Secrets are never returned: each secret field is replaced by a `<field>_set` boolean;\nsome sections add read-only facts (`captcha.using_test_keys`, `smtp.configured`,\n`cloud.redirect_uri`, `cloud.google_configured`, `google_signin.configured` …).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `settings:view`",
+        "description": "Every settings section (`captcha`, `smtp`, `maps`, `security`, `validation`, `ai_validation`, `processing`, `cloud`, `google_signin`, `community`, `mobile`, `collision`, `routes`, `hazard_lifecycle`, `parked_vehicle`, `clustering`, `osd`) with its current values (defaults when\nnever saved). Secrets are never returned: each secret field is replaced by a `<field>_set` boolean;\nsome sections add read-only facts (`captcha.using_test_keys`, `smtp.configured`,\n`cloud.redirect_uri`, `cloud.google_configured`, `google_signin.configured` …).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `settings:view`",
         "operationId": "get_all",
         "responses": {
           "200": {
@@ -3936,7 +3936,7 @@
           "Platform settings"
         ],
         "summary": "Update a settings section",
-        "description": "Merges the body into section `section` (`captcha`, `smtp`, `maps`, `security`, `validation`, `ai_validation`, `processing`, `cloud`, `google_signin`, `community`, `mobile`, `collision`, `routes`, `hazard_lifecycle`, `parked_vehicle`, `clustering`) and returns the section's\nnew public view (secrets as `<field>_set`). Unknown keys are ignored; omitted keys keep their value; a\nsecret that is absent or `null` is kept, an empty string clears it. The whole section is re-validated\n(`422 invalid_settings` lists the faulty fields). Changes apply to the running API within ~10 s\n(`maps` changes reset the Google tile session). Audited as `settings.update` with a redacted diff.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `settings:edit`",
+        "description": "Merges the body into section `section` (`captcha`, `smtp`, `maps`, `security`, `validation`, `ai_validation`, `processing`, `cloud`, `google_signin`, `community`, `mobile`, `collision`, `routes`, `hazard_lifecycle`, `parked_vehicle`, `clustering`, `osd`) and returns the section's\nnew public view (secrets as `<field>_set`). Unknown keys are ignored; omitted keys keep their value; a\nsecret that is absent or `null` is kept, an empty string clears it. The whole section is re-validated\n(`422 invalid_settings` lists the faulty fields). Changes apply to the running API within ~10 s\n(`maps` changes reset the Google tile session). Audited as `settings.update` with a redacted diff.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `settings:edit`",
         "operationId": "put_section",
         "parameters": [
           {
@@ -5393,6 +5393,24 @@
             "description": "Process one frame out of N (overrides the default sampling)."
           },
           {
+            "name": "osd_layout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Dashcam overlay layout: `auto` (default: detected on the first frames, or settings `osd`), a profile name (`total`, `besafe` or a configured one) or `none` (no OCR).",
+              "title": "Osd Layout"
+            },
+            "description": "Dashcam overlay layout: `auto` (default: detected on the first frames, or settings `osd`), a profile name (`total`, `besafe` or a configured one) or `none` (no OCR)."
+          },
+          {
             "name": "force",
             "in": "query",
             "required": false,
@@ -5842,6 +5860,95 @@
                       "detail": {
                         "code": "invalid_sort",
                         "message": "Cannot sort by 'size'."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:view",
+        "x-api-key": false
+      }
+    },
+    "/jobs/osd-layouts": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Dashcam overlay layouts",
+        "description": "Overlay (OSD) layouts a job can use (`osd_layout` of `POST /jobs/`): the built-in equipment\nprofiles (`total`, `besafe`) and the ones of settings `osd`, each with its fields (anchors on the\ndevice's 0–1000 grid) and the derived OCR regions (frame ratios x0, y0, x1, y1). RRAP-05-014.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "operationId": "list_osd_layouts",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
                       }
                     }
                   }
@@ -32190,7 +32297,7 @@
               }
             ],
             "title": "Location Source",
-            "description": "`ocr`, `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
+            "description": "`ocr`, `ocr_neighbour` (OSD read on the frames ±1–2 s around), `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
             "examples": [
               "ocr"
             ]
@@ -33179,7 +33286,7 @@
               }
             ],
             "title": "Location Source",
-            "description": "`ocr`, `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
+            "description": "`ocr`, `ocr_neighbour` (OSD read on the frames ±1–2 s around), `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
             "examples": [
               "ocr"
             ]
@@ -37259,6 +37366,33 @@
             "title": "Duration S",
             "description": "Video duration, in seconds."
           },
+          "osd_layout_requested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Osd Layout Requested",
+            "description": "Overlay layout asked at submission (`null` = auto-detect / settings `osd`)."
+          },
+          "osd_layout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Osd Layout",
+            "description": "Overlay (OSD) layout used: a profile (`total`, `besafe` …), `full_frame` (fallback) or `none` (no overlay found). Set once detected.",
+            "examples": [
+              "besafe"
+            ]
+          },
           "processing_seconds": {
             "anyOf": [
               {
@@ -37688,6 +37822,33 @@
             ],
             "title": "Duration S",
             "description": "Video duration, in seconds."
+          },
+          "osd_layout_requested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Osd Layout Requested",
+            "description": "Overlay layout asked at submission (`null` = auto-detect / settings `osd`)."
+          },
+          "osd_layout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Osd Layout",
+            "description": "Overlay (OSD) layout used: a profile (`total`, `besafe` …), `full_frame` (fallback) or `none` (no overlay found). Set once detected.",
+            "examples": [
+              "besafe"
+            ]
           },
           "processing_seconds": {
             "anyOf": [
@@ -40134,7 +40295,7 @@
               }
             ],
             "title": "Location Source",
-            "description": "`ocr`, `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
+            "description": "`ocr`, `ocr_neighbour` (OSD read on the frames ±1–2 s around), `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
             "examples": [
               "ocr"
             ]

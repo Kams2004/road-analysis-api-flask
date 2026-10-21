@@ -21,15 +21,16 @@ def get_minio() -> Minio:
     return _client
 
 
-def upload_image(data: bytes, object_name: str) -> str:
-    """Upload JPEG bytes to MinIO, return public URL path."""
+def upload_image(data: bytes, object_name: str, content_type: str = "image/jpeg") -> str:
+    """Upload bytes (JPEG by default; context clips pass their video type) to the
+    detections bucket, return public URL path."""
     client = get_minio()
     client.put_object(
         settings.MINIO_BUCKET_DETECTIONS,
         object_name,
         io.BytesIO(data),
         length=len(data),
-        content_type="image/jpeg",
+        content_type=content_type,
     )
     return f"{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET_DETECTIONS}/{object_name}"
 

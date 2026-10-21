@@ -27,6 +27,8 @@ from app.modules.m07_ingestion.schemas.jobs import (
 from app.core import audit
 from app.modules.m07_ingestion import fingerprint, job_service
 from app.core.settings_service import get_section
+from app.modules.m05_ai_detection.osd_settings import validate_layout_option
+from app.modules.m05_ai_detection import osd_layouts
 
 router = APIRouter()
 TEMP_DIR = Path(settings.TEMP_DIR)
@@ -90,6 +92,9 @@ async def submit_job(
     ),
     frame_skip: Optional[int] = Query(None, ge=1, le=60,
                                       description="Process one frame out of N (overrides the default sampling)."),
+    osd_layout: Optional[str] = Query(None, description="Dashcam overlay layout: `auto` (default: detected on the "
+                                                       "first frames, or settings `osd`), a profile name (`total`, "
+                                                       "`besafe` or a configured one) or `none` (no OCR)."),
     force: bool = Query(False, description="Process the file even when the same content (SHA-256) was already "
                                            "processed or is queued (`409 duplicate_video` otherwise)."),
     db: AsyncSession = Depends(get_db),
@@ -113,6 +118,8 @@ async def submit_job(
         raise HTTPException(400, f"Unsupported file type: {ext}")
     try:
         enabled = job_service.parse_models(models)
+        osd_cfg = await get_section(db, "osd")
+        layout = validate_layout_option(osd_cfg, osd_layout)  # type: ignore[arg-type]
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -139,12 +146,31 @@ async def submit_job(
         source_name=file.filename,
     )
     job.content_fingerprint = fp
+    job.osd_layout_requested = layout
     audit.record(db, request, "job.create", principal=principal, object_type="job", object_id=job.id,
                  details={"filename": file.filename, "models": enabled, "frame_skip": job.frame_skip,
+                          **({"osd_layout": layout} if layout else {}),
                           **({"forced_duplicate_of": previous.id} if previous is not None else {})})
     await job_service.enqueue_and_commit(db, job, actor)
     await db.refresh(job)
     return job
+
+
+@router.get("/osd-layouts", summary="Dashcam overlay layouts")
+async def list_osd_layouts(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """Overlay (OSD) layouts a job can use (`osd_layout` of `POST /jobs/`): the built-in equipment
+    profiles (`total`, `besafe`) and the ones of settings `osd`, each with its fields (anchors on the
+    device's 0–1000 grid) and the derived OCR regions (frame ratios x0, y0, x1, y1). RRAP-05-014."""
+    osd_cfg = await get_section(db, "osd")
+    out = []
+    for name, p in osd_cfg.available().items():  # type: ignore[attr-defined]
+        spec = (osd_cfg.profiles.get(name).model_dump() if name in osd_cfg.profiles  # type: ignore[attr-defined]
+                else osd_layouts.BUILTIN_PROFILES.get(name, {}))
+        out.append({"name": name, "label": p.label, "builtin": p.builtin, "aliases": list(p.aliases),
+                    "detect": p.detect, "timezone": p.timezone, "date_formats": list(p.date_formats),
+                    "line_height": spec.get("line_height", 50), "fields": spec.get("fields", []),
+                    "rois": [{"field": r.field, "box": list(r.box)} for r in p.rois]})
+    return {"default_layout": osd_cfg.default_layout, "layouts": out}  # type: ignore[attr-defined]
 
 
 @router.get("/", response_model=JobListOut, summary="List jobs",

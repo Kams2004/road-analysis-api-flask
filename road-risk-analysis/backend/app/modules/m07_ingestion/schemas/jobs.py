@@ -46,6 +46,12 @@ class JobOut(BaseModel):
                                                           examples=[{"pothole": 10, "signs": 4}])
     fps:                 Optional[float]          = Field(None, description="Video frame rate.")
     duration_s:          Optional[float]          = Field(None, description="Video duration, in seconds.")
+    osd_layout_requested: Optional[str]           = Field(None, description="Overlay layout asked at submission "
+                                                          "(`null` = auto-detect / settings `osd`).")
+    osd_layout:          Optional[str]            = Field(None, description="Overlay (OSD) layout used: a profile "
+                                                          "(`total`, `besafe` …), `full_frame` (fallback) or `none` "
+                                                          "(no overlay found). Set once detected.",
+                                                          examples=["besafe"])
     processing_seconds:  Optional[float]          = Field(None, description="Processing time so far, in seconds "
                                                           "((finished_at or now) − started_at).")
     progress:            float                    = Field(0.0, description="processed / total_frames, 0–1.",

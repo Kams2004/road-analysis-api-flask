@@ -7,7 +7,8 @@ mode, job processing
 Google sign-in client IDs, community reporting (votes, expiry), mobile app
 distances, the collision-prevention thresholds and the predefined road
 sections (tronçons) offered by the route searches of the console and the
-global Cluster Configuration (`clustering`, app.modules.m06_hazards.clustering).
+global Cluster Configuration (`clustering`, app.modules.m06_hazards.clustering)
+and the dashcam overlay layouts (`osd`, app.modules.m05_ai_detection.osd_settings).
 
 Each section is a validated pydantic model persisted as JSON in
 `system_settings`. Fields listed in SECRET_FIELDS are encrypted at rest and
@@ -26,6 +27,7 @@ from app.modules.m13_admin.models.system_setting import SystemSetting
 from app.modules.m10_collision.collision.thresholds import CollisionSettings, set_current as _set_collision_thresholds
 from app.modules.m06_hazards.lifecycle.settings import HazardLifecycleSettings
 from app.modules.m05_ai_detection.parked_vehicle.settings import ParkedVehicleSettings
+from app.modules.m05_ai_detection.osd_settings import OsdSettings
 from app.modules.m06_hazards.clustering.settings import ClusteringSettings
 
 # Cloudflare's documented always-pass Turnstile test keys. They make login
@@ -399,6 +401,7 @@ SECTIONS: dict[str, type[BaseModel]] = {
     "hazard_lifecycle": HazardLifecycleSettings,
     "parked_vehicle": ParkedVehicleSettings,
     "clustering": ClusteringSettings,
+    "osd":        OsdSettings,
 }
 
 SECRET_FIELDS: dict[str, set[str]] = {

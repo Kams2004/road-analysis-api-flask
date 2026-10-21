@@ -1,19 +1,43 @@
 """
-OSD parser — PaddleOCR-based extraction from dashcam overlay.
+OSD reader — PaddleOCR on the dashcam overlay, per equipment layout (RRAP-05-014).
 
-Frame layout (720x576):
-  row1: date+time (left) | GPS+speed (right)
-  row2: vehicle ID (left) | org name (right)
-  row3: RPM (left)        | location name (right)
+The overlay regions and text formats come from the layout profiles of
+`osd_layouts` (built-in `total` and `besafe` + the ones configured in the
+`osd` settings section). `OsdReader` (one per job):
+
+  - layout: forced (job option / settings by source) or auto-detected on the
+    first frames with content (black / start-up frames skipped): every candidate
+    profile reads its regions, the one with the most valid GPS + date-time parses
+    wins. Nothing parses → full-frame OCR + regex search (`full_frame`), and when
+    that finds nothing either, OCR stops for the job (`none`).
+  - only the regions of the profile are OCR'd; fields that do not change during a
+    recording (plate, company, driver) stop being read once stable.
+  - uncertain GPS / date-time (no parse, low OCR confidence, outside the GPS box,
+    rejected by the GpsVoter jump check, time inconsistent with the video clock):
+      1. image variants of the region (2× upscale, per-channel max, inverted) —
+         the text colour of dashcam overlays changes with the scene and a
+         transition can hide part of it;
+      2. the same region on neighbour frames (−1 s, +1 s, −2 s, +2 s): GPS
+         interpolated between both sides (else the nearest side), time shifted by
+         the offset — source `ocr_neighbour`;
+      3. else the GpsVoter window median (source `interpolated`).
+
+Also exports the pure parsers used elsewhere (parse_gps_text, _fix_dot_separators).
 """
+from __future__ import annotations
 
-import re
-import cv2
 import logging
-import numpy as np
-from datetime import datetime
-from typing import Optional
+from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, time as dtime, timedelta
+from typing import Callable, Optional
+
+import numpy as np
+
+from app.modules.m05_ai_detection import osd_layouts as L
+from app.modules.m05_ai_detection.osd_layouts import (  # noqa: F401  (public re-exports)
+    CAMEROON_BOX, FrameRead, Profile, fix_separators, parse_datetime, parse_partial,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _ocr_engine = None
 _ocr_unavailable = False
+
 
 def _init_ocr() -> bool:
     global _ocr_engine, _ocr_unavailable
@@ -30,9 +55,8 @@ def _init_ocr() -> bool:
         return True
     try:
         import os
-        import logging as _logging
         os.environ.setdefault("PPOCR_LOGGING_LEVEL", "ERROR")
-        _logging.getLogger("ppocr").setLevel(_logging.WARNING)
+        logging.getLogger("ppocr").setLevel(logging.WARNING)
         from paddleocr import PaddleOCR
         _ocr_engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
         logger.info("OCR backend: PaddleOCR ready")
@@ -52,303 +76,126 @@ class OSDData:
     longitude:     Optional[float]    = None
     speed_kmh:     Optional[float]    = None
     vehicle_id:    Optional[str]      = None
-    timestamp:     Optional[datetime] = None
+    timestamp:     Optional[datetime] = None   # camera local time (naive), see settings.OSD_TIMEZONE
     location_name: Optional[str]      = None
     rpm:           Optional[int]      = None
-    gps_interpolated: bool            = False  # True when value came from voter window
+    gps_interpolated: bool            = False  # True when value came from the voter window
+    company:       Optional[str]      = None
+    driver_name:   Optional[str]      = None
+    layout:        Optional[str]      = None
+    gps_source:    Optional[str]      = None   # ocr | ocr_neighbour | interpolated
+    time_source:   Optional[str]      = None   # ocr | ocr_neighbour
+    channel:       Optional[str]      = None   # camera channel shown by some equipment ('CH2')
 
 
 def reset_last() -> None:
     """No state — kept for API compatibility."""
-    pass
 
 
-# ── ROI definitions (ratios, scale-independent) ───────────────────────────────
+# ── public parsers (compatibility names) ──────────────────────────────────────
 
-ROI_DATETIME = (0.00, 0.035, 0.50, 0.100)
-ROI_GPS      = (0.45, 0.035, 1.00, 0.100)
-ROI_VEHICLE  = (0.00, 0.100, 0.50, 0.165)
-ROI_RPM      = (0.00, 0.165, 0.50, 0.235)
-ROI_LOCATION = (0.50, 0.165, 1.00, 0.235)
+def parse_gps_text(raw: str, box=None) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """NMEA GPS text → (lat, lon, speed_kmh); (None, None, None) when unparseable.
+    Used by the location-correction endpoint (no plausibility box there)."""
+    return L.parse_gps_text(raw, box)
 
 
-# ── regex patterns ────────────────────────────────────────────────────────────
-
-_GPS_RE = re.compile(
-    r"(\d{3,4}[.,]\s*\d{4})\s*[,\s]\s*([NS])"
-    r"\s*[,\s]\s*(\d{4,5}[.,]\s*\d{4})\s*[,\s]\s*([EW06CGO])",
-    re.IGNORECASE,
-)
-# Partial patterns — used when full GPS_RE fails
-# Require 4 fractional digits to avoid matching truncated/noisy values
-_LAT_RE = re.compile(r"(\d{3,4}[.,]\d{4})\s*[,\s]\s*([NS])", re.IGNORECASE)
-_LON_RE = re.compile(r"(\d{4,5}[.,]\d{4})\s*[,\s]\s*([EW06CGO])", re.IGNORECASE)
-_SPEED_RE    = re.compile(r"\b(\d{1,3})\s*KM/?H\b", re.IGNORECASE)
-_DATE_RE     = re.compile(r"(\d{2}[/\-]\d{2}[/\-]\d{4})\s+(\d{2}:\d{2}:\d{2})")
-_VID_RE      = re.compile(r"\b(L[A-Z]{2,3}\d{3,4}[A-Z]{0,3})\b")
-_RPM_RE      = re.compile(r"RPM\s*[:\-]?\s*(\d+)", re.IGNORECASE)
-_LOCATION_RE = re.compile(r"([A-Z][A-Z0-9]{2,}(?:[_.\-][A-Z][A-Z0-9]+)+)", re.IGNORECASE)
+_fix_dot_separators = fix_separators
 
 
 # ── image helpers ─────────────────────────────────────────────────────────────
 
+VARIANTS = ("up2", "chmax", "inv")
+
+
 def _crop(frame: np.ndarray, roi: tuple) -> np.ndarray:
     h, w = frame.shape[:2]
-    x0, y0 = max(0, int(roi[0]*w)), max(0, int(roi[1]*h))
-    x1, y1 = min(w, int(roi[2]*w)), min(h, int(roi[3]*h))
+    x0, y0 = max(0, int(roi[0] * w)), max(0, int(roi[1] * h))
+    x1, y1 = min(w, int(roi[2] * w)), min(h, int(roi[3] * h))
     return frame[y0:y1, x0:x1]
 
 
-# ── OCR ───────────────────────────────────────────────────────────────────────
+def has_content(frame: np.ndarray) -> bool:
+    """False for black / uniform start-up frames."""
+    if frame is None or frame.size == 0:
+        return False
+    small = frame[::8, ::8]
+    return float(small.std()) > 6.0
 
-def _ocr_roi(roi_bgr: np.ndarray) -> str:
-    """Run PaddleOCR on a BGR ROI crop, return all text joined and uppercased."""
-    if roi_bgr is None or roi_bgr.size == 0:
-        return ""
+
+def prepare(frame: np.ndarray, box: tuple, variant: Optional[str] = None) -> np.ndarray:
+    """Region crop ready for OCR: field-only recordings (720×288) stretched back to
+    the display aspect, optional colour-transition variant, black border."""
+    import cv2
+    img = _crop(frame, box)
+    if img.size == 0:
+        return img
+    h, w = frame.shape[:2]
+    if h and w / h >= 2.2:
+        img = cv2.resize(img, (img.shape[1], img.shape[0] * 2), interpolation=cv2.INTER_LINEAR)
+    if variant in ("up2", "chmax", "inv"):
+        img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    if variant == "chmax" and img.ndim == 3:
+        g = img.max(axis=2)
+        img = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+    elif variant == "inv":
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        img = cv2.cvtColor(255 - g, cv2.COLOR_GRAY2BGR)
+    return cv2.copyMakeBorder(img, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
+
+def ocr_image(img: np.ndarray) -> tuple[str, float]:
+    """PaddleOCR → (text upper-cased, min confidence of its segments; 0 when empty)."""
+    if img is None or img.size == 0 or not _init_ocr():
+        return "", 0.0
     try:
-        result = _ocr_engine.ocr(roi_bgr, cls=False)
+        result = _ocr_engine.ocr(img, cls=False)
         if not result or not result[0]:
-            return ""
-        texts = [line[1][0] for line in result[0] if line and line[1][0].strip()]
-        return " ".join(texts).upper().strip()
+            return "", 0.0
+        segs = [ln[1] for ln in result[0] if ln and ln[1][0].strip()]
+        if not segs:
+            return "", 0.0
+        return " ".join(s[0] for s in segs).upper().strip(), float(min(s[1] for s in segs))
     except Exception as e:
         logger.debug(f"PaddleOCR error: {e}")
-        return ""
+        return "", 0.0
 
 
-# ── text normalisation ────────────────────────────────────────────────────────
-
-def _norm(text: str) -> str:
-    text = text.upper().strip()
-    text = re.sub(r'[OQ](?=\d)', '0', text)
-    text = re.sub(r'(?<=\d)[OQ]', '0', text)
-    text = re.sub(r'(?<=\d)[|I](?=\d)', '1', text)
-    # S misread as 0 at word boundary before digits
-    text = re.sub(r'\bS(?=\d)', '0', text)
-    # S misread as 5 between digit and [.,digit]
-    text = re.sub(r'(\d)S([.,\d])', r'\g<1>5\2', text)
-    text = re.sub(r'(\d{4}),(\d{3,4})\b', r'\1.\2', text)
-    # Remove spaces between digits (OCR splits numbers)
-    text = re.sub(r'(\d)\s+(\d)', r'\1\2', text)
-    # Remove spaces after decimal point: "0515. 4391" -> "0515.4391"
-    text = re.sub(r'(\d[.,])\s+(\d)', r'\1\2', text)
-    # Pad short NMEA lat (3 digits before decimal) to 4: "015." -> "0515." won't work
-    # Instead pad lon (4 digits before decimal) to 5: "1013." -> "01013."
-    text = re.sub(r'\b(\d{4}[.,]\d{3,4})\s*,\s*([EW])', r'0\1,\2', text)
-    return text
-
-
-# ── field parsers ─────────────────────────────────────────────────────────────
-
-def _nmea_to_decimal(value: str, direction: str) -> float:
-    v   = float(value)
-    deg = int(v / 100)
-    dec = deg + (v - deg * 100) / 60.0
-    return round(-dec if direction in ("S", "W") else dec, 6)
-
-
-def _fix_dot_separators(raw: str) -> str:
-    """
-    OCR often reads dots instead of commas as field separators, or omits
-    separators entirely between numbers and direction letters.
-
-    Handles three cases:
-      1. Already correct:  0515.4260,N,01013.5383,E,028KM/H  -> unchanged
-      2. Dot separators:   0409.2839.N.01131.9380.E.039KM/H  -> commas
-      3. No separators:    0515.3177N01013.5650E035KM/H       -> insert commas
-
-    Decimal dots (digit.digit) are never touched.
-    """
-    result = raw
-
-    # Rule 1: dot between digit and letter  e.g. 2839.N -> 2839,N
-    result = re.sub(r'(?<=\d)\.(?=[A-Za-z])', ',', result)
-
-    # Rule 2: dot between letter and digit/letter  e.g. N.01131 -> N,01131
-    result = re.sub(r'(?<=[A-Za-z])\.(?=[\dA-Za-z])', ',', result)
-
-    # Rule 3: no separator at all — digit directly glued to N/S then digit
-    #   e.g. 3177N01013 -> 3177,N,01013
-    result = re.sub(r'(\d)([NS])(\d)', r'\1,\2,\3', result)
-
-    # Rule 4: no separator at all — digit directly glued to E/W then digit
-    #   e.g. 5650E035 -> 5650,E,035
-    result = re.sub(r'(\d)([EW])(\d)', r'\1,\2,\3', result)
-
-    return result
-
-
-def parse_gps_text(raw: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Public — also used by the location-correction endpoint.
-    Parses NMEA GPS text → (lat, lon, speed_kmh).
-    Returns (None, None, None) if text is incomplete or unparseable.
-    Auto-corrects dot separators before parsing.
-    """
-    # Try auto-fix first, then fall back to raw
-    for candidate in [_fix_dot_separators(raw), raw]:
-        text = _norm(candidate)
-        m = _GPS_RE.search(text)
-        if m:
-            break
-    else:
-        return None, None, None
-    try:
-        lon_dir = m.group(4).upper()
-        if lon_dir not in ('E', 'W'):
-            lon_dir = 'E'
-        lat_str = m.group(1).replace(',', '.').replace(' ', '')
-        lon_str = m.group(3).replace(',', '.').replace(' ', '')
-        # Pad short NMEA values: lat needs 4 digits before decimal, lon needs 5
-        if len(lat_str.split('.')[0]) == 3:
-            lat_str = '0' + lat_str
-        if len(lon_str.split('.')[0]) == 4:
-            lon_str = '0' + lon_str
-        lat = _nmea_to_decimal(lat_str, m.group(2))
-        lon = _nmea_to_decimal(lon_str, lon_dir)
-        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
-            return None, None, None
-        # Sanity: NMEA lat degrees part must be <= 90, lon degrees part <= 180
-        lat_deg = int(float(lat_str.split('.')[0]) / 100)
-        lon_deg = int(float(lon_str.split('.')[0]) / 100)
-        if lat_deg > 90 or lon_deg > 180:
-            return None, None, None
-        sm    = _SPEED_RE.search(text)
-        speed = float(sm.group(1)) if sm and 0 <= float(sm.group(1)) <= 200 else None
-        return lat, lon, speed
-    except Exception:
-        return None, None, None
-
-
-def _parse_partial_gps(texts: list) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Try to extract lat and lon independently across multiple OCR candidates.
-    Used when no single candidate contains the full GPS string.
-    Only accepts values in the expected Cameroon bounding box.
-    """
-    lat, lon, speed = None, None, None
-    for raw in texts:
-        text = _norm(raw)
-        if lat is None:
-            m = _LAT_RE.search(text)
-            if m:
-                try:
-                    lat_str = m.group(1).replace(',', '.').replace(' ', '')
-                    if len(lat_str.split('.')[0]) == 3:
-                        lat_str = '0' + lat_str
-                    v = _nmea_to_decimal(lat_str, m.group(2))
-                    if -90.0 <= v <= 90.0:
-                        lat = v
-                except Exception:
-                    pass
-        if lon is None:
-            m = _LON_RE.search(text)
-            if m:
-                try:
-                    lon_dir = m.group(2).upper()
-                    if lon_dir not in ('E', 'W'):
-                        lon_dir = 'E'
-                    lon_str = m.group(1).replace(',', '.').replace(' ', '')
-                    if len(lon_str.split('.')[0]) == 4:
-                        lon_str = '0' + lon_str
-                    v = _nmea_to_decimal(lon_str, lon_dir)
-                    if -180.0 <= v <= 180.0:
-                        lon = v
-                except Exception:
-                    pass
-        if speed is None:
-            sm = _SPEED_RE.search(text)
-            if sm:
-                try:
-                    s = float(sm.group(1))
-                    if 0 <= s <= 200:
-                        speed = s
-                except Exception:
-                    pass
-        if lat is not None and lon is not None:
-            break
-    return lat, lon, speed
-
-
-def _parse_datetime(text: str) -> Optional[datetime]:
-    m = _DATE_RE.search(_norm(text))
-    if m:
-        try:
-            ts = datetime.strptime(
-                f"{m.group(1).replace('-','/')} {m.group(2)}", "%d/%m/%Y %H:%M:%S"
-            )
-            if 2000 <= ts.year <= 2100:
-                return ts
-        except ValueError:
-            pass
-    return None
-
-
-def _parse_vehicle(text: str) -> Optional[str]:
-    m = _VID_RE.search(_norm(text))
-    return m.group(1) if m else None
-
-
-def _parse_rpm(text: str) -> Optional[int]:
-    m = _RPM_RE.search(_norm(text))
-    if m:
-        try:
-            rpm = int(m.group(1))
-            return rpm if 0 <= rpm <= 10000 else None
-        except ValueError:
-            pass
-    return None
-
-
-def _parse_location(text: str) -> Optional[str]:
-    m = _LOCATION_RE.search(text.upper().strip())
-    if m:
-        loc = m.group(1)
-        if len(re.split(r'[_.\-]', loc)) >= 2:
-            return loc
-    return None
+def ocr_region(frame: np.ndarray, box: tuple, variant: Optional[str] = None) -> tuple[str, float]:
+    return ocr_image(prepare(frame, box, variant))
 
 
 # ── GPS temporal voter ───────────────────────────────────────────────────────
 
 class GpsVoter:
     """
-    Maintains a rolling window of recent valid GPS reads.
-
-    On each frame:
-    - If OCR gives a valid fix, validate it against the window (reject outliers
-      that jump more than MAX_JUMP degrees between consecutive frames).
-      If valid, add to window and return it.
-    - If OCR gives None (or an outlier), return the median of the window as a
-      best-estimate, flagged with gps_interpolated=True.
-
-    Window size = 5 frames. MAX_JUMP = 0.01 deg (~1.1 km) per processed frame.
+    Rolling window of recent valid GPS reads: a fix that jumps more than MAX_JUMP
+    degrees from the previous one is an outlier; when a frame has no valid fix the
+    window median is returned (gps_interpolated=True).
     """
-    WINDOW  = 5
+    WINDOW = 5
     MAX_JUMP = 0.01  # degrees per frame-skip interval
 
     def __init__(self):
-        self._lats:  list[float] = []
-        self._lons:  list[float] = []
+        self._lats: list[float] = []
+        self._lons: list[float] = []
 
     def reset(self):
         self._lats.clear()
         self._lons.clear()
 
+    def accepts(self, lat: Optional[float], lon: Optional[float]) -> bool:
+        if lat is None or lon is None:
+            return False
+        if not self._lats:
+            return True
+        return abs(lat - self._lats[-1]) <= self.MAX_JUMP and abs(lon - self._lons[-1]) <= self.MAX_JUMP
+
     def update(self, lat: Optional[float], lon: Optional[float]
                ) -> tuple[Optional[float], Optional[float], bool]:
-        """
-        Returns (best_lat, best_lon, interpolated).
-        interpolated=True means the value came from the window, not live OCR.
-        """
-        if lat is not None and lon is not None:
-            # Outlier check against last known position
-            if self._lats and self._lons:
-                if (abs(lat - self._lats[-1]) > self.MAX_JUMP or
-                        abs(lon - self._lons[-1]) > self.MAX_JUMP):
-                    # Outlier — discard and fall back to window
-                    lat, lon = None, None
-
+        """(best_lat, best_lon, interpolated)."""
+        if lat is not None and lon is not None and not self.accepts(lat, lon):
+            lat, lon = None, None
         if lat is not None and lon is not None:
             self._lats.append(lat)
             self._lons.append(lon)
@@ -356,53 +203,397 @@ class GpsVoter:
                 self._lats.pop(0)
                 self._lons.pop(0)
             return lat, lon, False
-
-        # No valid fix — return median of window if available
         if self._lats:
-            med_lat = sorted(self._lats)[len(self._lats) // 2]
-            med_lon = sorted(self._lons)[len(self._lons) // 2]
-            return med_lat, med_lon, True
-
+            return sorted(self._lats)[len(self._lats) // 2], sorted(self._lons)[len(self._lons) // 2], True
         return None, None, False
 
 
-# ── public API ────────────────────────────────────────────────────────────────
+# ── reader ────────────────────────────────────────────────────────────────────
 
-def extract_osd(frame: np.ndarray, voter: Optional['GpsVoter'] = None) -> OSDData:
-    """
-    Extract all OSD fields from a dashcam frame.
-    If voter is provided, applies temporal GPS voting to fill gaps and reject outliers.
-    """
+OcrFn = Callable[[np.ndarray, tuple, Optional[str]], tuple[str, float]]
+NeighbourFn = Callable[[float], Optional[np.ndarray]]
+
+LOW_CONFIDENCE = 0.6
+TIME_TOLERANCE_S = 3.0
+
+
+class OsdReader:
+    """Per-job OSD reading (see module docstring). `ocr(frame, box, variant)` can be
+    replaced (tests); `read(frame, t, neighbours)` with `neighbours(offset_s)` → frame."""
+
+    def __init__(self, profiles: Optional[dict[str, Profile]] = None, *, forced: Optional[str] = None,
+                 method: str = "auto", by_vehicle: Optional[dict[str, str]] = None, box=CAMEROON_BOX,
+                 voter: Optional[GpsVoter] = None, probe_frames: int = 5, full_frame_fallback: bool = True,
+                 ocr: Optional[OcrFn] = None, neighbour_offsets=(-1.0, 1.0, -2.0, 2.0),
+                 neighbour_min_interval_s: float = 2.0, max_probe_reads: int = 40):
+        self.profiles = profiles if profiles is not None else L.effective_profiles()
+        self.box = tuple(box) if box else None
+        self.voter = voter if voter is not None else GpsVoter()
+        self.ocr = ocr or ocr_region
+        self.by_vehicle = {k.upper().replace(" ", ""): v for k, v in (by_vehicle or {}).items()}
+        self.probe_frames, self.full_frame_fallback = probe_frames, full_frame_fallback
+        self.max_probe_reads = max_probe_reads
+        self.neighbour_offsets, self.neighbour_min_interval_s = tuple(neighbour_offsets), neighbour_min_interval_s
+        self.events: list[dict] = []
+        self.profile: Optional[Profile] = None
+        self.layout: Optional[str] = None
+        self.method = method
+        self.detector = L.LayoutDetector([n for n, p in self.profiles.items() if p.detect])
+        self._probe_reads = 0
+        self._fallback_frames = self._fallback_hits = 0
+        self.statics = L.StaticFields()
+        self._kind_votes: dict[str, Counter] = {}
+        self._last_time: Optional[tuple[float, datetime]] = None     # (video t, OSD time) of the last good read
+        self._conflict: Optional[tuple[float, datetime]] = None
+        self._dates: Counter = Counter()
+        self.max_time = datetime.now() + timedelta(days=1)   # OSD clocks are local time: 1 day margin
+        self._last_good: dict[str, float] = {}                       # field → video t of the last good read
+        self._last_retry: dict[str, float] = {}
+        self.stats = Counter()
+        name = L.resolve_name(forced, self.profiles) if forced else None
+        if name:
+            self._resolve(name, method if method != "auto" else "forced")
+        elif forced and forced.lower() == L.NO_OSD:
+            self._resolve(L.NO_OSD, method if method != "auto" else "forced")
+
+    # ── layout ───────────────────────────────────────────────────────────────
+
+    @property
+    def timezone(self) -> Optional[str]:
+        return self.profile.timezone if self.profile else None
+
+    def _resolve(self, name: str, method: str) -> None:
+        self.layout, self.method = name, method
+        self.profile = (L.full_frame_profile() if name == L.FULL_FRAME else
+                        None if name == L.NO_OSD else self.profiles[name])
+        self.statics = L.StaticFields()
+        ev = {"layout": name, "method": method,
+              "label": self.profile.label if self.profile else "no overlay found"}
+        if self.detector.frames:
+            ev["detection"] = self.detector.summary()
+        if self.profile is not None:
+            ev["rois"] = {r.field: list(r.box) for r in self.profile.rois}
+            if self.profile.timezone:
+                ev["timezone"] = self.profile.timezone
+        self.events.append(ev)
+        logger.info(f"OSD layout: {name} ({method})")
+
+    def pop_events(self) -> list[dict]:
+        out, self.events = self.events, []
+        return out
+
+    def finish(self) -> None:
+        """End of the media: a layout still being probed is decided now."""
+        if self.layout is None:
+            self._decide(final=True)
+
+    def _decide(self, final: bool = False) -> None:
+        best = self.detector.best()
+        if best:
+            self._resolve(best, "auto")
+        elif self.full_frame_fallback and not final:
+            self._resolve(L.FULL_FRAME, "fallback")
+        else:
+            self._resolve(L.NO_OSD, "fallback" if self.full_frame_fallback else "auto")
+
+    # ── reading ──────────────────────────────────────────────────────────────
+
+    def read(self, frame: np.ndarray, t: Optional[float] = None,
+             neighbours: Optional[NeighbourFn] = None) -> OSDData:
+        self.stats["frames"] += 1
+        t = float(self.stats["frames"]) if t is None else float(t)
+        if self.layout == L.NO_OSD:
+            return self._finalise(FrameRead(), t)
+        if self.layout is None:
+            return self._probe(frame, t)
+        read = self._read_profile(frame, t, neighbours)
+        if self.layout == L.FULL_FRAME:
+            self._fallback_frames += 1
+            self._fallback_hits += read.score > 0
+            if self._fallback_frames >= 2 * self.probe_frames and not self._fallback_hits:
+                self._resolve(L.NO_OSD, "fallback")
+        return self._finalise(read, t)
+
+    def _probe(self, frame: np.ndarray, t: float) -> OSDData:
+        self._probe_reads += 1
+        if not has_content(frame):
+            if self._probe_reads >= self.max_probe_reads:
+                self._decide()
+            return self._finalise(FrameRead(), t)
+        reads = {}
+        for name in self.detector.candidates:
+            p = self.profiles[name]
+            texts = {i: self.ocr(frame, r.box, None)[0] for i, r in enumerate(p.rois)}
+            reads[name] = L.parse_frame(p, texts, self.box)
+            if reads[name].timestamp is not None and reads[name].timestamp > self.max_time:
+                reads[name].timestamp = None
+        self.detector.add(reads)
+        best = max(reads.values(), key=lambda r: r.score, default=FrameRead())
+        for r in reads.values():
+            plate = (r.vehicle_id or "").upper()
+            if plate in self.by_vehicle:
+                forced = L.resolve_name(self.by_vehicle[plate], self.profiles)
+                if forced:
+                    self._resolve(forced, "vehicle")
+                    break
+        if self.layout is None and (self.detector.frames >= self.probe_frames
+                                    or self._probe_reads >= self.max_probe_reads):
+            self._decide()
+        if self.layout in self.profiles and self.layout in reads:
+            best = reads[self.layout]
+        for r in reads.values():
+            self._vote_date(r.timestamp)
+        if best.latitude is not None and not self.voter.accepts(best.latitude, best.longitude):
+            best.latitude = best.longitude = None
+        return self._finalise(best, t, gps_source="ocr", time_source="ocr")
+
+    def _read_roi(self, frame, i: int, roi: L.Roi, variant=None) -> tuple[FrameRead, float]:
+        text, conf = self.ocr(frame, roi.box, variant)
+        sub = FrameRead()
+        kind = roi.field
+        L.parse_field(kind, text, self.profile, sub, self.box)
+        sub.texts["text"] = text
+        if sub.timestamp is not None and sub.timestamp > self.max_time:
+            sub.timestamp = None                  # a recording is never dated in the future (misread digit)
+        if kind == "gps" and sub.raw_gps_text is None and text:
+            sub.raw_gps_text = text
+        return sub, conf
+
+    def _gps_ok(self, sub: FrameRead) -> bool:
+        return sub.latitude is not None and self.voter.accepts(sub.latitude, sub.longitude)
+
+    def _time_value(self, ts: Optional[datetime], text: str, t: float) -> Optional[datetime]:
+        """Reading accepted for video time t (date repaired when only the date was misread,
+        time of day alone when the date is unreadable), else None. No anchor yet → as read."""
+        if self._last_time is None:
+            return ts
+        lt, lts = self._last_time
+        exp = lts + timedelta(seconds=t - lt)
+        if ts is not None and abs((ts - exp).total_seconds()) <= TIME_TOLERANCE_S:
+            return ts
+        tod = (ts.hour, ts.minute, ts.second) if ts is not None else L.parse_time_of_day(text)
+        if tod:
+            for dd in (0, -1, 1):
+                c = datetime.combine(exp.date() + timedelta(days=dd), dtime(*tod))
+                if abs((c - exp).total_seconds()) <= TIME_TOLERANCE_S:
+                    return c
+        return None
+
+    def _vote_date(self, ts: Optional[datetime]) -> None:
+        """Dates read so far: when most readings disagree with the anchor's date (a day misread
+        on the anchor), the anchor moves to the majority date (same time of day)."""
+        if ts is None:
+            return
+        self._dates[ts.date()] += 1
+        if self._last_time is None:
+            return
+        lt, lts = self._last_time
+        best, n = self._dates.most_common(1)[0]
+        if best != lts.date() and n >= 2 and n >= self._dates[lts.date()] + 2:
+            self._last_time = (lt, datetime.combine(best, lts.time()))
+            self.stats["time_date_fixed"] += 1
+
+    def _time_conflict(self, ts: Optional[datetime], t: float) -> Optional[datetime]:
+        """A reading inconsistent with the anchor: when two such readings agree with each other
+        the anchor was the wrong one → re-anchor on them."""
+        if ts is None:
+            return None
+        prev, self._conflict = self._conflict, (t, ts)
+        if prev and abs((ts - prev[1]).total_seconds() - (t - prev[0])) <= TIME_TOLERANCE_S:
+            self.stats["time_reanchored"] += 1
+            return ts
+        return None
+
+    def _read_profile(self, frame, t: float, neighbours: Optional[NeighbourFn]) -> FrameRead:
+        read = FrameRead()
+        gps_src = time_src = None
+        for i, roi in enumerate(self.profile.rois):
+            if roi.static and self.statics.stable(i):
+                continue
+            sub, conf = self._read_roi(frame, i, roi)
+            if roi.field in ("gps", "any") and sub.raw_gps_text and not read.raw_gps_text:
+                read.raw_gps_text = sub.raw_gps_text
+            if roi.field == "gps":
+                sub, gps_src = self._settle_gps(frame, i, roi, sub, conf, t, neighbours)
+            elif roi.field == "date_time":
+                sub, time_src = self._settle_time(frame, i, roi, sub, conf, t, neighbours)
+            elif roi.field == "any":
+                gps_src = "ocr" if self._gps_ok(sub) else None
+                time_src = "ocr" if sub.timestamp is not None else None
+            if roi.static:
+                self.statics.add(i, (sub.vehicle_id, sub.company, sub.driver_name, sub.driver_id, sub.channel))
+            _merge(read, sub)
+        if read.latitude is not None and not self._gps_ok(read):
+            read.latitude = read.longitude = None
+        return self._finalise(read, t, gps_source=gps_src, time_source=time_src, raw=True)
+
+    def _may_retry(self, fieldname: str, t: float) -> bool:
+        last_good = self._last_good.get(fieldname)
+        last_retry = self._last_retry.get(fieldname)
+        if last_good is not None and t - last_good < self.neighbour_min_interval_s / 2:
+            return False
+        if last_retry is not None and t - last_retry < self.neighbour_min_interval_s:
+            return False
+        return True
+
+    def _settle_gps(self, frame, i, roi, sub: FrameRead, conf: float, t: float,
+                    neighbours) -> tuple[FrameRead, Optional[str]]:
+        if self._gps_ok(sub) and conf >= LOW_CONFIDENCE:
+            self._last_good["gps"] = t
+            return sub, "ocr"
+        fallback = sub if self._gps_ok(sub) else None
+        for v in VARIANTS:                        # colour transitions: same frame, other renderings
+            alt, c2 = self._read_roi(frame, i, roi, v)
+            self.stats["gps_variant_reads"] += 1
+            if self._gps_ok(alt) and (fallback is None or c2 >= LOW_CONFIDENCE):
+                alt.raw_gps_text = alt.raw_gps_text or sub.raw_gps_text
+                self._last_good["gps"] = t
+                self.stats["gps_variant_fixes"] += 1
+                return alt, "ocr"
+        if fallback is not None:
+            self._last_good["gps"] = t
+            return fallback, "ocr"
+        if neighbours is None or not self._may_retry("gps", t):
+            return sub, None
+        self._last_retry["gps"] = t
+        found: dict[float, FrameRead] = {}
+        for off in self.neighbour_offsets:
+            nf = neighbours(off)
+            if nf is None:
+                continue
+            self.stats["gps_neighbour_reads"] += 1
+            for v in (None, "chmax"):
+                alt, _ = self._read_roi(nf, i, roi, v)
+                if alt.latitude is not None and _near(alt, self.voter, abs(off)):
+                    found[off] = alt
+                    break
+            if any(o < 0 for o in found) and any(o > 0 for o in found):
+                break
+        if not found:
+            return sub, None
+        before = [o for o in found if o < 0]
+        after = [o for o in found if o > 0]
+        if before and after:
+            a, b = found[max(before)], found[min(after)]
+            oa, ob = max(before), min(after)
+            w = -oa / (ob - oa)
+            res = FrameRead(latitude=round(a.latitude + w * (b.latitude - a.latitude), 6),
+                            longitude=round(a.longitude + w * (b.longitude - a.longitude), 6),
+                            speed_kmh=a.speed_kmh if a.speed_kmh is not None else b.speed_kmh,
+                            raw_gps_text=sub.raw_gps_text or a.raw_gps_text)
+        else:
+            off = min(found, key=abs)
+            res = found[off]
+            res.raw_gps_text = sub.raw_gps_text or res.raw_gps_text
+        self.stats["gps_neighbour_fixes"] += 1
+        return res, "ocr_neighbour"
+
+    def _settle_time(self, frame, i, roi, sub: FrameRead, conf: float, t: float,
+                     neighbours) -> tuple[FrameRead, Optional[str]]:
+        raw_ts = sub.timestamp
+        self._vote_date(raw_ts)
+        v = self._time_value(raw_ts, sub.texts.get("text", ""), t)
+        if v is not None and conf >= LOW_CONFIDENCE:
+            return self._good_time(sub, v, t), "ocr"
+        fallback = v
+        for var in VARIANTS:
+            alt, c2 = self._read_roi(frame, i, roi, var)
+            self.stats["time_variant_reads"] += 1
+            self._vote_date(alt.timestamp)
+            v2 = self._time_value(alt.timestamp, alt.texts.get("text", ""), t)
+            if v2 is not None and (fallback is None or c2 >= LOW_CONFIDENCE):
+                self.stats["time_variant_fixes"] += 1
+                return self._good_time(sub, v2, t), "ocr"
+        if fallback is not None:
+            return self._good_time(sub, fallback, t), "ocr"
+        if neighbours is not None and self._last_time is not None and self._may_retry("time", t):
+            self._last_retry["time"] = t
+            for off in self.neighbour_offsets:
+                nf = neighbours(off)
+                if nf is None:
+                    continue
+                self.stats["time_neighbour_reads"] += 1
+                alt, _ = self._read_roi(nf, i, roi)
+                v2 = self._time_value(alt.timestamp, alt.texts.get("text", ""), t + off)
+                if v2 is not None:
+                    self.stats["time_neighbour_fixes"] += 1
+                    return self._good_time(sub, v2 - timedelta(seconds=round(off)), t), "ocr_neighbour"
+        v = self._time_conflict(raw_ts, t)
+        if v is not None:
+            return self._good_time(sub, v, t), "ocr"
+        sub.timestamp = None
+        return sub, None
+
+    def _good_time(self, sub: FrameRead, ts: datetime, t: float) -> FrameRead:
+        sub.timestamp = ts
+        self._last_time = (t, ts)
+        self._last_good["time"] = t
+        self._conflict = None
+        return sub
+
+    def _finalise(self, read: FrameRead, t: float, gps_source: Optional[str] = None,
+                  time_source: Optional[str] = None, raw: bool = False):
+        if raw:                                        # called from _read_profile: keep FrameRead
+            read._gps_source, read._time_source = gps_source, time_source   # type: ignore[attr-defined]
+            return read
+        if hasattr(read, "_gps_source"):
+            gps_source, time_source = read._gps_source, read._time_source   # type: ignore[attr-defined]
+        lat, lon, interpolated = self.voter.update(read.latitude, read.longitude)
+        if lat is None:
+            gps_source = None
+        elif interpolated:
+            gps_source = "interpolated"
+        elif gps_source is None:
+            gps_source = "ocr"
+        ts = read.timestamp
+        if ts is not None and self._last_time is None and self.layout is not None:
+            self._last_time = (t, ts)
+        self.stats["gps_" + (gps_source or "missing")] += 1
+        self.stats["time_" + ((time_source or "ocr") if ts is not None else "missing")] += 1
+        for k in ("vehicle_id", "company", "driver_name", "channel"):
+            v = getattr(read, k)
+            if v:
+                self._kind_votes.setdefault(k, Counter())[v] += 1
+        return OSDData(
+            raw_gps_text=read.raw_gps_text or None, latitude=lat, longitude=lon, speed_kmh=read.speed_kmh,
+            timestamp=ts, vehicle_id=self._majority("vehicle_id") or read.vehicle_id,
+            company=self._majority("company") or read.company, rpm=read.rpm,
+            driver_name=self._majority("driver_name") or read.driver_name,
+            channel=self._majority("channel") or read.channel,
+            gps_interpolated=interpolated, layout=self.layout, gps_source=gps_source,
+            time_source=(time_source or "ocr") if ts is not None else None,
+        )
+
+    def _majority(self, kind: str) -> Optional[str]:
+        c = self._kind_votes.get(kind)
+        return c.most_common(1)[0][0] if c else None
+
+    def summary(self) -> dict:
+        """Job event details: layout + read statistics."""
+        return {"layout": self.layout, "method": self.method, "vehicle_id": self._majority("vehicle_id"),
+                "company": self._majority("company"), "channel": self._majority("channel"),
+                "reads": dict(self.stats)}
+
+
+def _merge(read: FrameRead, sub: FrameRead) -> None:
+    for k in ("raw_gps_text", "latitude", "longitude", "speed_kmh", "timestamp", "vehicle_id", "company",
+              "rpm", "driver_name", "driver_id", "channel"):
+        if getattr(read, k) is None and getattr(sub, k) is not None:
+            setattr(read, k, getattr(sub, k))
+
+
+def _near(r: FrameRead, voter: GpsVoter, dt_s: float) -> bool:
+    """A neighbour fix is consistent with the window (jump limit scaled by its time offset)."""
+    if not voter._lats:
+        return True
+    lim = voter.MAX_JUMP * max(1.0, dt_s)
+    return abs(r.latitude - voter._lats[-1]) <= lim and abs(r.longitude - voter._lons[-1]) <= lim
+
+
+# ── stateless compatibility API ───────────────────────────────────────────────
+
+def extract_osd(frame: np.ndarray, voter: Optional[GpsVoter] = None, layout: str = "total") -> OSDData:
+    """One frame read with one layout (default `total`). Jobs use an OsdReader."""
     if not _init_ocr():
         return OSDData()
-
-    gps_raw = _ocr_roi(_crop(frame, ROI_GPS))
-    lat, lon, speed = parse_gps_text(gps_raw)
-    if lat is None and gps_raw:
-        lat, lon, speed = _parse_partial_gps([gps_raw])
-
-    interpolated = False
-    if voter is not None:
-        lat, lon, interpolated = voter.update(lat, lon)
-
-    dt_text  = _ocr_roi(_crop(frame, ROI_DATETIME))
-    veh_text = _ocr_roi(_crop(frame, ROI_VEHICLE))
-    rpm_text = _ocr_roi(_crop(frame, ROI_RPM))
-    loc_text = _ocr_roi(_crop(frame, ROI_LOCATION))
-
-    result = OSDData(
-        raw_gps_text     = gps_raw or None,
-        latitude         = lat,
-        longitude        = lon,
-        speed_kmh        = speed,
-        timestamp        = _parse_datetime(dt_text),
-        vehicle_id       = _parse_vehicle(veh_text),
-        rpm              = _parse_rpm(rpm_text),
-        location_name    = _parse_location(loc_text),
-        gps_interpolated = interpolated,
-    )
-    logger.debug(
-        f"OSD raw={result.raw_gps_text!r} -> "
-        f"lat={result.latitude} lon={result.longitude} interp={interpolated}"
-    )
-    return result
+    return OsdReader(forced=layout, voter=voter or GpsVoter()).read(frame)
