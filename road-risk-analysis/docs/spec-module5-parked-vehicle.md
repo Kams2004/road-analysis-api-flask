@@ -35,14 +35,25 @@ The `parked_vehicle` thresholds it shows come from the settings (§5).
 1. **Detector filter** (processor). The pipeline keeps only these boxes:
    - the class is in `vehicle_classes` (COCO names);
    - the confidence is ≥ `detector_confidence`;
-   - the box centre is outside every `mask_regions` rectangle (OSD overlay) and above the bottom
-     `hood_mask_bottom_ratio` band (our own bonnet).
+   - the box centre is outside every OSD-overlay rectangle of the frame's equipment layout
+     (`mask_regions_by_layout[osd.layout]`: `total` = the three text rows on top, `besafe` /
+     `ola_energy` = GPS + name lines on top and the date / plate line at the bottom; `mask_regions`
+     for an unknown layout) and above the bottom `hood_mask_bottom_ratio` band (our own bonnet).
+
+   Every kept `car` box also feeds the job's **camera self-calibration** (`calibration.py`): for a
+   grounded car, `y_bottom = horizon + (H_cam / H_car) · h`, so a trimmed straight-line fit over the
+   car boxes gives the horizon and the lens height of THIS dashcam (`auto_calibrate`, used from
+   `auto_calibrate_min_boxes` boxes on). Finished vehicle tracks are held back (at most 80) until
+   it has converged, then judged with it.
 
    Masked boxes are counted in the job event (`vehicle_boxes_masked`).
 2. **Tracking.** The pipeline uses `static_check.Tracker` with motion prediction: a box matches
    the track's last box, or that box extrapolated with the track's image velocity
-   (`tracker_match_iou`, or the centres are closer than the box size). A track ends after
-   `tracker_max_gap` missed sampled frames. The per-model `processing.frame_skip_by_model.vehicles`
+   (`tracker_match_iou`, or the centres are closer than the reference box size). The boxes of a
+   frame are assigned globally (best IoU first, `observe_frame`), and a **size gate**
+   (`tracker_max_scale_change` per sampled step) stops a big car leaving by the side from handing
+   its track over to a small far car — an ID switch that used to mix a parked and a moving vehicle
+   in one track. A track ends after `tracker_max_gap` missed sampled frames. The per-model `processing.frame_skip_by_model.vehicles`
    applies. In parallel, the processor keeps the **ego path** of every sampled frame: the OSD GPS
    fix (GPS-voter interpolated fixes are excluded) and the OSD speed.
 3. **Features** (`features.extract`):
@@ -58,6 +69,16 @@ The `parked_vehicle` thresholds it shows come from the settings (§5).
      frame. A weighted (1/range) least-squares fit of these positions gives the **target speed**,
      the **world drift** (speed × duration) and its **sign** along our heading.
    - **Prototype image heuristics**: lateral drift, exit by a side, scale growth, growth rate.
+   - **Closing ratio** (rule 2b): −Δrange / our own travelled distance, fitted over the sightings
+     (weight 1 / range): **parked ≈ 1**, a vehicle **ahead of us at our speed ≈ 0**, **oncoming > 1**
+     (≈ 2 at equal speeds). Computed from the contact-line range (`closing_ratio`, decides) and
+     from the apparent height (`closing_ratio_height`, box growth, informational — class heights
+     are unknown for trucks). It needs our travel only (OSD speed, else the GPS path), no heading,
+     so curves and GPS heading noise do not matter. `followed`: ≥ `followed_min_corridor_share` of
+     the sightings in our corridor and the box area changing less than
+     `followed_max_scale_change` while we drive ≥ `closing_min_ego_m`.
+   - **Lateral offset** (`lateral_m`, median over the sightings closer than 40 m, display aspect
+     16:9 — the dashcams record non-square pixels).
    - **Closest sighting** (largest box): area, in corridor, side of the road.
    - **Ground contact**: contact-line range compared with the class-height range, on uncut
      sightings closer than `ground_contact_max_range_m`.
@@ -77,7 +98,9 @@ as a failure. The verdict is the first rule that fails, in this order:
 |---|---|---|---|
 | 7 | `too_far` | `closest_box_area` | closest box area / frame area < `min_box_area_at_closest`: we never came close enough |
 | 6 | `insufficient_evidence` | `sightings`, `track_seconds`, `mean_confidence` | fewer than `min_sightings`, shorter than `min_track_seconds`, or mean detector confidence < `min_mean_confidence` |
+| 5 | `traffic_queue` | `oncoming_lane` | still, but inside the oncoming lane: 0 < offset towards the oncoming side < `oncoming_lane_max_offset_m` — a jam on the other side (a parked car stands at the road edge, farther out) |
 | 5 | `traffic_queue` | `queue_ego_stop`, `queue_peers` | ≥ 2 sightings in our corridor while our speed < `queue_ego_speed_kmh`; or the vehicle is stationary in our corridor and, together with the other stationary in-corridor vehicles seen at the same time, they number ≥ `queue_min_vehicles` |
+| 2b | `moving` | `closing_ratio` (`box_growth_ratio` when the contact line is unusable), `followed_vehicle` | closing ratio outside [`closing_ratio_min`, `closing_ratio_max`] (below = ahead of us / same direction, above = oncoming), or a followed vehicle |
 | 2 | `moving` | `target_speed`, `world_drift` | target speed > `max_target_speed_kmh` + `range_error_ratio` × ego speed, or drift > `max_world_drift_m` + `range_error_ratio` × ego distance. `ai_details.motion` = `same_direction` / `oncoming`. Fallback without ego motion: see below |
 | 1 | `insufficient_evidence` | `ego_distance`, `ego_speed` | we drove < `min_ego_distance_m`, or our median speed was < `min_ego_speed_kmh`: we cannot tell a parked car from stopped traffic (a moving target does not need this) |
 | 3 | `not_grounded` | `ground_contact` | share of agreeing close sightings < `min_ground_contact_ratio` (agree = \|r_bottom − r_height\| / mean ≤ `ground_contact_tolerance`; a bottom above the horizon never agrees): billboard / poster car, car on a carrier, reflection |
@@ -95,8 +118,12 @@ no OSD speed, or no usable world position. The prototype's heuristics decide ins
 - `exit_or_growth`: the box leaves by a side (`fallback_edge_margin`) or grows ≥
   `fallback_min_scale_growth`.
 
-Such a verdict is never auto-accepted. The score is capped at `fallback_score_cap` and the
-accept blocker `fallback_heuristics` turns any auto-accept into review.
+A vehicle that looks still by these heuristics is **`insufficient_evidence`**, never `parked`
+(`fallback_parked` = false, default): without our own speed a car driving ahead of us or a slow
+oncoming car cannot be told from a parked one — this was the main source of "the vehicle in
+front is flagged as parked". With `fallback_parked` = true (old behaviour) it is `parked`, the
+score is capped at `fallback_score_cap` and the accept blocker `fallback_heuristics` turns any
+auto-accept into review.
 
 **Road distance unknown.** The reason is `road_distance_unknown` and the rule is skipped when:
 - `road_check` is off;
@@ -149,7 +176,7 @@ evidence it measures.
 - **Geo-dedup**: about 55 m per job, applied to stored tracks only.
 
 Stored on the detection:
-- `verifier_model` = `parked_vehicle_rules:v1@<sha256(settings)[:12]>`: which rule set and which
+- `verifier_model` = `parked_vehicle_rules:v2@<sha256(settings)[:12]>`: which rule set and which
   settings judged it.
 - `ai_details`: verdict, subtype, **severity** (detections have no severity column),
   vehicle_class, score and components, motion, fallback, reasons, features, target_position,
@@ -173,20 +200,29 @@ Edit with `GET /settings/` and `PUT /settings/parked_vehicle`. The nested maps `
 |---|---|---|
 | `vehicle_classes` | `["car","bus","truck"]` | COCO classes kept (`motorcycle` available, off) |
 | `detector_confidence` | 0.35 | detector box confidence floor |
-| `mask_regions` | `[[0,0,1,0.235]]` | normalised `[x1,y1,x2,y2]` rectangles ignored (OSD text rows) |
+| `mask_regions` | `[[0,0,1,0.235]]` | normalised `[x1,y1,x2,y2]` rectangles ignored (OSD text rows) for an unknown layout |
+| `mask_regions_by_layout` | total `[[0,0,1,0.235]]`; besafe, ola_energy `[[0,0,1,0.18],[0,0.87,1,1]]` | masks per OSD layout (`OSDData.layout`) |
 | `hood_mask_bottom_ratio` | 0.10 | bottom band ignored (own bonnet) |
 | `tracker_max_gap` | 3 | sampled frames a vehicle may be missed |
 | `tracker_match_iou` | 0.10 | IoU with the (predicted) last box to continue a track |
+| `tracker_max_scale_change` | 2.5 | box-area ratio allowed per sampled step (× steps missed): ID-switch gate |
 | `min_sightings` | 5 | rule 6 |
 | `min_track_seconds` | 2.5 | rule 6 |
 | `min_mean_confidence` | 0.5 | rule 6 |
 | `min_box_area_at_closest` | 0.008 | rule 7 (share of the frame area) |
-| `min_ego_distance_m` | 30 | rule 1 |
+| `min_ego_distance_m` | 20 | rule 1 (was 30) |
 | `min_ego_speed_kmh` | 15 | rule 1 (median over the track) |
 | `max_target_speed_kmh` | 3 | rule 2 base limit |
 | `max_world_drift_m` | 8 | rule 2 base limit |
 | `range_error_ratio` | 0.25 | rule 2: share of the ego speed / distance added to the limits |
-| `max_range_m` | 80 | sightings farther than this are not used for world positions |
+| `max_range_m` | 80 | sightings farther than this are not used for world positions / the closing ratio |
+| `closing_check` | true | rule 2b on/off |
+| `closing_ratio_min` / `closing_ratio_max` | 0.5 / 1.8 | rule 2b window (parked ≈ 1) |
+| `closing_min_ego_m` | 10 | our travel needed over the fitted sightings |
+| `closing_min_points` | 4 | sightings needed for the fit |
+| `followed_min_corridor_share` / `followed_max_scale_change` | 0.6 / 1.5 | "followed vehicle" |
+| `world_drift_check` | true | rule 2 (world-position fit) on/off |
+| `fallback_parked` | false | without ego motion a still-looking vehicle is `insufficient_evidence` (true = old capped `parked`) |
 | `fallback_min_lateral_drift` | 0.12 | fallback heuristics |
 | `fallback_edge_margin` | 0.18 | fallback heuristics |
 | `fallback_max_growth_rate` | 2.0 | fallback heuristics, per second |
@@ -196,12 +232,16 @@ Edit with `GET /settings/` and `PUT /settings/parked_vehicle`. The nested maps `
 | `min_ground_contact_ratio` | 0.5 | rule 3, share of sightings that must agree |
 | `ground_contact_max_range_m` | 40 | rule 3, farther sightings are not judged |
 | `class_heights_m` | car 1.5, bus 3.0, truck 3.2, motorcycle 1.2 | apparent-height range |
+| `class_height_ranges_m` | car 1.3–2.0, bus 2.4–3.6, truck 1.6–4.2, motorcycle 1.0–1.7 | rule 3: the contact line agrees when it falls inside the height span (a COCO `truck` is anything from a pickup to a semi) |
 | `road_check` | true | rule 4, OSRM `/nearest` (`OSRM_BASE_URL`) |
 | `max_road_distance_m` | 12 | rule 4 |
 | `queue_ego_speed_kmh` | 5 | rule 5 |
 | `queue_min_vehicles` | 2 | rule 5 |
-| `camera` | horizon_y 0.45, center_offset 0.0, camera_height_m 1.4, vertical_fov_deg 60, corridor_halfwidth_at_horizon 0.08, corridor_halfwidth_at_bottom 0.42 | default calibration |
-| `camera_profiles` | `{}` | `{OSD vehicle id: partial camera override}` |
+| `oncoming_lane_max_offset_m` | 4.5 | rule 5b, 0 = off |
+| `camera` | horizon_y 0.45, center_offset 0.0, camera_height_m 1.4, vertical_fov_deg **21** (was 60), display_aspect 16/9, corridor_halfwidth_at_horizon 0.08, corridor_halfwidth_at_bottom 0.42 | default calibration |
+| `camera_by_layout` | besafe: horizon_y 0.57, camera_height_m 1.9, vertical_fov_deg 45 | per OSD layout (equipment) override |
+| `camera_profiles` | `{}` | `{OSD vehicle id: partial camera override}` — wins over the layout and over the self-calibration |
+| `auto_calibrate` / `auto_calibrate_min_boxes` | true / 40 | per-job horizon + lens height from the car boxes |
 | `drive_side` | `right` | traffic side (Cameroon); `left` swaps wrong_side and roadside |
 | `score_weights` | detector 0.25, evidence 0.15, target_speed 0.25, ego_motion 0.10, ground_contact 0.10, road_distance 0.10, proximity 0.05 | §4 |
 | `auto_accept_score` | 0.80 | score ≥ this may auto-accept (with the mode's other conditions) |
@@ -236,7 +276,14 @@ DB changes: `app/core/db/upgrade.py` (`PARKED_VEHICLE_COLUMNS`) with the mirror
 
 ## 8. Calibrating a camera profile
 
-Use one frame of a straight, flat road from that vehicle's video.
+Order of precedence: `camera` defaults → `camera_by_layout[osd layout]` → the job's
+self-calibrated horizon + lens height (`auto_calibrate`) → `camera_profiles[vehicle id]` (a
+measured profile disables the self-calibration for that vehicle). The self-calibration cannot
+see the focal length: `vertical_fov_deg` stays the layout / default value. To measure it for a
+camera, label a few parked vehicles of its video in `tools/parked_eval` and run `calibrate.py`
+(§10): it fits the range scale K = H_cam·f against our OSD travel.
+
+By hand, use one frame of a straight, flat road from that vehicle's video.
 
 1. **`horizon_y`**: the y of the vanishing point of the lane lines, as a fraction of the frame
    height.
@@ -281,3 +328,89 @@ Check the result in `ai_details`:
   public demo server, `road_check` is best effort.
 - **Classes.** COCO classes are generic. Minibuses are often `car` or `bus`; three-wheelers are
   not covered.
+
+## 10. Evaluation harness (`tools/parked_eval/`)
+
+The harness replays real video segments through **the job worker's own code**:
+`pipeline._JobContext.observe_osd` (ego path), `pipeline._vehicle_tracker` + `_observe_vehicles`
+(filters, masks, self-calibration, tracking), `pipeline._vehicle_batch` (tracks held back until
+calibrated) and `pipeline._judge_vehicle_track` (`pv.prepare` → OSRM → `pv.finish`, queue peers).
+Only the detector and the OSD reader are cached, so rules / settings can be re-judged in seconds.
+
+| File | Role |
+|---|---|
+| `segments.json` | the segments (video, start, duration) |
+| `extract.py` | stage A, heavy (API image): sampled frames (frame_skip 5) → vehicles detector at conf 0.05, all 4 COCO vehicle classes + the job's OSD reader (once per second of video) → `cache/<segment>.json` |
+| `evaluate.py` | stage B, light (test venv or API image): replay → `out/<tag>/tracks.json` (per track: verdict, subtype, score, motion, every reason, every feature incl. ego speed source, closing ratios, world drift, ground contact, corridor, side, closest box, lateral offset, camera used), `report.md` / `report.json` (confusion matrix, precision / recall of `parked`), `--sheets` contact sheets, `--video` annotated video |
+| `label.py` | labels a run's tracks → `labels/<segment>.json` (`parked`, `moving_same_dir`, `oncoming`, `queue`, `crossing`, `ignore`); a label stores the vehicle's sightings, so it survives tracker / rule changes |
+| `calibrate.py` | horizon + lens height per video from the car boxes, range scale K from the labelled parked vehicles → vertical FOV |
+| `bench_models.py` | CPU cost per sampled frame of every detector + the OSD reader |
+| `run_docker.sh` | runs a script in `road-analysis-api_api` (`--cpus 4 -m 4g`, backend mounted read-only) |
+
+```bash
+tools/parked_eval/run_docker.sh extract.py                       # once (≈ 5–8 min per 60 s segment)
+python=~/.cache/viasafe-testvenv/bin/python
+$python tools/parked_eval/evaluate.py --tag after --sheets        # seconds
+$python tools/parked_eval/evaluate.py --tag before --backend <export of the previous backend>
+$python tools/parked_eval/evaluate.py --tag x --settings patch.json            # try settings
+$python tools/parked_eval/evaluate.py --tag x --no-ego-layouts besafe          # replay without OSD GPS/speed
+$python tools/parked_eval/label.py <segment> --tag after 12=parked:"note" 15=oncoming
+python3 tools/parked_eval/calibrate.py
+```
+
+**Data set (2026-10-21).** 19 segments of 60–90 s from the six videos (LTTR 458 AV, LT-183-GO,
+TEMCM111, TEMCM127 — `total` layout, 720×576 / 720×288 — and the two Mint0639 — `besafe`,
+704×576): town streets with parked rows, a market, a fuel station, open road, followed trucks /
+tankers / a bus, oncoming traffic, an oncoming jam, stops behind trucks. 176 vehicles labelled by
+looking at the frames: 40 parked, 8 followed / same direction, 54 oncoming, 15 stopped traffic
+(queue / oncoming jam), 2 crossing, 57 `ignore` (ambiguous, or parked while we never moved — not
+judgeable). Precision / recall are per vehicle: a vehicle counts as flagged when any of its
+tracks is stored as `parked`.
+
+**Before** (commit ce09a20 rules and defaults; same detector, OSD and labels):
+
+| truth \ verdict | parked | moving | traffic_queue | insufficient_evidence | too_far | not_grounded | no_track |
+|---|---|---|---|---|---|---|---|
+| parked | **3** | 30 | 0 | 4 | 1 | 0 | 2 |
+| moving_same_dir | 0 | 8 | 0 | 0 | 0 | 0 | 0 |
+| oncoming | 0 | 34 | 10 | 10 | 0 | 0 | 0 |
+| queue | 0 | 8 | 1 | 5 | 0 | 0 | 1 |
+
+precision 1.00 (3 / 3), **recall 0.075** (3 / 40). Without the OSD (GPS / speed unreadable — the
+Mint0639 `besafe` videos before the new OSD reader): the image-only fallback flags a vehicle
+driving ahead of us as `parked` (precision 0.75, recall 0.075).
+
+**After** (this version, defaults):
+
+| truth \ verdict | parked | moving | traffic_queue | insufficient_evidence | too_far | not_grounded | no_track |
+|---|---|---|---|---|---|---|---|
+| parked | **24** | 5 | 0 | 8 | 1 | 1 | 1 |
+| moving_same_dir | 0 | 7 | 0 | 0 | 1 | 0 | 0 |
+| oncoming | 0 | 28 | 12 | 14 | 0 | 0 | 0 |
+| queue | 1 | 1 | 6 | 7 | 0 | 0 | 0 |
+| crossing | 0 | 1 | 1 | 0 | 0 | 0 | 0 |
+
+**precision 0.96** (24 / 25), **recall 0.60** (24 / 40); no followed / oncoming vehicle is flagged.
+Per video: TEMCM127 12 / 12 parked found, LT-183-GO 9 / 18, Mint0639 1 / 4, TEMCM111 1 / 4,
+LTTR 1 / 2. The one false positive is a vehicle of an oncoming jam whose track mixes two cars.
+Without any OSD speed / GPS nothing is flagged (`insufficient_evidence`). Misses: tracks shorter
+than `min_track_seconds` at 50–60 km/h (8), closing ratio outside the window on noisy contact
+lines (5), boxes too small or never tracked (2), one truck failing ground contact.
+
+**Root causes found (and fixed).**
+1. *Camera calibration.* The default pinhole camera (horizon 0.45, 60° vertical FOV, 1.4 m) was
+   off by a factor 2–3 in range: measured on the videos, horizons are 0.34–0.65 of the frame and
+   the vertical FOV 18–31° (`total` dashcams) / ≈ 45° (`besafe`). With ranges 2–3× too short, a
+   parked car seemed to approach at ⅓–½ of our speed (→ `moving`, the parked vehicles "not taken
+   into consideration") and an oncoming car at about our speed (→ looks parked). Fixed by the
+   per-job self-calibration of horizon / lens height, the 21° default, the `besafe` layout
+   profile, the 16:9 display aspect for lateral offsets, and judging tracks only once calibrated.
+2. *No ego motion → parked.* Without OSD speed / GPS the image heuristics accepted vehicles
+   driving ahead of us and slow oncoming ones as parked. Now `insufficient_evidence`.
+3. *Followed / oncoming vehicles.* The world-position fit depends on the GPS heading; the
+   closing ratio does not, and separates parked (≈ 1), ahead / same direction (≈ 0) and oncoming
+   (≈ 2). Still vehicles inside the oncoming lane (a jam) are `traffic_queue`.
+4. *ID switches.* A large box leaving by the side could continue on a small far box ("centres
+   closer than the larger box"): size gate + per-frame global assignment.
+5. *Masks.* The OSD masks follow the equipment layout (`besafe` has a bottom text line).
+6. *Ground contact* for `truck` used one height (3.2 m) for pickups and semis alike → height span.

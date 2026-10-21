@@ -71,6 +71,15 @@ def range_from_height(h: float, object_height_m: float, cam: CameraCalibration) 
     return object_height_m * focal(cam) / h
 
 
+def display_aspect(width: int, height: int, cam: CameraCalibration) -> float:
+    """Width / height of the frame AS DISPLAYED: dashcams record 720×576 / 720×288 /
+    704×576 frames of a 16:9 picture (non-square pixels), so the pixel ratio
+    (2.5 for 720×288) would inflate every lateral offset."""
+    if cam.display_aspect:
+        return cam.display_aspect
+    return width / height if height else 16 / 9
+
+
 def lateral_offset(cx: float, range_m: float, aspect: float, cam: CameraCalibration) -> float:
     """Metres to the right (+) / left (−) of the camera axis at `range_m`."""
     return (cx - 0.5 - cam.center_offset) * aspect * range_m / focal(cam)

@@ -88,7 +88,7 @@ def reasons(ev):
 def test_pinhole_ranges_and_offsets():
     cam = CameraCalibration()
     f = geo.focal(cam)
-    assert f == pytest.approx(0.5 / math.tan(math.radians(30)))
+    assert f == pytest.approx(0.5 / math.tan(math.radians(cam.vertical_fov_deg / 2)))
     assert geo.range_from_bottom(0.45 + 1.4 * f / 20, cam) == pytest.approx(20)
     assert geo.range_from_bottom(0.44, cam) is None                     # above the horizon
     assert geo.range_from_height(1.5 * f / 25, 1.5, cam) == pytest.approx(25)
@@ -175,9 +175,14 @@ def test_parked_roadside_car_is_parked():
 
 
 def test_wrong_side_vs_roadside_and_blocking():
-    left = run(target=lambda t: (-3.5, 40.0))
+    left = run(target=lambda t: (-6.0, 40.0))                        # at the far road edge
     assert left.verdict == pv.PARKED and left.subtype == pv.WRONG_SIDE and left.severity == "medium"
-    lhd = run(ParkedVehicleSettings(drive_side="left"), target=lambda t: (-3.5, 40.0))
+    # still but inside the oncoming lane (3 m left of our axis): stopped traffic, not parked
+    jam = run(target=lambda t: (-3.0, 40.0))
+    assert jam.verdict == pv.TRAFFIC_QUEUE and reasons(jam)["oncoming_lane"].passed is False
+    assert run(ParkedVehicleSettings(oncoming_lane_max_offset_m=0), target=lambda t: (-3.0, 40.0)).verdict == \
+        pv.PARKED
+    lhd = run(ParkedVehicleSettings(drive_side="left"), target=lambda t: (-6.0, 40.0))
     assert lhd.subtype == pv.ROADSIDE
     assert run(ParkedVehicleSettings(drive_side="left")).subtype == pv.WRONG_SIDE
     block = run(target=lambda t: (0.3, 40.0))
@@ -304,11 +309,16 @@ def test_odometry_without_gps():
 
 def test_no_gps_no_speed_fallback_is_capped_and_blocked():
     kw = dict(gps=False, osd_speed=False, target=lambda t: (5.0, 25.0), ego_speed=lambda t: 10.8, duration=5.0)
-    ev = run(**kw)
+    # default: our own motion is unknown → a still-looking vehicle is never `parked`
+    unknown = run(**kw)
+    assert unknown.judgement.fallback and unknown.verdict == pv.INSUFFICIENT and not unknown.store
+    assert reasons(unknown)["ego_motion_unknown"].passed is None
+    # legacy behaviour (fallback_parked): parked, capped score and blocked for review
+    legacy = ParkedVehicleSettings(fallback_parked=True)
+    ev = run(legacy, **kw)
     assert ev.judgement.fallback and ev.verdict == pv.PARKED
-    assert reasons(ev)["ego_motion_unknown"].passed is None
     assert ev.score <= 0.6 and ev.blockers[0][0] == "fallback_heuristics"
-    assert run(ParkedVehicleSettings(fallback_score_cap=0.3), **kw).score <= 0.3
+    assert run(ParkedVehicleSettings(fallback_parked=True, fallback_score_cap=0.3), **kw).score <= 0.3
     # the blocker vetoes an auto-accept whatever the thresholds
     policy = ai_validation.Policy(mode="automatic", thresholds={"parked_vehicle": ai_validation.Thresholds(
         detector_accept=0.1, auto_accept=0.2)})
@@ -374,7 +384,9 @@ def test_severity_levels_and_heavy_bump():
 
 def test_settings_defaults_and_validation():
     s = ParkedVehicleSettings()
-    assert (s.min_ego_distance_m, s.min_ego_speed_kmh, s.max_target_speed_kmh, s.max_world_drift_m) == (30, 15, 3, 8)
+    assert (s.min_ego_distance_m, s.min_ego_speed_kmh, s.max_target_speed_kmh, s.max_world_drift_m) == (20, 15, 3, 8)
+    assert (s.closing_ratio_min, s.closing_ratio_max, s.camera.vertical_fov_deg, s.auto_calibrate) == \
+        (0.5, 1.8, 21, True)
     assert (s.ground_contact_tolerance, s.max_road_distance_m, s.queue_ego_speed_kmh, s.queue_min_vehicles) == \
         (0.4, 12, 5, 2)
     assert (s.min_sightings, s.min_track_seconds, s.min_mean_confidence, s.detector_confidence) == (5, 2.5, 0.5, 0.35)
@@ -382,7 +394,7 @@ def test_settings_defaults_and_validation():
     assert s.vehicle_classes == ["car", "bus", "truck"] and s.drive_side == "right"
     assert s.class_heights_m == {"car": 1.5, "bus": 3.0, "truck": 3.2, "motorcycle": 1.2}
     c = s.camera
-    assert (c.horizon_y, c.center_offset, c.camera_height_m, c.vertical_fov_deg) == (0.45, 0.0, 1.4, 60)
+    assert (c.horizon_y, c.center_offset, c.camera_height_m, c.vertical_fov_deg) == (0.45, 0.0, 1.4, 21)
     assert (c.corridor_halfwidth_at_horizon, c.corridor_halfwidth_at_bottom) == (0.08, 0.42)
     assert not s.store_rejected_for_review
     for bad in ({"vehicle_classes": ["car", "tractor"]}, {"vehicle_classes": []},
@@ -449,7 +461,7 @@ def test_policy_thresholds_and_rule_reject():
     assert d.status == "pending" and d.ai_decision == "review" and "suggests reject" in d.reason
     d = ai_validation.rule_reject(ai_validation.Policy(audit_sample_rate=0.5), "ai_off_road", "x", "missing", 0.1)
     assert d.audit_sample and d.status == "location_pending"
-    assert pv.rules_version(s).startswith("parked_vehicle_rules:v1@")
+    assert pv.rules_version(s).startswith("parked_vehicle_rules:v2@")
     assert pv.rules_version(s) != pv.rules_version(ParkedVehicleSettings(min_sightings=6))
 
 
@@ -474,6 +486,124 @@ def test_vehicle_tracker_follows_a_fast_sweeping_box():
         tr.observe(static_check.Sighting(i * 5 + 1, (900 - 10 * i, 300, 1000 - 10 * i, 360), 0.8), "vehicle", 5,
                    lambda: None)
     assert len(tr.open) == 2 and all(len(t.sightings) == 4 for t in tr.open)
+
+
+def test_closing_ratio_followed_oncoming_parked():
+    """The closing ratio (−Δrange / our travel) separates the three cases the
+    user reported: a vehicle ahead in our lane, an oncoming one, a parked one."""
+    parked = run(target=lambda t: (3.5, 45.0), duration=4.0)
+    assert parked.verdict == pv.PARKED and parked.features.closing_ratio == pytest.approx(1.0, abs=0.1)
+    assert reasons(parked)["closing_ratio"].passed
+    assert reasons(parked)["box_growth_ratio"].value == pytest.approx(1.0, abs=0.1)   # informational
+    assert reasons(parked)["followed_vehicle"].passed and parked.judgement.motion == "stationary"
+    # followed: 8 m ahead in our lane at our speed — constant range and size
+    followed = run(target=lambda t: (0.2, 8.0 + 10.0 * t), duration=5.0)
+    assert followed.verdict == pv.MOVING and followed.judgement.motion == "same_direction"
+    assert followed.features.followed and reasons(followed)["followed_vehicle"].passed is False
+    assert followed.features.closing_ratio == pytest.approx(0.0, abs=0.1)
+    # oncoming in the other lane at our speed: the range shrinks twice as fast as we drive
+    oncoming = run(target=lambda t: (-3.5, 70.0 - 10.0 * t), duration=4.0)
+    assert oncoming.verdict == pv.MOVING and oncoming.judgement.motion == "oncoming"
+    assert oncoming.features.closing_ratio == pytest.approx(2.0, abs=0.2)
+    assert reasons(oncoming)["closing_ratio"].passed is False
+    # the world-position rule can be switched off: the closing ratio alone still decides
+    s = ParkedVehicleSettings(world_drift_check=False)
+    assert run(s, target=lambda t: (-3.5, 70.0 - 10.0 * t), duration=4.0).verdict == pv.MOVING
+    assert run(s, target=lambda t: (3.5, 45.0), duration=4.0).verdict == pv.PARKED
+
+
+def test_closing_ratio_tolerates_range_scale_error_and_curves():
+    """A miscalibrated camera scales every range by k: a parked car reads k
+    (inside the window), an oncoming one ≈ k·(1 + its speed / ours)."""
+    truth = CameraCalibration(vertical_fov_deg=18.0)                  # true camera: ranges read ~15 % short
+    sts, ego = scenario(target=lambda t: (3.5, 45.0), duration=4.0, cam=truth)
+    ev = pv.evaluate(sts, ego, ParkedVehicleSettings())             # judged with the default 21°
+    assert ev.verdict == pv.PARKED and 0.7 < ev.features.closing_ratio < 1.0
+    sts, ego = scenario(target=lambda t: (-6.0, 90.0 - 15.0 * t), duration=4.0, cam=truth)
+    oncoming = pv.evaluate(sts, ego, ParkedVehicleSettings())
+    assert oncoming.verdict == pv.MOVING and oncoming.judgement.motion == "oncoming"
+
+
+def test_no_ego_speed_is_never_auto_accepted():
+    """No GPS fix and no OSD speed: a still-looking vehicle is insufficient_evidence
+    (never stored as parked); with fallback_parked it is parked but blocked."""
+    kw = dict(gps=False, osd_speed=False, target=lambda t: (5.0, 25.0), ego_speed=lambda t: 10.8, duration=5.0)
+    ev = run(**kw)
+    assert ev.verdict == pv.INSUFFICIENT and not ev.store and ev.features.closing_ratio is None
+    legacy = run(ParkedVehicleSettings(fallback_parked=True), **kw)
+    policy = ai_validation.Policy(mode="automatic", thresholds={"parked_vehicle": ai_validation.Thresholds(
+        detector_accept=0.1, auto_accept=0.1)})
+    d = ai_validation.decide(policy, "parked_vehicle", 0.9, legacy.score, "confirmed",
+                             accept_blockers=legacy.blockers)
+    assert d.ai_decision != "accept"
+
+
+def test_vehicle_tracker_size_gate_and_frame_assignment():
+    """A big car leaving by the left edge must not hand its track over to a
+    small far car appearing near it (ID switch mixing a parked and a moving
+    vehicle); boxes of one frame are assigned globally."""
+    gated = static_check.Tracker(max_gap=3, match_iou=0.1, predict=True, max_scale_change=2.5)
+    loose = static_check.Tracker(max_gap=3, match_iou=0.1, predict=True)
+    seq = [(1, (0, 300, 200, 560)), (6, (0, 310, 120, 600)),          # big car leaving left
+           (16, (150, 330, 175, 350))]                                 # far car, two samples later
+    for fr, b in seq:
+        for tr in (gated, loose):
+            tr.observe(static_check.Sighting(fr, b, 0.8), "vehicle", 5, lambda: None)
+    assert len(loose.open) == 1                     # the old behaviour: one mixed track
+    assert len(gated.open) == 2
+    # global assignment: box order does not decide which track a box continues
+    tr = static_check.Tracker(max_gap=3, match_iou=0.1, predict=True, max_scale_change=2.5)
+    a, b = (100, 300, 200, 360), (190, 300, 290, 360)
+    tr.observe_frame([(static_check.Sighting(1, a, 0.8), "vehicle", lambda: None),
+                      (static_check.Sighting(1, b, 0.8), "vehicle", lambda: None)], 5)
+    tr.observe_frame([(static_check.Sighting(6, (196, 300, 296, 360), 0.8), "vehicle", lambda: None),
+                      (static_check.Sighting(6, (104, 300, 204, 360), 0.8), "vehicle", lambda: None)], 5)
+    boxes = sorted([t.sightings[0].box[0], t.sightings[1].box[0]] for t in tr.open)
+    assert boxes == [[100, 104], [190, 196]]
+
+
+def test_horizon_self_calibration_and_its_use():
+    """Car boxes of a camera mounted high (horizon 0.62, lens 2.2 m) give back
+    that horizon / lens height; prepare() then uses them unless the vehicle
+    has a measured camera profile."""
+    truth = CameraCalibration(horizon_y=0.62, camera_height_m=2.2)
+    est = pv.HorizonEstimator(min_boxes=20)
+    rng = np.random.default_rng(1)
+    for d in rng.uniform(8, 60, 60):
+        b = _box(float(d), float(rng.uniform(-4, 4)), truth)
+        est.add((b[0] / W, b[1] / H, b[2] / W, b[3] / H), 0.8, "car")
+    est.add((0.4, 0.5, 0.6, 0.99), 0.9, "car")                      # cut by the bottom edge: ignored
+    est.add((0.4, 0.5, 0.6, 0.7), 0.9, "truck")                     # not a car: ignored
+    fit = est.fit()
+    assert fit is not None and fit.horizon_y == pytest.approx(0.62, abs=0.01)
+    assert fit.camera_height_m == pytest.approx(2.2, abs=0.1)
+    assert pv.HorizonEstimator(min_boxes=100).fit() is None
+    s = ParkedVehicleSettings()
+    assert pv.camera(s, None, None, fit).horizon_y == fit.horizon_y
+    assert pv.camera(ParkedVehicleSettings(auto_calibrate=False), None, None, fit).horizon_y == s.camera.horizon_y
+    prof = ParkedVehicleSettings(camera_profiles={"LTD1": {"horizon_y": 0.5}})
+    assert pv.camera(prof, "LTD1", None, fit).horizon_y == 0.5        # a measured profile wins
+    # a parked car seen by that camera: wrong with the default horizon, right once calibrated
+    sts, ego = scenario(target=lambda t: (3.5, 45.0), duration=4.0, cam=truth)
+    assert pv.prepare(sts, ego, s, auto=fit)[0].closing_ratio == pytest.approx(1.0, abs=0.15)
+    assert abs(pv.prepare(sts, ego, s)[0].closing_ratio - 1.0) > 0.3
+
+
+def test_layout_camera_and_masks():
+    s = ParkedVehicleSettings(camera_by_layout={"besafe": {"horizon_y": 0.5}},
+                              camera_profiles={"LTD1": {"camera_height_m": 2.5}})
+    assert s.camera_for(None, "besafe").horizon_y == 0.5
+    both = s.camera_for("LTD1", "besafe")
+    assert both.horizon_y == 0.5 and both.camera_height_m == 2.5     # vehicle profile on top of the layout
+    assert s.camera_for(None, "unknown") == s.camera
+    d = ParkedVehicleSettings()
+    assert d.masks_for("besafe") != d.masks_for("total") and d.masks_for(None) == d.mask_regions
+    # besafe: the date line at the bottom is masked, the top GPS band is thinner than total's
+    assert geo.is_masked((0.4, 0.92, 0.6, 0.98), d.masks_for("besafe"), 0.0)
+    assert not geo.is_masked((0.4, 0.18, 0.6, 0.24), d.masks_for("besafe"), 0.0)
+    assert geo.is_masked((0.4, 0.18, 0.6, 0.24), d.masks_for("total"), 0.0)
+    with pytest.raises(ValidationError):
+        ParkedVehicleSettings(mask_regions_by_layout={"x": [[0.5, 0.0, 0.2, 1.0]]})
 
 
 # ── processor glue ───────────────────────────────────────────────────────────
@@ -571,6 +701,11 @@ async def test_processor_finalize_vehicle_counts_and_stores(processor, monkeypat
         return None, "OSRM disabled in tests"
     monkeypatch.setattr(processor, "_road_distance", no_osrm)
     ctx = _ctx(processor, pvs=ParkedVehicleSettings())
+    ctx.clusters = SimpleNamespace(radius_for=lambda lat, lon, det_type: 30.0)   # dedup radius (no DB)
+
+    async def no_repeat(*a, **k):
+        return False
+    monkeypatch.setattr(processor, "_repeated_observation", no_repeat)
     sts, ego = scenario()
     for e in ego:
         ctx.ego.add(e.t_s, e.lat, e.lon, e.speed_kmh)
@@ -586,7 +721,7 @@ async def test_processor_finalize_vehicle_counts_and_stores(processor, monkeypat
     assert stats.vehicle_verdicts == {"parked": 1} and stats.by_model == {"vehicles": 1}
     det_type, subtype, score, kw = stored[0]
     assert det_type == "parked_vehicle" and subtype == "roadside" and 0 < score <= 1
-    assert kw["ai_details"]["verdict"] == "parked" and kw["verifier_model"].startswith("parked_vehicle_rules:v1@")
+    assert kw["ai_details"]["verdict"] == "parked" and kw["verifier_model"].startswith("parked_vehicle_rules:v2@")
     assert kw["rule_reject"] is None and kw["accept_blockers"] == []
     assert stats.event_details()["vehicle_verdicts"] == {"parked": 1}
     # a moving track is only counted
@@ -595,6 +730,18 @@ async def test_processor_finalize_vehicle_counts_and_stores(processor, monkeypat
     track2.best = processor._Best(np.zeros((H, W, 3), dtype=np.uint8), sts[0].frame_num, sts[0].box, 0.8, osd)
     await processor._finalize(None, ctx, "vehicles", track2, geo_seen, px_seen, stats, True)
     assert stats.vehicle_verdicts == {"parked": 1, "moving": 1} and len(stored) == 1
+
+
+def test_processor_holds_vehicle_tracks_until_self_calibrated(processor):
+    ctx = _ctx(processor)
+    t1, t2 = static_check.Track(label="vehicle"), static_check.Track(label="vehicle")
+    assert processor._vehicle_batch(ctx, [t1]) == [] and ctx.vehicle_pending == [t1]
+    assert processor._vehicle_batch(ctx, [t2], final=True) == [t1, t2] and ctx.vehicle_pending == []
+    off = _ctx(processor, pvs=ParkedVehicleSettings(auto_calibrate=False))
+    assert processor._vehicle_batch(off, [t1]) == [t1]
+    # bounded: beyond MAX_PENDING_VEHICLE_TRACKS everything is judged with the defaults
+    many = [static_check.Track(label="vehicle") for _ in range(processor.MAX_PENDING_VEHICLE_TRACKS + 1)]
+    assert len(processor._vehicle_batch(ctx, many)) == len(many)
 
 
 def test_vehicles_slot_and_valid_models():

@@ -78,10 +78,16 @@ def iou(a, b) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def _close(a, b) -> bool:
+def _close(a, b, ref_size: bool = False) -> bool:
+    """Centres closer than the box size (the larger of both boxes, or the
+    reference box `a` only with `ref_size`)."""
     ca, cb = ((a[0] + a[2]) / 2, (a[1] + a[3]) / 2), ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
-    size = max(a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1])
+    size = max(a[2] - a[0], a[3] - a[1]) if ref_size else max(a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1])
     return math.hypot(ca[0] - cb[0], ca[1] - cb[1]) <= size
+
+
+def _area(b) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
 
 
 @dataclass
@@ -130,9 +136,16 @@ class Tracker:
     Among candidates the best IoU wins, then the closest centre."""
 
     def __init__(self, max_gap: int = MAX_GAP, max_open: int = MAX_OPEN_TRACKS,
-                 match_iou: float = MATCH_IOU, predict: bool = False):
+                 match_iou: float = MATCH_IOU, predict: bool = False,
+                 max_scale_change: Optional[float] = None):
         self.max_gap, self.max_open = max_gap, max_open
         self.match_iou, self.predict = match_iou, predict
+        # size gate (vehicles): a box whose area differs from the reference box by
+        # more than this factor per sampled step never continues the track, and the
+        # "centres closer than the box size" rule uses the REFERENCE box size — so a
+        # car leaving by the side cannot hand its track over to a small, far car
+        # (ID switch that mixes a parked and a moving vehicle in one track).
+        self.max_scale_change = max_scale_change
         self.open: list[Track] = []
 
     def _ref_boxes(self, t: "Track", frame_num: int) -> list:
@@ -146,16 +159,24 @@ class Tracker:
         dist = min(math.hypot((r[0] + r[2]) / 2 - cs[0], (r[1] + r[3]) / 2 - cs[1]) for r in refs)
         return best_iou, -dist
 
-    def observe(self, s: Sighting, label: str, step: int, payload_fn) -> Track:
-        """Attach a sighting; `payload_fn()` builds the payload only when this
-        sighting becomes the track's best (avoids copying every frame)."""
+    def _accepts(self, t: "Track", s: Sighting, step: int) -> bool:
+        """Size gate + (IoU ≥ match_iou or close centres) of a candidate pair."""
+        refs = self._ref_boxes(t, s.frame_num)
+        if self.max_scale_change:
+            steps = max(1.0, (s.frame_num - t.last.frame_num) / max(step, 1))
+            limit = self.max_scale_change * steps          # linear: a long gap must not open the gate
+            a_s = _area(s.box)
+            if not any(1 / limit <= a_s / max(_area(r), 1e-6) <= limit for r in refs):
+                return False
+            return max(iou(r, s.box) for r in refs) >= self.match_iou or \
+                any(_close(r, s.box, ref_size=True) for r in refs)
+        return max(iou(r, s.box) for r in refs) >= self.match_iou or any(_close(r, s.box) for r in refs)
+
+    def _candidates(self, s: Sighting, label: str, step: int) -> list["Track"]:
         horizon = s.frame_num - (self.max_gap + 1) * step
-        candidates = [t for t in self.open if t.label == label and t.last.frame_num > horizon
-                      and t.last.frame_num < s.frame_num]
-        track = max(candidates, key=lambda t: self._match(t, s), default=None)
-        if track is not None and self._match(track, s)[0] < self.match_iou and \
-                not any(_close(r, s.box) for r in self._ref_boxes(track, s.frame_num)):
-            track = None
+        return [t for t in self.open if t.label == label and horizon < t.last.frame_num < s.frame_num]
+
+    def _attach(self, track: Optional["Track"], s: Sighting, label: str, payload_fn) -> "Track":
         if track is None:
             track = Track(label=label)
             self.open.append(track)
@@ -163,6 +184,35 @@ class Tracker:
         if s.conf > track.best_conf:
             track.best_conf, track.best = s.conf, payload_fn()
         return track
+
+    def observe(self, s: Sighting, label: str, step: int, payload_fn) -> Track:
+        """Attach a sighting; `payload_fn()` builds the payload only when this
+        sighting becomes the track's best (avoids copying every frame)."""
+        candidates = self._candidates(s, label, step)
+        track = max(candidates, key=lambda t: self._match(t, s), default=None)
+        if track is not None and not self._accepts(track, s, step):
+            track = None
+        return self._attach(track, s, label, payload_fn)
+
+    def observe_frame(self, items: list, step: int) -> list["Track"]:
+        """Attach all the sightings of ONE frame [(sighting, label, payload_fn)]
+        at once: pairs are assigned globally, best IoU (then closest centre)
+        first, one sighting per track — box order no longer decides which of
+        two neighbouring vehicles takes a track."""
+        pairs = []
+        for i, (s, label, _fn) in enumerate(items):
+            for t in self._candidates(s, label, step):
+                if self._accepts(t, s, step):
+                    pairs.append((self._match(t, s), i, t))
+        pairs.sort(key=lambda p: p[0], reverse=True)
+        chosen: dict[int, Track] = {}
+        used: set[int] = set()
+        for _score, i, t in pairs:
+            if i in chosen or id(t) in used:
+                continue
+            chosen[i] = t
+            used.add(id(t))
+        return [self._attach(chosen.get(i), s, label, fn) for i, (s, label, fn) in enumerate(items)]
 
     def expire(self, frame_num: int, step: int) -> list[Track]:
         """Finish tracks not seen for more than max_gap sampled frames (and the

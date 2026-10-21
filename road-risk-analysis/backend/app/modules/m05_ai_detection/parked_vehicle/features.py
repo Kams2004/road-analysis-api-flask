@@ -49,6 +49,7 @@ MIN_HEADING_SPEED_MS = 0.5   # fitted speed below which the local heading is not
 MIN_HEADING_MOVE_M = 2.0     # displacement below which the overall heading is not trusted
 PATH_STEP_S = 0.5            # integration step of the smoothed path length
 MIN_FIT_POINTS = 3
+LATERAL_MAX_RANGE_M = 40.0   # lateral offsets farther than this are too noisy
 
 
 @dataclass
@@ -253,6 +254,19 @@ class TrackFeatures:
     # traffic queue
     queue_stop_sightings: int = 0
     queue_min_ego_speed_kmh: Optional[float] = None
+    # closing ratio: range against our own travelled distance (vehicle frame, no heading)
+    closing_ego_m: Optional[float] = None          # our travel over the fitted sightings
+    closing_points: int = 0
+    closing_ratio: Optional[float] = None          # −d(range)/d(our travel), contact-line range
+    closing_ratio_height: Optional[float] = None   # same from the apparent height (box growth)
+    range_start_m: Optional[float] = None
+    range_end_m: Optional[float] = None
+    corridor_share: float = 0.0                    # share of sightings inside our corridor
+    lateral_m: Optional[float] = None              # median offset right (+) / left (−) of our axis, ≤ 40 m
+    camera_horizon_y: Optional[float] = None       # calibration the ranges were computed with
+    camera_height_m: Optional[float] = None
+    camera_vfov_deg: Optional[float] = None
+    followed: bool = False                         # ahead in our lane at a ~constant size while we drive
 
     def as_dict(self) -> dict:
         return {k: (round(v, 4) if isinstance(v, float) else v) for k, v in asdict(self).items()}
@@ -322,7 +336,7 @@ def extract(sightings: Sequence[VehicleSighting], ego: EgoMotion, s: ParkedVehic
         pos, hd = ego.position(x.t_s), ego.heading(x.t_s)
         if pos is None or hd is None:
             continue
-        aspect = x.frame_w / x.frame_h if x.frame_h else 16 / 9
+        aspect = geo.display_aspect(x.frame_w, x.frame_h, cam)
         lat_m = geo.lateral_offset(geo.centre(nb)[0], r, aspect, cam)
         e, n = geo.offset_enu(pos[0], pos[1], hd, r, lat_m)
         points.append((x.t_s, e, n, 1.0 / max(r, 5.0)))
@@ -344,6 +358,9 @@ def extract(sightings: Sequence[VehicleSighting], ego: EgoMotion, s: ParkedVehic
             f.target_lon = ego.origin[1] + math.degrees(me / (6_371_000.0 * math.cos(math.radians(ego.origin[0]))))
 
     # ground contact: contact-line range vs apparent-height range
+    # (a COCO `truck` is anything from a pickup to a semi-trailer: the class height is
+    # a RANGE, the contact line agrees when it falls between the two height ranges)
+    h_lo, h_hi = s.class_height_range(cls)
     errors, passes, checked = [], 0, 0
     for nb in nboxes:
         if geo.is_truncated_bottom(nb):
@@ -356,7 +373,9 @@ def extract(sightings: Sequence[VehicleSighting], ego: EgoMotion, s: ParkedVehic
         if rb is None:                         # bottom at / above the horizon although close: floating
             errors.append(math.inf)
             continue
-        err = geo.ground_contact_error(rb, rh)
+        r_lo = geo.range_from_height(nb[3] - nb[1], h_lo, cam) or rh
+        r_hi = geo.range_from_height(nb[3] - nb[1], h_hi, cam) or rh
+        err = 0.0 if r_lo <= rb <= r_hi else geo.ground_contact_error(rb, r_lo if rb < r_lo else r_hi)
         errors.append(err)
         passes += err <= s.ground_contact_tolerance
     f.ground_checked = checked
@@ -364,6 +383,8 @@ def extract(sightings: Sequence[VehicleSighting], ego: EgoMotion, s: ParkedVehic
         f.ground_contact_ratio = passes / checked
         med = statistics.median(errors)
         f.ground_contact_error = med if math.isfinite(med) else 99.0
+
+    closing(f, sts, nboxes, ego, s, cam, obj_h)
 
     # traffic queue: ahead of us in our corridor while we (almost) stop
     slow = []
@@ -376,3 +397,88 @@ def extract(sightings: Sequence[VehicleSighting], ego: EgoMotion, s: ParkedVehic
     f.queue_stop_sightings = len(slow)
     f.queue_min_ego_speed_kmh = min(slow) if slow else None
     return f
+
+
+def _fit_slope(points: list[tuple[float, float, float]]) -> Optional[float]:
+    """Weighted least-squares slope dy/dx of (x, y, w) points."""
+    if len(points) < MIN_FIT_POINTS:
+        return None
+    sw = sum(p[2] for p in points)
+    xm = sum(p[0] * p[2] for p in points) / sw
+    ym = sum(p[1] * p[2] for p in points) / sw
+    sxx = sum(p[2] * (p[0] - xm) ** 2 for p in points)
+    if sxx <= 1e-9:
+        return None
+    return sum(p[2] * (p[0] - xm) * (p[1] - ym) for p in points) / sxx
+
+
+def _trimmed_slope(points: list[tuple[float, float, float]], keep: float = 0.8) -> Optional[float]:
+    """Slope after dropping the worst residuals once (a mis-detected box, a bump)."""
+    slope = _fit_slope(points)
+    if slope is None or len(points) < 6:
+        return slope
+    sw = sum(p[2] for p in points)
+    xm = sum(p[0] * p[2] for p in points) / sw
+    ym = sum(p[1] * p[2] for p in points) / sw
+    ranked = sorted(points, key=lambda p: abs(p[1] - ym - slope * (p[0] - xm)))
+    return _fit_slope(ranked[:max(MIN_FIT_POINTS, int(len(ranked) * keep))])
+
+
+def closing(f: TrackFeatures, sts: Sequence[VehicleSighting], nboxes: list, ego: EgoMotion,
+            s: ParkedVehicleSettings, cam: CameraCalibration, obj_h: float) -> None:
+    """Closing ratio = −d(range) / d(our travelled distance), fitted over the
+    sightings closer than max_range_m (weight 1 / range):
+        parked            ≈ 1   (the range shrinks exactly as fast as we drive)
+        followed / ahead  ≈ 0   (constant range while we drive) or < 1
+        oncoming          > 1   (range shrinks by our travel + its own)
+    Computed twice — contact-line range and apparent-height range (box
+    growth) — so a horizon error and a class-height error do not hit both.
+    Needs our travel (OSD speed or GPS path), no heading: curves do not
+    matter, unlike the world-position fit."""
+    f.camera_horizon_y, f.camera_height_m, f.camera_vfov_deg = cam.horizon_y, cam.camera_height_m, cam.vertical_fov_deg
+    inside = [geo.in_corridor(*geo.centre(nb), cam) for nb in nboxes]
+    f.corridor_share = sum(inside) / len(inside)
+    if ego.mode == "none":
+        return
+    travelled, prev_t, pts_b, pts_h = 0.0, sts[0].t_s, [], []
+    ds = []
+    for x in sts:
+        if x.t_s > prev_t:
+            step = ego.distance(prev_t, x.t_s)
+            if step is None:
+                return
+            travelled += step
+            prev_t = x.t_s
+        ds.append(travelled)
+    lats = []
+    for x, d, nb in zip(sts, ds, nboxes):
+        if not geo.is_truncated_bottom(nb):
+            rb = geo.range_from_bottom(nb[3], cam)
+            if rb is not None and rb <= s.max_range_m:
+                pts_b.append((d, rb, 1.0 / max(rb, 5.0)))
+            if rb is not None and rb <= LATERAL_MAX_RANGE_M:
+                lats.append(geo.lateral_offset(geo.centre(nb)[0], rb, geo.display_aspect(x.frame_w, x.frame_h, cam),
+                                               cam))
+        cut_side = nb[0] <= 0.002 or nb[2] >= 0.998 or nb[1] <= 0.002
+        if not cut_side and not geo.is_truncated_bottom(nb):
+            rh = geo.range_from_height(nb[3] - nb[1], obj_h, cam)
+            if rh is not None and rh <= s.max_range_m:
+                pts_h.append((d, rh, 1.0 / max(rh, 5.0)))
+    if lats:
+        f.lateral_m = float(statistics.median(lats))
+    used = pts_b if len(pts_b) >= len(pts_h) else pts_h
+    if used:
+        f.closing_ego_m = used[-1][0] - used[0][0]
+        f.range_start_m, f.range_end_m = used[0][1], used[-1][1]
+    f.closing_points = len(pts_b)
+    if f.closing_ego_m is None or f.closing_ego_m < s.closing_min_ego_m:
+        return
+    for pts, attr in ((pts_b, "closing_ratio"), (pts_h, "closing_ratio_height")):
+        if len(pts) >= s.closing_min_points and pts[-1][0] - pts[0][0] >= s.closing_min_ego_m:
+            slope = _trimmed_slope(pts)
+            if slope is not None:
+                setattr(f, attr, -slope)
+    # followed vehicle: ahead in our lane, its size ~constant while we drive on
+    if (f.corridor_share >= s.followed_min_corridor_share and f.closing_ego_m >= s.closing_min_ego_m
+            and abs(math.log(max(f.scale_growth, 1e-6))) <= math.log(s.followed_max_scale_change)):
+        f.followed = True

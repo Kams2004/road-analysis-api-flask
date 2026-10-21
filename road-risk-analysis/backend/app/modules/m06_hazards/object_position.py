@@ -117,7 +117,7 @@ def estimate(det_type: str, box: Optional[Sequence[float]], frame_w: Optional[in
         return fallback
     r = min(max(r, MIN_RANGE_M), MAX_RANGE_M)
     cx = (box[0] + box[2]) / 2 / frame_w
-    lateral = pv_geo.lateral_offset(cx, r, frame_w / frame_h, cam)
+    lateral = pv_geo.lateral_offset(cx, r, pv_geo.display_aspect(frame_w, frame_h, cam), cam)
     lateral = min(max(lateral, -MAX_LATERAL_M), MAX_LATERAL_M)
     plat, plon = pv_geo.world_position(lat, lon, heading_deg, r, lateral)
     return Estimate(plat, plon, ESTIMATED, round(r, 1), heading_deg)

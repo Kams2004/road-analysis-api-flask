@@ -561,6 +561,8 @@ class _JobContext:
         self.pv_version = pv.rules_version(self.pv)
         self.ego = pv.EgoPath()
         self.vehicle_peers: deque = deque(maxlen=200)
+        self.horizon = pv.HorizonEstimator(min_boxes=self.pv.auto_calibrate_min_boxes)   # camera self-calibration
+        self.vehicle_pending: list = []      # finished vehicle tracks waiting for the self-calibration
         self.vehicle_class_ids: Optional[list[int]] = None
         self.osrm_down: Optional[str] = None
         self.clean_frames: dict[int, Optional[str]] = {}    # frame number → clean frame URL
@@ -700,7 +702,7 @@ async def _store_detection(db, ctx: _JobContext, det_id: str, model_key: str, de
         vclass = aid.get("vehicle_class")
         object_position.apply(det, object_position.estimate(
             det_type, (x1, y1, x2, y2), w, h, osd.latitude, osd.longitude, ctx.heading_at(frame_num),
-            ctx.pv.camera_for(osd.vehicle_id),
+            pv.camera(ctx.pv, osd.vehicle_id, getattr(osd, "layout", None), ctx.horizon.fit()),
             vehicle_height_m=ctx.pv.class_heights_m.get(vclass) if vclass else None,
             target=aid.get("target_position")))
     if action != "create":
@@ -906,9 +908,27 @@ def _vehicle_class_ids(model, wanted: list[str]) -> list[int]:
     return sorted(int(i) for i, n in items if str(n).lower() in want)
 
 
+MAX_PENDING_VEHICLE_TRACKS = 80   # finished tracks held back while the camera self-calibrates
+
+
+def _vehicle_batch(ctx: "_JobContext", done: list, final: bool = False) -> list:
+    """Finished vehicle tracks to judge now. While the per-job camera
+    self-calibration (pv.HorizonEstimator) has not converged, tracks are held
+    back (their ranges would use the default horizon, off by a large factor on
+    most dashcams) — up to MAX_PENDING_VEHICLE_TRACKS, and all at the end of
+    the media."""
+    if (not final and ctx.pv.auto_calibrate and ctx.horizon.fit() is None
+            and len(ctx.vehicle_pending) + len(done) <= MAX_PENDING_VEHICLE_TRACKS):
+        ctx.vehicle_pending.extend(done)
+        return []
+    batch, ctx.vehicle_pending = [*ctx.vehicle_pending, *done], []
+    return batch
+
+
 def _vehicle_tracker(pvs: ParkedVehicleSettings) -> static_check.Tracker:
     """Vehicles sweep across the frame as we pass them: motion-predicted matching."""
-    return static_check.Tracker(max_gap=pvs.tracker_max_gap, match_iou=pvs.tracker_match_iou, predict=True)
+    return static_check.Tracker(max_gap=pvs.tracker_max_gap, match_iou=pvs.tracker_match_iou, predict=True,
+                                max_scale_change=pvs.tracker_max_scale_change)
 
 
 class _Best:
@@ -1049,27 +1069,43 @@ def _queue_peers(ctx: _JobContext, track: static_check.Track, features: pv.Track
             continue
         sts = _vehicle_track_input(other)
         if sts:
-            f, _ = pv.prepare(sts, ctx.ego.window(sts[0].t_s, sts[-1].t_s), ctx.pv, None)
+            o = other.best.osd if other.best is not None else None
+            f, _ = pv.prepare(sts, ctx.ego.window(sts[0].t_s, sts[-1].t_s), ctx.pv, getattr(o, "vehicle_id", None),
+                              getattr(o, "layout", None), ctx.horizon.fit())
             peers.append(pv.peer_summary(f, ctx.pv))
     return pv.count_queue_peers(features, peers)
 
 
-async def _finalize_vehicle(db, ctx: _JobContext, track: static_check.Track, geo_seen: dict, px_seen: dict,
-                            stats: _Stats, others=()) -> None:
-    """Judge a finished vehicle track (parked?) and store it when the rules say so."""
-    key, s = pv.MODEL_KEY, ctx.pv
+async def _judge_vehicle_track(ctx: _JobContext, track: static_check.Track, others=()):
+    """(Evaluation, sightings) of a finished vehicle track, None when empty — the
+    part of _finalize_vehicle without storage (tools/parked_eval replays it)."""
+    s = ctx.pv
     sightings = _vehicle_track_input(track)
     best: _Best = track.best
     if not sightings or best is None:
-        return
+        return None
     osd = best.osd
-    features, _cam = pv.prepare(sightings, ctx.ego.window(sightings[0].t_s, sightings[-1].t_s), s, osd.vehicle_id)
+    features, _cam = pv.prepare(sightings, ctx.ego.window(sightings[0].t_s, sightings[-1].t_s), s, osd.vehicle_id,
+                                getattr(osd, "layout", None), ctx.horizon.fit())
     distance, note = None, ""
     if pv.needs_road_check(features, s):
         distance, note = await _road_distance(ctx, features.target_lat, features.target_lon)  # type: ignore[arg-type]
     ev = pv.finish(features, s, road_distance_m=distance, road_note=note,
                    queue_peers=_queue_peers(ctx, track, features, others), vehicle_id=osd.vehicle_id)
     ctx.vehicle_peers.append(pv.peer_summary(features, s))
+    return ev, sightings
+
+
+async def _finalize_vehicle(db, ctx: _JobContext, track: static_check.Track, geo_seen: dict, px_seen: dict,
+                            stats: _Stats, others=()) -> None:
+    """Judge a finished vehicle track (parked?) and store it when the rules say so."""
+    key = pv.MODEL_KEY
+    judged = await _judge_vehicle_track(ctx, track, others)
+    if judged is None:
+        return
+    ev, sightings = judged
+    best: _Best = track.best
+    osd = best.osd
     stats.verdict(ev.verdict)
     logger.debug(f"[Job {ctx.job.id}] vehicle track {len(sightings)} sightings → {ev.verdict} "
                  f"({ev.reason_text()})")
@@ -1113,21 +1149,24 @@ def _observe_vehicles(ctx: _JobContext, tracker: static_check.Tracker, results, 
     names = results[0].names
     t = ctx.video_time(frame_num)
     t = float(frame_num) if t is None else t
+    items = []
     for box in results[0].boxes:
         x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
         conf = round(box.conf[0].item(), 4)
         cls = str(names[int(box.cls[0].item())]).lower()
         if conf < ctx.pv.detector_confidence or cls not in ctx.pv.vehicle_classes:
             continue
-        if pv_geo.is_masked(pv_geo.normalise_box((x1, y1, x2, y2), w, h), ctx.pv.mask_regions,
-                            ctx.pv.hood_mask_bottom_ratio):
+        nbox = pv_geo.normalise_box((x1, y1, x2, y2), w, h)
+        if pv_geo.is_masked(nbox, ctx.pv.masks_for(getattr(osd, "layout", None)), ctx.pv.hood_mask_bottom_ratio):
             stats.vehicle_masked += 1
             continue
+        ctx.horizon.add(nbox, conf, cls)
         sighting = pv.VehicleSighting(frame_num, (x1, y1, x2, y2), conf, osd.latitude, osd.longitude,
                                       t_s=t, cls=cls, speed_kmh=osd.speed_kmh, frame_w=w, frame_h=h,
                                       timestamp=osd.timestamp)
-        tracker.observe(sighting, "vehicle", step,
-                        lambda f=frame, n=frame_num, b=(x1, y1, x2, y2), c=conf, o=osd: _Best(f.copy(), n, b, c, o))
+        items.append((sighting, "vehicle",
+                      lambda f=frame, n=frame_num, b=(x1, y1, x2, y2), c=conf, o=osd: _Best(f.copy(), n, b, c, o)))
+    tracker.observe_frame(items, step)      # global assignment of the frame's boxes
 
 
 PROGRESS_EVERY = 50   # frames read between two progress commits
@@ -1196,7 +1235,7 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
                     results = _models[key](frame, conf=ctx.pv.detector_confidence, iou=settings.IOU_THRESHOLD,
                                            classes=ctx.vehicle_class_ids, verbose=False, **_predict_kwargs(key))
                     _observe_vehicles(ctx, trackers[key], results, frame, frame_num, osd, step, stats)
-                done_batch = trackers[key].expire(frame_num, step)
+                done_batch = _vehicle_batch(ctx, trackers[key].expire(frame_num, step))
                 for done in done_batch:
                     await _finalize(db, ctx, key, done, geo_seen, px_seen, stats, video,
                                     others=(*trackers[key].open, *done_batch))
@@ -1217,6 +1256,8 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
     # end of media or cancel: what is still tracked becomes detections too
     for key, tracker in trackers.items():
         done_batch = tracker.flush()
+        if key == pv.MODEL_KEY:
+            done_batch = _vehicle_batch(ctx, done_batch, final=True)
         for done in done_batch:
             await _finalize(db, ctx, key, done, geo_seen, px_seen, stats, video, others=done_batch)
     return frame_num, cancelled

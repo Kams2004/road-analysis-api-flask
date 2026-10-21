@@ -1,0 +1,31 @@
+{
+  "videos": {
+    "lttr":   "/videos/LTTR 458 AV_24_04 (2).mp4",
+    "lt183":  "/downloads/LT-183-GO_3.mp4",
+    "tem111": "/videos/TEMCM111_20260612053054_20260612073311_2_1103156524ee1252.mp4",
+    "tem127": "/videos/TEMCM127_ch2_20261015154722_20261015173317_0_.mp4",
+    "mint1":  "/videos/Mint0639_ch2_20261020124000_20261020140000__.mp4",
+    "mint2":  "/videos/Mint0639_ch2_20261020142939_20261020160053__.mp4"
+  },
+  "segments": [
+    {"id": "lttr_0000",   "video": "lttr",   "start_s": 0,    "dur_s": 90},
+    {"id": "lttr_0280",   "video": "lttr",   "start_s": 280,  "dur_s": 60},
+    {"id": "lttr_0420",   "video": "lttr",   "start_s": 420,  "dur_s": 60},
+    {"id": "lttr_1020",   "video": "lttr",   "start_s": 1020, "dur_s": 60},
+    {"id": "lt183_0380",  "video": "lt183",  "start_s": 380,  "dur_s": 60},
+    {"id": "lt183_1280",  "video": "lt183",  "start_s": 1280, "dur_s": 60},
+    {"id": "lt183_1580",  "video": "lt183",  "start_s": 1580, "dur_s": 60},
+    {"id": "lt183_2180",  "video": "lt183",  "start_s": 2180, "dur_s": 60},
+    {"id": "tem111_2080", "video": "tem111", "start_s": 2080, "dur_s": 60},
+    {"id": "tem111_4480", "video": "tem111", "start_s": 4480, "dur_s": 60},
+    {"id": "tem111_5460", "video": "tem111", "start_s": 5460, "dur_s": 60},
+    {"id": "tem127_1480", "video": "tem127", "start_s": 1480, "dur_s": 60},
+    {"id": "tem127_2080", "video": "tem127", "start_s": 2080, "dur_s": 60},
+    {"id": "tem127_2680", "video": "tem127", "start_s": 2680, "dur_s": 60},
+    {"id": "tem127_4470", "video": "tem127", "start_s": 4470, "dur_s": 60},
+    {"id": "mint1_0570",  "video": "mint1",  "start_s": 570,  "dur_s": 60},
+    {"id": "mint1_4170",  "video": "mint1",  "start_s": 4170, "dur_s": 60},
+    {"id": "mint2_3680",  "video": "mint2",  "start_s": 3680, "dur_s": 60},
+    {"id": "mint2_3080",  "video": "mint2",  "start_s": 3080, "dur_s": 60}
+  ]
+}

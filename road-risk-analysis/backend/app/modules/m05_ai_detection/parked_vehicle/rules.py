@@ -7,7 +7,10 @@ this order:
 
   too_far                closest_box_area < min_box_area_at_closest (rule 7)
   insufficient_evidence  sightings / track_seconds / mean_confidence (rule 6)
-  traffic_queue          queue_ego_stop: ≥ 2 sightings in our corridor while
+  traffic_queue          oncoming_lane: still but inside the oncoming lane
+                         (|lateral offset| < oncoming_lane_max_offset_m on
+                         the other side of the road) — a jam, not parked;
+                         queue_ego_stop: ≥ 2 sightings in our corridor while
                          our speed < queue_ego_speed_kmh; queue_peers: with
                          the other stationary in-corridor vehicles seen at the
                          same time ≥ queue_min_vehicles (rule 5)
@@ -91,8 +94,43 @@ def allowed_limits(f: TrackFeatures, s: ParkedVehicleSettings) -> tuple[float, f
 
 
 def uses_fallback(f: TrackFeatures) -> bool:
-    """No ego motion or no usable world position → image heuristics only."""
-    return f.ego_mode == "none" or f.target_speed_kmh is None
+    """No ego motion, or neither a world position nor a closing ratio → image heuristics only."""
+    return f.ego_mode == "none" or (f.target_speed_kmh is None and f.closing_ratio is None
+                                    and f.closing_ratio_height is None)
+
+
+def closing_checks(f: TrackFeatures, s: ParkedVehicleSettings) -> list[Reason]:
+    """Rule 2b: closing ratios within [closing_ratio_min, closing_ratio_max] and
+    not a followed vehicle (empty when the closing ratio is off / unknown)."""
+    if not s.closing_check:
+        return []
+    window = [s.closing_ratio_min, s.closing_ratio_max]
+    out = []
+    # the contact-line ratio decides; the box-growth ratio (class height unknown for
+    # trucks / buses, box cut by the frame) only when the contact line is not usable
+    primary = f.closing_ratio is not None
+    for code, value, what, decides in (
+            ("closing_ratio", f.closing_ratio, "contact-line range", True),
+            ("box_growth_ratio", f.closing_ratio_height, "apparent height (box growth)", not primary)):
+        if value is not None:
+            ok = window[0] <= value <= window[1]
+            out.append(Reason(code, value, window, ok if decides else None,
+                              f"−Δrange / our travel ({what}) over {f.closing_ego_m or 0:.0f} m: "
+                              f"parked ≈ 1, ahead with us ≈ 0, oncoming > 1"
+                              + ("" if decides else " (informational: the contact-line ratio decides)")))
+    out.append(Reason("followed_vehicle", f.followed, False, not f.followed,
+                      f"{f.corridor_share:.0%} of sightings in our corridor, box area ×{f.scale_growth:.2f}"))
+    return out
+
+
+def closing_motion(f: TrackFeatures, s: ParkedVehicleSettings) -> str:
+    vals = [f.closing_ratio] if f.closing_ratio is not None else \
+        [f.closing_ratio_height] if f.closing_ratio_height is not None else []
+    if f.followed or any(v < s.closing_ratio_min for v in vals):
+        return "same_direction"
+    if any(v > s.closing_ratio_max for v in vals):
+        return "oncoming"
+    return "stationary"
 
 
 def fallback_passes(f: TrackFeatures, s: ParkedVehicleSettings) -> tuple[bool, bool, bool]:
@@ -106,8 +144,12 @@ def is_stationary(f: TrackFeatures, s: ParkedVehicleSettings) -> bool:
     """World-stationary by the stability rule (used for queue peers)."""
     if uses_fallback(f):
         return all(fallback_passes(f, s))
+    if any(r.passed is False for r in closing_checks(f, s)):
+        return False
+    if not s.world_drift_check or f.target_speed_kmh is None:
+        return True
     max_v, max_d = allowed_limits(f, s)
-    return f.target_speed_kmh <= max_v and (f.world_drift_m or 0.0) <= max_d  # type: ignore[operator]
+    return f.target_speed_kmh <= max_v and (f.world_drift_m or 0.0) <= max_d
 
 
 def subtype_of(f: TrackFeatures, drive_side: str) -> str:
@@ -156,7 +198,9 @@ def judge(f: TrackFeatures, s: ParkedVehicleSettings, *,
     fallback = uses_fallback(f)
     ego_checks: list[Reason] = []
     if f.ego_mode == "none":
-        add(Reason("ego_motion_unknown", None, None, None, "no GPS fix nor OSD speed: image heuristics only"))
+        add(Reason("ego_motion_unknown", None, None, None,
+                   "no GPS fix nor OSD speed: image heuristics only"
+                   + ("" if s.fallback_parked else " — a still-looking vehicle stays insufficient_evidence")))
     else:
         ego_checks = [
             Reason("ego_distance", f.ego_distance_m, s.min_ego_distance_m,
@@ -171,16 +215,24 @@ def judge(f: TrackFeatures, s: ParkedVehicleSettings, *,
     max_v, max_d = allowed_limits(f, s)
     motion = "unknown"
     if not fallback:
-        speed_ok = f.target_speed_kmh <= max_v  # type: ignore[operator]
-        drift_ok = (f.world_drift_m or 0.0) <= max_d
-        stability = [
-            Reason("target_speed", f.target_speed_kmh, max_v, speed_ok,
-                   f"{f.positions_used} positions; limit = {s.max_target_speed_kmh:g} + "
-                   f"{s.range_error_ratio:g} × ego speed"),
-            Reason("world_drift", f.world_drift_m, max_d, drift_ok,
-                   f"limit = {s.max_world_drift_m:g} + {s.range_error_ratio:g} × ego distance"),
-        ]
-        if speed_ok and drift_ok:
+        stability = closing_checks(f, s)
+        closing_ok = all(r.passed is not False for r in stability)
+        world_ok = True
+        if f.target_speed_kmh is not None:
+            speed_ok = f.target_speed_kmh <= max_v
+            drift_ok = (f.world_drift_m or 0.0) <= max_d
+            on = s.world_drift_check
+            world_ok = (speed_ok and drift_ok) or not on
+            stability += [
+                Reason("target_speed", f.target_speed_kmh, max_v, speed_ok if on else None,
+                       f"{f.positions_used} positions; limit = {s.max_target_speed_kmh:g} + "
+                       f"{s.range_error_ratio:g} × ego speed" + ("" if on else " (world_drift_check off)")),
+                Reason("world_drift", f.world_drift_m, max_d, drift_ok if on else None,
+                       f"limit = {s.max_world_drift_m:g} + {s.range_error_ratio:g} × ego distance"),
+            ]
+        if not closing_ok:
+            motion = closing_motion(f, s)
+        elif world_ok:
             motion = "stationary"
         elif f.drift_along_m is not None:
             motion = "same_direction" if f.drift_along_m > 0 else "oncoming"
@@ -199,6 +251,16 @@ def judge(f: TrackFeatures, s: ParkedVehicleSettings, *,
         ]
         motion = "stationary" if all((lat_ok, growth_ok, exit_ok)) else ("oncoming" if not growth_ok else "unknown")
     R.extend(stability)
+
+    # rule 5b — still, but inside the oncoming traffic lane: a jam on the other side
+    # (a parked car sits at the road edge, farther out)
+    lane = None
+    if f.lateral_m is not None and s.oncoming_lane_max_offset_m > 0:
+        toward = -f.lateral_m if s.drive_side == "right" else f.lateral_m     # metres into the oncoming side
+        inside = 0 < toward < s.oncoming_lane_max_offset_m
+        lane = Reason("oncoming_lane", round(f.lateral_m, 2), s.oncoming_lane_max_offset_m, not inside,
+                      "lateral offset (m, + right): inside the oncoming lane = stopped traffic, not parked")
+        add(lane)
 
     # rule 3 — ground contact
     if f.ground_contact_ratio is None:
@@ -232,8 +294,12 @@ def judge(f: TrackFeatures, s: ParkedVehicleSettings, *,
         verdict = TRAFFIC_QUEUE
     elif any(r.passed is False for r in stability):
         verdict = MOVING
+    elif lane is not None and lane.passed is False:
+        verdict = TRAFFIC_QUEUE
     elif any(r.passed is False for r in ego_checks):
         verdict = INSUFFICIENT
+    elif fallback and not s.fallback_parked:
+        verdict = INSUFFICIENT          # still-looking but our own motion is unknown: never `parked`
     elif ground.passed is False:
         verdict = NOT_GROUNDED
     elif road.passed is False:

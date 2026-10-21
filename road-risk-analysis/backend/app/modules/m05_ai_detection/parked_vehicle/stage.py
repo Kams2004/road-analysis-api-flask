@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 from . import features as feat
+from .calibration import Fit
 from .rules import PARKED, Judgement, is_stationary, judge
 from .scoring import score as compute_score
 from .settings import CameraCalibration, ParkedVehicleSettings
@@ -32,7 +33,7 @@ from .severity import severity as compute_severity
 
 DETECTION_TYPE = "parked_vehicle"
 MODEL_KEY = "vehicles"
-RULES_VERSION = "parked_vehicle_rules:v1"
+RULES_VERSION = "parked_vehicle_rules:v2"
 REJECTION_CODES = {
     "off_road": "ai_off_road",
     "not_grounded": "ai_not_grounded",
@@ -87,11 +88,24 @@ class Evaluation:
         }
 
 
+def camera(s: ParkedVehicleSettings, vehicle_id: Optional[str] = None, layout: Optional[str] = None,
+           auto: Optional[Fit] = None) -> CameraCalibration:
+    """Calibration of the job's camera: camera_profiles[vehicle_id] when set
+    (measured, wins); else the layout / default calibration with the job's
+    self-calibrated horizon and lens height (`auto`, calibration.py)."""
+    cam = s.camera_for(vehicle_id, layout)
+    if auto is None or not s.auto_calibrate or (vehicle_id and vehicle_id in s.camera_profiles):
+        return cam
+    return cam.model_copy(update={"horizon_y": auto.horizon_y, "camera_height_m": auto.camera_height_m})
+
+
 def prepare(sightings: Sequence[feat.VehicleSighting], ego_samples: Sequence[feat.EgoSample],
-            s: ParkedVehicleSettings, vehicle_id: Optional[str] = None
-            ) -> tuple[feat.TrackFeatures, CameraCalibration]:
-    """Phase 1: features of the track with the vehicle's camera calibration."""
-    cam = s.camera_for(vehicle_id)
+            s: ParkedVehicleSettings, vehicle_id: Optional[str] = None, layout: Optional[str] = None,
+            auto: Optional[Fit] = None) -> tuple[feat.TrackFeatures, CameraCalibration]:
+    """Phase 1: features of the track with the camera calibration of the
+    vehicle (camera_profiles) / its OSD layout (camera_by_layout) / the job's
+    self-calibration (`auto`)."""
+    cam = camera(s, vehicle_id, layout, auto)
     return feat.extract(sightings, feat.ego_motion(ego_samples), s, cam), cam
 
 
@@ -179,7 +193,7 @@ def merge_policy_cards(cards: dict, s: ParkedVehicleSettings) -> dict:
 
 
 def rules_version(s: ParkedVehicleSettings) -> str:
-    """`parked_vehicle_rules:v1@<sha256(settings)[:12]>` — stored as verifier_model, so a
+    """`parked_vehicle_rules:v2@<sha256(settings)[:12]>` — stored as verifier_model, so a
     detection says which rule set and which settings judged it."""
     digest = hashlib.sha256(json.dumps(s.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
     return f"{RULES_VERSION}@{digest[:12]}"
