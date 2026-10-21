@@ -5,6 +5,7 @@ failures), progress maths and dedupe. Providers are faked with
 httpx.MockTransport; the database with a tiny in-memory session.
 """
 import hashlib
+import os
 import itertools
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -325,6 +326,10 @@ def _deps(tmp_path, handler, r=None, **kw):
     async def token(db, conn, client):
         return "AT"
 
+    async def no_duplicate(db, fp):
+        return None
+
+    kw.setdefault("find_duplicate", no_duplicate)
     clock = itertools.count()
     deps = ci.WorkerDeps(redis=r if r is not None else FakeRedis(), client=_mock(handler), token=token,
                          sleep=lambda s: _noop(), clock=lambda: float(next(clock)), enqueue=enqueue,
@@ -356,6 +361,33 @@ async def test_import_item_downloads_verifies_and_hands_over(tmp_path):
     assert conn.files_imported_total == 1
     live = deps.redis.h[ci.live_key("i1")]
     assert live["phase"] == "queued_for_processing"
+
+
+async def test_import_of_already_processed_content_is_skipped(tmp_path):
+    """Same bytes as a processed job (content fingerprint): skipped_duplicate, no job, file removed."""
+    from app.modules.m07_ingestion import fingerprint
+    db, conn, batch, item = _setup(tmp_path)
+    seen = []
+    previous = Job(id="J-OLD", filename="old.mp4", status="done")
+
+    async def find(db_, fp):
+        seen.append(fp)
+        return previous
+
+    deps, enqueued = _deps(tmp_path, lambda req: httpx.Response(200, content=PAYLOAD), find_duplicate=find)
+    assert await ci.run_item(db, "i1", deps) == "skipped_duplicate"
+    assert item.duplicate_of_job_id == "J-OLD" and enqueued == [] and item.job_id is None
+    assert seen == ["sha256:" + hashlib.sha256(PAYLOAD).hexdigest()]
+    assert not os.path.exists(item.dest_path)
+    assert fingerprint.file_fingerprint  # same function used by uploads
+
+    # the batch asked to re-import: processed again
+    db, conn, batch, item = _setup(tmp_path)
+    batch.options = {"reimport": True}
+    deps, enqueued = _deps(tmp_path, lambda req: httpx.Response(200, content=PAYLOAD), find_duplicate=find)
+    assert await ci.run_item(db, "i1", deps) == "queued_for_processing"
+    (job, _), = enqueued
+    assert job.content_fingerprint == seen[-1]
 
 
 async def test_transient_error_resumes_with_range(tmp_path):

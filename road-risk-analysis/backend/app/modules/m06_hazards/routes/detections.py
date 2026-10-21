@@ -14,7 +14,7 @@ from app.api.openapi import err, errors, legacy
 from app.core.db.session import get_db, AsyncSessionLocal
 from app.modules.m06_hazards.models.detection import ACCEPTED_STATUSES, Detection, LocationStatus, ReviewStatus
 from app.modules.m06_hazards.models.detection_review import DetectionReview
-from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus
+from app.modules.m06_hazards.models.hazard import PUBLIC_STATUSES, Hazard, HazardStatus
 from app.modules.m07_ingestion.models.job_track_point import JobTrackPoint
 from app.modules.m06_hazards.models.rejection_reason import RejectionReason
 from app.modules.m06_hazards.models.validation_label import ValidationLabel
@@ -80,7 +80,8 @@ class DetectionFilters:
         type:            Optional[str] = Query(None, description="Detection class, e.g. `pothole`, `traffic_sign`, `speed_bump`.", examples=["pothole"]),
         subtype:         Optional[str] = Query(None, description="Detection subtype (e.g. the traffic-sign class)."),
         job_id:          Optional[str] = Query(None, description="Only detections produced by this job (UUID)."),
-        hazard_id:       Optional[str] = Query(None, description="Only detections that belong to this hazard (UUID)."),
+        hazard_id:       Optional[str] = Query(None, description="Only detections that belong to this hazard / cluster (UUID)."),
+        clustered:       Optional[bool] = Query(None, description="`true` = only detections in a cluster, `false` = only those without one (no position yet)."),
         country:         Optional[str] = Query(None, description="Country name (case-insensitive exact match).", examples=["Cameroon"]),
         city:            Optional[str] = Query(None, description="City name (case-insensitive exact match).", examples=["Douala"]),
         town:            Optional[str] = Query(None, description="Reverse-geocoded town (case-insensitive exact match).", examples=["Douala"]),
@@ -105,6 +106,8 @@ class DetectionFilters:
         if self.subtype:         q = q.where(Detection.subtype == self.subtype)
         if self.job_id:          q = q.where(Detection.job_id == self.job_id)
         if self.hazard_id:       q = q.where(Detection.hazard_id == self.hazard_id)
+        if self.clustered is not None:
+            q = q.where(Detection.hazard_id.isnot(None) if self.clustered else Detection.hazard_id.is_(None))
         if self.country:         q = q.where(Detection.country.ilike(self.country))
         if self.city:            q = q.where(Detection.city.ilike(self.city))
         if self.town:            q = q.where(Detection.town.ilike(self.town))
@@ -135,7 +138,8 @@ async def _page(db: AsyncSession, q, f: DetectionFilters) -> tuple[int, list[Det
 async def _serialize(db: AsyncSession, dets: list[Detection], model=DetectionOut) -> list:
     """Detections + hazard_code / rejection_label looked up in two queries."""
     hazard_ids = {d.hazard_id for d in dets if d.hazard_id}
-    codes = dict((await db.execute(select(Hazard.id, Hazard.code).where(Hazard.id.in_(hazard_ids)))).all()) \
+    refs = {hid: (code, status) for hid, code, status in (await db.execute(
+        select(Hazard.id, Hazard.code, Hazard.status).where(Hazard.id.in_(hazard_ids)))).all()} \
         if hazard_ids else {}
     reason_codes = {d.rejection_code for d in dets if d.rejection_code}
     labels: dict[tuple[str, str], str] = {}
@@ -145,11 +149,26 @@ async def _serialize(db: AsyncSession, dets: list[Detection], model=DetectionOut
     out = []
     for d in dets:
         item = model.model_validate(d)
-        item.hazard_code = codes.get(d.hazard_id)
+        code, status = refs.get(d.hazard_id, (None, None))
+        item.hazard_status = status
+        item.hazard_code = code if status in PUBLIC_STATUSES else None    # candidates are not hazards
         if d.rejection_code:
             item.rejection_label = labels.get((d.type, d.rejection_code)) or labels.get(("all", d.rejection_code))
         out.append(item)
     return out
+
+
+async def attach_cluster_refs(db: AsyncSession, rows: list, items: list) -> None:
+    """QueueItemOut.cluster of each detection (one query)."""
+    ids = {d.hazard_id for d in rows if d.hazard_id}
+    if not ids:
+        return
+    hz = {h.id: h for h in (await db.execute(select(Hazard).where(Hazard.id.in_(ids)))).scalars().all()}
+    for det, item in zip(rows, items):
+        h = hz.get(det.hazard_id) if det.hazard_id else None
+        if h is not None:
+            item.cluster = HazardRefOut(hazard_id=h.id, hazard_code=h.code, detection_count=h.detection_count,
+                                        status=h.status, confirmed=h.status in PUBLIC_STATUSES)
 
 
 async def _get(db: AsyncSession, detection_id: str) -> Detection:
@@ -215,28 +234,15 @@ async def validation_queue(
 ):
     """
     The validation queue (RRAP-06-005): detections awaiting a decision, with the shared filters,
-    sorting and pagination. Each item carries `cluster`: the active hazard it would join if accepted
-    now (same type, within the clustering radius of its area), or `null` when it would open a new
-    hazard or its position is unknown.
+    sorting and pagination. Each item carries `cluster`: the cluster it belongs to (cluster-first —
+    attached at creation to the nearest open cluster of its type within the zone radius): a candidate
+    `CL-…` (validated by nobody yet) or a confirmed hazard `HZ-…`; `null` when its position is unknown.
+    Grouped review: `GET /hazards/review-queue`.
     """
     q = f.apply(select(Detection)).where(Detection.review_status.in_(_statuses(status)))
     total, rows = await _page(db, q, f)
     items = await _serialize(db, rows, QueueItemOut)
-
-    types = {d.type for d in rows if d.latitude is not None}
-    if types:
-        ctx = await hazard_service.load_context(db)
-        hazards = (await db.execute(select(Hazard).where(
-            Hazard.status == HazardStatus.active.value, Hazard.type.in_(types)
-        ))).scalars().all()
-        for det, item in zip(rows, items):
-            if det.latitude is None or det.longitude is None:
-                continue
-            h = hazard_service.pick_hazard(
-                hazards, det.latitude, det.longitude, det.type, det.subtype,
-                ctx.radius_for(det.latitude, det.longitude, det.type), ctx.distinct_subtype_types)
-            if h is not None:
-                item.cluster = HazardRefOut(hazard_id=h.id, hazard_code=h.code, detection_count=h.detection_count)
+    await attach_cluster_refs(db, rows, items)
     return QueueListOut(total=total, items=items)
 
 
@@ -663,7 +669,8 @@ async def _detail(db: AsyncSession, det: Detection) -> DetectionDetailOut:
     out.history = [DetectionReviewOut.model_validate(h) for h in history]
     if det.hazard_id:
         hazard = await db.get(Hazard, det.hazard_id)
-        out.hazard = HazardOut.model_validate(hazard) if hazard else None
+        # `hazard` is a confirmed hazard only; a candidate cluster is not a hazard
+        out.hazard = HazardOut.model_validate(hazard) if hazard and hazard.status in PUBLIC_STATUSES else None
     return out
 
 

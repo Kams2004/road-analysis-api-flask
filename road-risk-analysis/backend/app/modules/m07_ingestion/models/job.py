@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import String, DateTime, Integer, Float, Boolean, JSON, ForeignKey, Enum as SAEnum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, deferred, mapped_column
 from app.core.db.session import Base
 from app.modules.m07_ingestion.models import (  # noqa: F401 — register FK targets
     cloud_connection as _cc, stream_source as _ss,
@@ -71,3 +71,9 @@ class Job(Base):
     detections_by_model: Mapped[dict | None]  = mapped_column(JSON, nullable=True)      # {"pothole": 3, …}
     fps:                 Mapped[float | None] = mapped_column(Float, nullable=True)
     duration_s:          Mapped[float | None] = mapped_column(Float, nullable=True)     # video length
+
+    # Content fingerprint of the media ("sha256:<hex>", app.modules.m07_ingestion.fingerprint):
+    # the same video processed twice is refused (409 duplicate_video) unless forced.
+    # Deferred: never part of a plain SELECT, so code that does not use it keeps
+    # working on a database whose startup upgrade has not added the column yet.
+    content_fingerprint: Mapped[str | None] = deferred(mapped_column(String, nullable=True))

@@ -1,17 +1,26 @@
 """
-Hazards = persisted clusters of accepted detections (RRAP-06-001…004,
-06-009…011, 06-019).
+Hazards = persisted clusters of detections (RRAP-06-001…004, 06-009…011,
+06-019) — cluster-first (docs/CLUSTERS.md).
 
-A detection joins a hazard when it enters `validated`/`corrected` with a
-confirmed location:
+Every non-rejected detection with a usable position (confirmed or
+approximate GPS) belongs to a cluster from its creation:
   1. radius = the global Cluster Configuration resolved at the point for the
      detection type (app.modules.m06_hazards.clustering: zone → urban/rural profile;
-     the zone / environment used is stored on a new hazard);
-  2. candidate = nearest hazard of the same type within that radius — and
-     the same subtype for types listed in validation.distinct_subtype_types
-     (two different signs a few metres apart stay separate hazards);
-  3. attach and recompute the aggregates, or open a new hazard.
-Leaving the accepted states (reopen) detaches it; an empty hazard is deleted.
+     the zone / environment used is stored on a new cluster);
+  2. cluster = nearest OPEN cluster (candidate or confirmed hazard) of the same
+     type within that radius — and the same subtype for types listed in
+     validation.distinct_subtype_types (two different signs a few metres apart
+     stay separate) — whatever the review status of its members;
+  3. attach and recompute the aggregates, or open a new cluster: a `candidate`
+     (code CL-…, never shown outside the validation screen) when the detection
+     is unreviewed, a confirmed hazard (`active`, code HZ-…) when it is
+     already accepted (AI auto-accept).
+A candidate becomes a hazard (`confirm`: HZ code, `confirmed` event) when
+one of its detections is accepted. A detection joining a CONFIRMED hazard is
+a re-sighting, auto-validated by the system (policy auto_confirm_resightings).
+Rejected detections leave their cluster; a cluster left with no member is
+deleted (except a dismissed candidate, kept as history). Detections without a
+position join once it is fixed (location_fix).
 
 What happens to a hazard afterwards — re-sightings, "not seen" video passes,
 driver votes, expiry, recurring spots — is the hazard lifecycle,
@@ -30,7 +39,9 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.m06_hazards.models.detection import ACCEPTED_STATUSES, Detection, LocationStatus, ReviewStatus
-from app.modules.m06_hazards.models.hazard import HAZARD_NUMBER_SEQ, Hazard, HazardStatus
+from app.modules.m06_hazards.models.hazard import (
+    CANDIDATE_NUMBER_SEQ, HAZARD_NUMBER_SEQ, OPEN_STATUSES, Hazard, HazardStatus,
+)
 from app.modules.m06_hazards.clustering import service as clustering_service
 from app.modules.m06_hazards.clustering.resolver import Resolution, Snapshot, resolve as resolve_radius
 from app.core.settings_service import ValidationSettings, get_section
@@ -38,12 +49,34 @@ from app.core.spatial import _haversine_m
 
 logger = logging.getLogger(__name__)
 
-# Statuses a hazard member can be in: accepted, or accepted then resolved.
+# Statuses of the members that make a hazard confirmed: accepted, or accepted then resolved.
 MEMBER_STATUSES = (*ACCEPTED_STATUSES, ReviewStatus.resolved)
+UNREVIEWED_STATUSES = (ReviewStatus.pending, ReviewStatus.location_pending)
+CLUSTER_LOCATIONS = (LocationStatus.confirmed.value, LocationStatus.approximate.value)
 
 
 def hazard_code(number: int) -> str:
     return f"HZ-{number:06d}"
+
+
+def candidate_code(number: int) -> str:
+    """Code of a candidate cluster (number = -n): CL-000n."""
+    return f"CL-{abs(number):06d}"
+
+
+def _rs(det) -> str:
+    rs = det.review_status
+    return rs.value if isinstance(rs, ReviewStatus) else rs
+
+
+def is_clusterable(det) -> bool:
+    """Joins a cluster: not rejected, with a confirmed or approximate position."""
+    return (_rs(det) != ReviewStatus.rejected.value and det.latitude is not None and det.longitude is not None
+            and det.location_status in CLUSTER_LOCATIONS)
+
+
+def is_accepted(det) -> bool:
+    return _rs(det) in {s.value for s in ACCEPTED_STATUSES}
 
 
 # ── pure rules ────────────────────────────────────────────────────────────────
@@ -83,11 +116,15 @@ def pick_hazard(hazards: Iterable, lat: float, lon: float, det_type: str, subtyp
 
 
 def aggregate(members: Sequence) -> dict:
-    """Centroid, counts, confidence stats and time span of a hazard's members."""
+    """Centroid, counts, confidence stats and time span of a hazard's members
+    (any review status but rejected). The centroid uses the members with a
+    confirmed position when there are any (approximate GPS only otherwise)."""
     n = len(members)
     times = [m.captured_at or m.created_at for m in members if (m.captured_at or m.created_at)]
-    lat = sum(m.latitude for m in members) / n
-    lon = sum(m.longitude for m in members) / n
+    located = [m for m in members if getattr(m, "location_status", None) == LocationStatus.confirmed.value] \
+        or list(members)
+    lat = sum(m.latitude for m in located) / len(located)
+    lon = sum(m.longitude for m in located) / len(located)
     named = address_member(members, lat, lon)
     out = {
         "latitude":          lat,
@@ -150,63 +187,178 @@ def _bbox(lat: float, lon: float, radius_m: float) -> tuple[float, float]:
 
 
 async def candidate_for(db: AsyncSession, det: Detection, ctx: ClusterContext,
-                        status: str = HazardStatus.active.value) -> Optional[Hazard]:
-    """The hazard `det` would join (bounding-box pre-filter, exact check in Python)."""
+                        status=OPEN_STATUSES, *, exclude_id: Optional[str] = None) -> Optional[Hazard]:
+    """The cluster `det` would join (bounding-box pre-filter, exact check in
+    Python): nearest hazard of the same type (and subtype for distinct-subtype
+    types) within the zone-resolved radius, among `status` (one status or a
+    tuple; default the open ones — candidate or confirmed active)."""
     if det.latitude is None or det.longitude is None:
         return None
+    statuses = (status,) if isinstance(status, str) else tuple(status)
     radius = ctx.radius_for(det.latitude, det.longitude, det.type)
     dlat, dlon = _bbox(det.latitude, det.longitude, radius)
-    rows = (await db.execute(select(Hazard).where(
-        Hazard.status == status, Hazard.type == det.type,
+    q = select(Hazard).where(
+        Hazard.status.in_(statuses), Hazard.type == det.type,
         Hazard.latitude.between(det.latitude - dlat, det.latitude + dlat),
         Hazard.longitude.between(det.longitude - dlon, det.longitude + dlon),
-    ))).scalars().all()
+    )
+    if exclude_id:
+        q = q.where(Hazard.id != exclude_id)
+    rows = (await db.execute(q)).scalars().all()
     return pick_hazard(rows, det.latitude, det.longitude, det.type, det.subtype,
                        radius, ctx.distinct_subtype_types)
 
 
-async def attach(db: AsyncSession, det: Detection, ctx: Optional[ClusterContext] = None,
-                 status: str = HazardStatus.active.value, *, lifecycle: bool = True) -> Optional[Hazard]:
-    """Attach an accepted, located detection to its hazard (creating it if needed).
+# Dry runs (recluster-detections --dry-run) roll everything back but sequences
+# are not transactional: they draw numbers from here instead, so a dry run
+# never burns HZ / CL codes.
+_dry_numbers: Optional[list] = None
 
-    With `lifecycle` (everything but rebuild_all), the hazard lifecycle runs
-    (app.modules.m06_hazards.lifecycle.service): with no active candidate, a
-    resolved hazard nearby is reopened (policy reopen_on_sighting) or keeps
-    the detection as history when it was recorded before the resolution;
-    then the detection counts as a sighting (last_seen_at, expiry, recurring
-    flag on a new hazard, stale evidence resolved at once)."""
-    if det.latitude is None or det.longitude is None or det.location_status != LocationStatus.confirmed.value:
+
+async def _next_number(db: AsyncSession, seq) -> int:
+    if _dry_numbers is not None:
+        _dry_numbers[0] += 1
+        return 900_000_000 + _dry_numbers[0]
+    return int((await db.execute(select(seq.next_value()))).scalar_one())
+
+
+async def _new_cluster(db: AsyncSession, det: Detection, ctx: ClusterContext, status: str) -> Hazard:
+    """A new hazard (status active/resolved: HZ number) or candidate (CL number)."""
+    if status in (HazardStatus.candidate.value, HazardStatus.dismissed.value):
+        number = -await _next_number(db, CANDIDATE_NUMBER_SEQ)
+        code = candidate_code(number)
+    else:
+        number = await _next_number(db, HAZARD_NUMBER_SEQ)
+        code = hazard_code(number)
+    res = ctx.resolve(det.latitude, det.longitude, det.type)
+    hazard = Hazard(
+        number=number, code=code, type=det.type,
+        subtype=det.subtype if det.type in ctx.distinct_subtype_types else None,
+        status=status, latitude=det.latitude, longitude=det.longitude,
+        radius_m=res.radius_m, cluster_zone_id=res.zone_id, cluster_zone_name=res.zone_name,
+        cluster_environment=res.environment,
+    )
+    db.add(hazard)
+    await db.flush()
+    return hazard
+
+
+async def attach(db: AsyncSession, det: Detection, ctx: Optional[ClusterContext] = None,
+                 status: Optional[str] = None, *, lifecycle: bool = True, auto: bool = True) -> Optional[Hazard]:
+    """Put a clusterable detection (any review status but rejected, confirmed
+    or approximate position) into its cluster, creating it if needed.
+
+    `status` forces the status of a NEW cluster (rebuild_all); by default an
+    accepted detection opens a confirmed hazard, an unreviewed one a candidate.
+
+    With `lifecycle` (everything but rebuild/recluster bookkeeping) the hazard
+    lifecycle runs (app.modules.m06_hazards.lifecycle.service): with no open
+    cluster, a resolved hazard nearby is reopened (accepted detection, policy
+    reopen_on_sighting) or keeps the detection as history when it was recorded
+    before the resolution; joining a confirmed hazard is a sighting, and with
+    `auto` an unreviewed detection is a re-sighting (auto-validated); joining
+    a candidate refreshes its last sighting; an accepted detection confirms a
+    candidate."""
+    if not is_clusterable(det):
         return None
+    if det.hazard_id:
+        current = await db.get(Hazard, det.hazard_id)
+        if current is not None:
+            return current
+        det.hazard_id = None
     ctx = ctx or await load_context(db)
-    hazard = await candidate_for(db, det, ctx, status)
+    accepted = is_accepted(det) or _rs(det) == ReviewStatus.resolved.value
+    hazard = await candidate_for(db, det, ctx, status or OPEN_STATUSES)
     history = False
-    if hazard is None and lifecycle and status == HazardStatus.active.value:
-        from app.modules.m06_hazards.lifecycle import service as lifecycle_service
-        resolved, mode = await lifecycle_service.place_new(db, det, ctx)
+    from app.modules.m06_hazards.lifecycle import service as lifecycle_service
+    if hazard is None and lifecycle and status is None and (accepted or auto):
+        resolved, mode = await lifecycle_service.place_new(db, det, ctx, accepted=accepted)
         if resolved is not None:
             hazard, history = resolved, mode == "history"
     created = hazard is None
     if hazard is None:
-        number = (await db.execute(select(HAZARD_NUMBER_SEQ.next_value()))).scalar_one()
-        res = ctx.resolve(det.latitude, det.longitude, det.type)
-        hazard = Hazard(
-            number=number, code=hazard_code(number), type=det.type,
-            subtype=det.subtype if det.type in ctx.distinct_subtype_types else None,
-            status=status, latitude=det.latitude, longitude=det.longitude,
-            radius_m=res.radius_m, cluster_zone_id=res.zone_id, cluster_zone_name=res.zone_name,
-            cluster_environment=res.environment,
-        )
-        db.add(hazard)
-        await db.flush()
+        new_status = status or (HazardStatus.active.value if accepted else HazardStatus.candidate.value)
+        hazard = await _new_cluster(db, det, ctx, new_status)
     det.hazard_id = hazard.id
     await recompute(db, hazard)
-    if lifecycle:
-        from app.modules.m06_hazards.lifecycle import service as lifecycle_service
-        if history:
-            await lifecycle_service.on_history_member(db, hazard, det)
-        elif hazard.status == HazardStatus.active.value:
-            await lifecycle_service.on_attached(db, hazard, det, created=created)
+    if not lifecycle:
+        return hazard
+    if history:
+        await lifecycle_service.on_history_member(db, hazard, det)
+        return hazard
+    if hazard.status == HazardStatus.candidate.value and accepted:
+        await confirm(db, hazard, det)
+    if hazard.status == HazardStatus.active.value:
+        if not accepted and auto:
+            await resight_if_allowed(db, hazard, det)
+        await lifecycle_service.on_attached(db, hazard, det, created=created)
+    elif hazard.status == HazardStatus.candidate.value:
+        await lifecycle_service.on_candidate_member(db, hazard, det)
     return hazard
+
+
+async def resight_if_allowed(db: AsyncSession, hazard: Hazard, det: Detection) -> bool:
+    """An unreviewed member of a CONFIRMED hazard is a re-sighting: decided
+    `validated` by the system when the type's policy auto_confirm_resightings."""
+    from app.modules.m06_hazards import detection_workflow as wf
+    from app.modules.m06_hazards.lifecycle import service as lifecycle_service
+    if _rs(det) not in {s.value for s in UNREVIEWED_STATUSES} or hazard.status != HazardStatus.active.value:
+        return False
+    cfg = await lifecycle_service.load_settings(db)
+    from app.modules.m06_hazards.lifecycle.policy import resolve_policy, vehicle_class_of
+    if not resolve_policy(cfg, det.type, det.subtype, vehicle_class_of(det)).auto_confirm_resightings:
+        return False
+    await wf.resight(db, det, hazard)
+    return True
+
+
+async def confirm(db: AsyncSession, hazard: Hazard, det: Optional[Detection] = None, actor=None) -> bool:
+    """candidate → active: the cluster becomes a hazard (HZ code from the
+    hazard sequence, `confirmed` event, recurring flag). False when it was not
+    a candidate."""
+    from app.core import audit
+    from app.modules.m06_hazards.lifecycle import events, recurring, service as lifecycle_service
+    from app.modules.m06_hazards.lifecycle.policy import policy_for_hazard
+    if hazard.status != HazardStatus.candidate.value:
+        return False
+    previous = hazard.code
+    number = await _next_number(db, HAZARD_NUMBER_SEQ)
+    hazard.number, hazard.code = number, hazard_code(number)
+    hazard.status = HazardStatus.active.value
+    hazard.created_at = datetime.utcnow()          # a hazard from now on (recurring windows, lists)
+    hazard.updated_at = hazard.created_at
+    by = (getattr(actor, "name", None) or (det.reviewed_by if det is not None else None) or "system")
+    events.record(db, hazard.id, "confirmed", source="review", detection_id=det.id if det is not None else None,
+                  job_id=det.job_id if det is not None else None,
+                  details={"by": by, "previous_code": previous, "detection_id": det.id if det is not None else None})
+    audit.record_system(db, "hazard.confirm", object_type="hazard", object_id=hazard.id,
+                        details={"code": hazard.code, "previous_code": previous, "by": by,
+                                 "detection_id": det.id if det is not None else None})
+    cfg = await lifecycle_service.load_settings(db)
+    members = await members_of(db, hazard.id)
+    pol = policy_for_hazard(cfg, hazard, members)
+    if pol.recurring_enabled:
+        await recurring.flag_new_hazard(db, hazard, cfg)
+    lifecycle_service.refresh_expiry(hazard, pol)
+    logger.info(f"[hazard] {previous} confirmed as {hazard.code} by {by}")
+    return True
+
+
+async def resight_unreviewed(db: AsyncSession, hazard: Hazard, *, skip: Iterable[str] = ()) -> int:
+    """After a confirmation: the other unreviewed members are re-sightings.
+    Returns how many were auto-validated."""
+    from app.modules.m06_hazards.lifecycle import service as lifecycle_service
+    if hazard.status != HazardStatus.active.value:
+        return 0
+    skip = set(skip)
+    n = 0
+    for m in await members_of(db, hazard.id):
+        if m.id in skip:
+            continue
+        if await resight_if_allowed(db, hazard, m):
+            await lifecycle_service.on_attached(db, hazard, m, created=False)
+            n += 1
+    return n
 
 
 async def detach(db: AsyncSession, det: Detection) -> None:
@@ -218,19 +370,47 @@ async def detach(db: AsyncSession, det: Detection) -> None:
         await recompute(db, hazard)
 
 
-async def members_of(db: AsyncSession, hazard_id: str) -> list[Detection]:
+async def reattach(db: AsyncSession, det: Detection, ctx: Optional[ClusterContext] = None, *,
+                   auto: bool = True) -> Optional[Hazard]:
+    """The position or class of `det` changed: leave the current cluster and
+    join the right one (re-evaluated from scratch)."""
+    await detach(db, det)
+    return await attach(db, det, ctx, auto=auto)
+
+
+async def members_of(db: AsyncSession, hazard_id: str, *, include_rejected: bool = False) -> list[Detection]:
+    q = select(Detection).where(Detection.hazard_id == hazard_id)
+    if not include_rejected:
+        q = q.where(Detection.review_status != ReviewStatus.rejected)
     return list((await db.execute(
-        select(Detection).where(Detection.hazard_id == hazard_id)
-        .order_by(Detection.captured_at.desc().nullslast(), Detection.created_at.desc())
+        q.order_by(Detection.captured_at.desc().nullslast(), Detection.created_at.desc())
     )).scalars().all())
 
 
+async def member_counts(db: AsyncSession, hazard_ids: Iterable[str]) -> dict[str, dict[str, int]]:
+    """Members per review status of each hazard (rejected included), in one query."""
+    from sqlalchemy import func
+    ids = list({h for h in hazard_ids if h})
+    out: dict[str, dict[str, int]] = {hid: {s.value: 0 for s in ReviewStatus} for hid in ids}
+    if not ids:
+        return out
+    rows = (await db.execute(select(Detection.hazard_id, Detection.review_status, func.count())
+                             .where(Detection.hazard_id.in_(ids))
+                             .group_by(Detection.hazard_id, Detection.review_status))).all()
+    for hid, rs, n in rows:
+        out[hid][rs.value if isinstance(rs, ReviewStatus) else rs] = n
+    return out
+
+
 async def recompute(db: AsyncSession, hazard: Hazard) -> bool:
-    """Refresh the aggregates from the members; delete the hazard when it has
-    none left. Returns False when it was deleted."""
+    """Refresh the aggregates from the non-rejected members; delete the
+    cluster when it has none left (a dismissed candidate is kept as history).
+    Returns False when it was deleted."""
     await db.flush()
     members = [m for m in await members_of(db, hazard.id) if m.latitude is not None]
     if not members:
+        if hazard.status == HazardStatus.dismissed.value:
+            return True
         await db.delete(hazard)
         await db.flush()
         return False
@@ -253,20 +433,23 @@ async def recompute_ids(db: AsyncSession, hazard_ids: Iterable[str]) -> None:
 
 
 async def rebuild_all(db: AsyncSession) -> int:
-    """Recreate every hazard from the accepted/resolved detections, oldest
-    first (python -m app.cli rebuild-hazards). Returns the hazard count."""
+    """Recreate every cluster from the detections, oldest first (python -m
+    app.cli rebuild-hazards): accepted/resolved detections first (hazards,
+    HZ codes in time order), then the unreviewed ones (candidates, or members
+    of the hazard they match — no automatic decision here; run
+    `recluster-detections` for that). Lifecycle history is lost (events
+    cascade). Returns the cluster count."""
     await db.execute(update(Detection).values(hazard_id=None))
     await db.execute(delete(Hazard))
     await db.execute(text("ALTER SEQUENCE hazards_number_seq RESTART WITH 1"))
     ctx = await load_context(db)
-    dets = (await db.execute(
-        select(Detection).where(
-            Detection.review_status.in_(MEMBER_STATUSES),
-            Detection.location_status == LocationStatus.confirmed.value,
-            Detection.latitude.isnot(None), Detection.longitude.isnot(None),
-        ).order_by(Detection.captured_at.asc().nullsfirst(), Detection.created_at.asc())
-    )).scalars().all()
-    for det in dets:
+    order = (Detection.captured_at.asc().nullsfirst(), Detection.created_at.asc())
+    located = (Detection.location_status.in_(CLUSTER_LOCATIONS),
+               Detection.latitude.isnot(None), Detection.longitude.isnot(None))
+    accepted = (await db.execute(select(Detection).where(
+        Detection.review_status.in_(MEMBER_STATUSES), Detection.location_status == LocationStatus.confirmed.value,
+        *located[1:]).order_by(*order))).scalars().all()
+    for det in accepted:
         resolved = det.review_status == ReviewStatus.resolved
         hazard = await attach(db, det, ctx, HazardStatus.resolved.value if resolved else HazardStatus.active.value,
                               lifecycle=False)
@@ -276,9 +459,21 @@ async def rebuild_all(db: AsyncSession) -> int:
                 hazard.resolved_at = when
                 hazard.resolved_by = det.reviewed_by
                 hazard.resolution_source = "manual"
+        elif hazard is not None and hazard.status == HazardStatus.resolved.value:
+            hazard.status = HazardStatus.active.value          # an accepted member keeps it active
+            hazard.resolved_at = hazard.resolved_by = hazard.resolution_source = None
+    unreviewed = (await db.execute(select(Detection).where(
+        Detection.review_status.in_(UNREVIEWED_STATUSES), *located).order_by(*order))).scalars().all()
+    for det in unreviewed:
+        hazard = await candidate_for(db, det, ctx)
+        if hazard is None:
+            await attach(db, det, ctx, HazardStatus.candidate.value, lifecycle=False)
+        else:
+            det.hazard_id = hazard.id
+            await recompute(db, hazard)
     await db.commit()
     count = len((await db.execute(select(Hazard.id))).all())
-    logger.info(f"Hazards rebuilt: {count} hazard(s) from {len(dets)} detection(s)")
+    logger.info(f"Hazards rebuilt: {count} cluster(s) from {len(accepted) + len(unreviewed)} detection(s)")
     return count
 
 

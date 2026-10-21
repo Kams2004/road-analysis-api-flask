@@ -4,12 +4,17 @@ Admin command line.
     python -m app.cli create-admin --email admin@camtrack.net --name "Jane Doe"
     python -m app.cli create-api-client --name "VIASafe mobile"
     python -m app.cli rebuild-hazards
+    python -m app.cli recluster-detections [--dry-run] [--verbose]
     python -m app.cli geocode-backfill --limit 500
 
 create-admin prompts for the password (or reads ADMIN_PASSWORD) and adds the
 Administrator role to an existing user with that e-mail if there is one.
 rebuild-hazards re-clusters every accepted/resolved detection into hazards
 (after changing cluster radii, or to repair hazard aggregates).
+recluster-detections migrates existing data to cluster-first hazards
+(docs/CLUSTERS.md): merges duplicate hazards, attaches every located
+detection to its cluster, auto-validates re-sightings of confirmed hazards;
+short transactions and no DDL, so it is safe while jobs are processing.
 geocode-backfill reverse-geocodes (street, quartier, town …) located
 detections that have no structured address yet, ≤ 1 Nominatim request/s.
 """
@@ -67,6 +72,28 @@ async def rebuild_hazards() -> None:
     async with AsyncSessionLocal() as db:
         count = await rebuild_all(db)
     print(f"Hazards rebuilt: {count}")
+
+
+async def recluster_detections(dry_run: bool, verbose: bool) -> None:
+    import json
+    from sqlalchemy import text
+    from app.modules.m06_hazards import recluster
+    from app.modules.m06_hazards.rejection_seeds import seed_rejection_reasons
+    # No init_db(): it may ALTER tables, which must not run while a worker is
+    # processing; the only object this needs is the candidate sequence.
+    from app.core.db.registry import import_all_models
+    import_all_models()
+    async with AsyncSessionLocal() as db:
+        await db.execute(text("CREATE SEQUENCE IF NOT EXISTS hazard_candidates_seq"))
+        await db.commit()
+        await seed_rejection_reasons(db)              # not_seen_again
+        res = await recluster.run(db, dry_run=dry_run, verbose=verbose)
+    print(("DRY RUN — nothing written. " if dry_run else "") +
+          f"merged hazards: {res['merges']}, detections attached: {res['attached']} "
+          f"(new candidate clusters: {res['candidates_created']}), re-sightings auto-validated: "
+          f"{res['auto_validated']}, rejected detections detached: {res['detached']}")
+    print("before:", json.dumps(res["before"], sort_keys=True))
+    print("after: ", json.dumps(res["after"], sort_keys=True))
 
 
 async def geocode_backfill(limit: int) -> None:
@@ -136,6 +163,10 @@ def main() -> None:
     c = sub.add_parser("create-api-client")
     c.add_argument("--name", required=True)
     sub.add_parser("rebuild-hazards")
+    rc = sub.add_parser("recluster-detections",
+                        help="attach detections to clusters, merge duplicate hazards (docs/CLUSTERS.md)")
+    rc.add_argument("--dry-run", action="store_true")
+    rc.add_argument("--verbose", action="store_true")
     g = sub.add_parser("geocode-backfill")
     g.add_argument("--limit", type=int, default=500)
     r = sub.add_parser("resync-training-rejections",
@@ -146,6 +177,8 @@ def main() -> None:
         asyncio.run(create_admin(args.email, args.name))
     elif args.cmd == "rebuild-hazards":
         asyncio.run(rebuild_hazards())
+    elif args.cmd == "recluster-detections":
+        asyncio.run(recluster_detections(args.dry_run, args.verbose))
     elif args.cmd == "resync-training-rejections":
         asyncio.run(resync_training_rejections(args.only_unclassified))
     elif args.cmd == "geocode-backfill":

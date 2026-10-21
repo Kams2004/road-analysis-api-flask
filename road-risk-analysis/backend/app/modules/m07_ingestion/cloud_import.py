@@ -598,6 +598,7 @@ class WorkerDeps:
     enqueue: Optional[Callable[..., Any]] = None         # async (db, job, actor) — job_service.enqueue_and_commit
     heartbeat: Optional[Callable[[], None]] = None
     temp_dir: Path = field(default_factory=lambda: TEMP_DIR)
+    find_duplicate: Optional[Callable[..., Any]] = None  # async (db, fingerprint) -> Job | None
 
 
 def _rset(r, item_id: str, mapping: dict) -> None:
@@ -742,6 +743,20 @@ async def run_item(db, item_id: str, deps: Optional[WorkerDeps] = None) -> str:
             raise ImportCancelled()
         os.replace(part, dest)
 
+        # ── same content already processed? (app.modules.m07_ingestion.fingerprint) ──
+        from app.modules.m07_ingestion import fingerprint
+        fp = await asyncio.to_thread(fingerprint.file_fingerprint, dest)
+        reimport = bool(((batch.options if batch else None) or {}).get("reimport"))
+        previous = await (deps.find_duplicate or fingerprint.find_duplicate)(db, fp)
+        if previous is not None and not reimport:
+            Path(dest).unlink(missing_ok=True)
+            item.duplicate_of_job_id = previous.id
+            mark_item(item, S.skipped_duplicate.value)      # duplicate_of_job_id tells which job
+            await db.commit()
+            _clear(r, item.id)
+            logger.info(f"[Import {item.id}] skipped: same content as job {previous.id}")
+            return item.status
+
         # ── hand over to the job pipeline ────────────────────────────────────
         models = [m for m in ((batch.models if batch else None) or "").split(",") if m] \
             or list(job_service.DEFAULT_MODELS)
@@ -751,6 +766,7 @@ async def run_item(db, item_id: str, deps: Optional[WorkerDeps] = None) -> str:
             submitted_by=actor, frame_skip_override=batch.frame_skip if batch else None,
             source_ref=item.file_id, source_name=item.name, connection_id=conn.id,
         )
+        job.content_fingerprint = fp
         # Insert the job first: cloud_import_items.job_id references it and the
         # two mappers have no relationship() telling the flush the order.
         await db.flush()

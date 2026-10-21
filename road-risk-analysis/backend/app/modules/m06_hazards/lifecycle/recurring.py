@@ -17,7 +17,7 @@ from typing import Iterable, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus
+from app.modules.m06_hazards.models.hazard import PUBLIC_STATUSES, Hazard, HazardStatus
 from app.modules.m06_hazards.lifecycle.settings import HazardLifecycleSettings
 from app.core.spatial import _haversine_m
 
@@ -112,7 +112,7 @@ async def list_spots(db: AsyncSession, cfg: HazardLifecycleSettings, *, det_type
     from app.modules.m06_hazards.lifecycle.policy import type_policy
     now = now or datetime.utcnow()
     since = now - timedelta(days=window_days or cfg.recurring_window_days)
-    q = select(Hazard).where(Hazard.created_at >= since)
+    q = select(Hazard).where(Hazard.created_at >= since, Hazard.status.in_(PUBLIC_STATUSES))   # never candidates
     if det_type:
         q = q.where(Hazard.type == det_type)
     if bbox:

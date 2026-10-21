@@ -11,7 +11,10 @@ Code: `app/modules/m06_hazards/lifecycle/` — `settings.py`, `policy.py`, `time
 `service.py`; Celery tasks in `app/workers/hazard_tasks.py`.
 
 Everything is generic per hazard type. The defaults keep potholes, speed bumps and traffic
-signs persistent (as before) and make `parked_vehicle` transient.
+signs persistent (no expiry) and make `parked_vehicle` transient. Since the cluster-first
+redesign (docs/CLUSTERS.md) **every type** is resolved by video absence (potholes and speed
+bumps after 3 valid passes in the direction they were seen), and candidate clusters
+(never validated) are *dismissed* by the same passes.
 
 ## 1. Time
 
@@ -35,8 +38,9 @@ vehicle class is a heavy class if any member is heavy.
 |---|---|---|
 | `expiry_hours` | hours after `last_seen_at` before it expires; `null` = never | `null` |
 | `heavy_vehicle_expiry_hours` | expiry for trucks/buses; `null` = no special case | `null` |
-| `absence_resolution` | resolve after valid "not seen" passes | `false` |
+| `absence_resolution` | resolve after valid "not seen" passes | `false` (built-in types: `true`) |
 | `absences_to_resolve` | valid passes since the last sighting needed | 2 |
+| `auto_confirm_resightings` | a detection joining a confirmed hazard is auto-validated (re-sighting) | `true` |
 | `require_same_direction` | unknown original heading → pass not valid | `false` |
 | `pass_daylight_only` | passes count only in `daylight_hours` | `false` |
 | `votes_enabled` | drivers may vote | `true` |
@@ -53,7 +57,7 @@ Default policies:
 
 | Type | Expiry | Absence resolution | Votes | Other |
 |---|---|---|---|---|
-| `pothole`, `speed_bump` | never | off (repairs are slow, a missed pothole is common) | on, 3 "not there" | — |
+| `pothole`, `speed_bump` | never | on: 3 valid passes, same direction required | on, 3 "not there" | — |
 | `traffic_sign` | never | on, 3 passes, `require_same_direction` | on, 3 | — |
 | `parked_vehicle` | `blocking` 2 h (priority high), `wrong_side` 4 h (high), `roadside` 6 h (low, shown), other 6 h; trucks/buses 24 h | on, 2 passes | on, 2 | `still_there_extends`, `reopen_on_sighting`, `recurring_enabled` |
 | any other (`default_policy`) | never | off | on, 3 | — |
@@ -120,12 +124,27 @@ job, the trajectory is a **valid pass** when, at its closest **confirmed** (OCR)
 5. recording time known and **after** `last_seen_at` (recording time of a fix = job
    recording start + `video_time_s`; the start is the median of the job's detections'
    recording time − `video_time_s`);
-6. with `pass_daylight_only`, inside `daylight_hours` local time.
+6. with `pass_daylight_only`, inside `daylight_hours` local time;
+7. with `pass_require_approach` (default on), the camera actually covered the spot: an
+   earlier confirmed fix of the track is ≥ `pass_approach_min_m` (10 m) farther from it and
+   has it ahead (≤ 90° from the travel heading) — a video starting at / after the spot
+   never filmed it (reason `not_approaching`);
+8. the job is not one that produced the hazard's own detections.
 
-A valid pass is one `not_seen` event (once per job and hazard). `absence_count` = valid
-passes recorded after `last_seen_at`, so any newer sighting resets it and late-processed
-videos count in recording order. At `absences_to_resolve` → resolved, source
-`video_absence`.
+Only jobs whose `enabled_models` include a model of the type (`type_models`) are
+considered at all. A valid pass is one `not_seen` event (once per job and hazard) with
+`details.pass_number`, `threshold`, `job_id`, `job_name` — the timeline shows "Not seen in
+pass 1/3 (job X)". `absence_count` = valid passes recorded after `last_seen_at`, so any
+newer sighting resets it and late-processed videos count in recording order. At
+`absences_to_resolve` → a confirmed hazard is resolved (source `video_absence`); a
+**candidate** cluster is **dismissed** (status `dismissed`, its unreviewed detections
+auto-rejected with reason `not_seen_again`, kind *unusable*), never shown on hazard screens.
+
+**Saved settings.** The section carries `defaults_version` (2). A stored policy written
+before version 2 whose pothole / speed-bump absence fields still hold exactly the old
+defaults (`absence_resolution=false`, `absences_to_resolve=2`,
+`require_same_direction=false`) gets the new defaults; any other combination is an
+explicit administrator choice and is kept.
 
 ### 4.4 Driver votes
 `still_there` / `not_there` from a signed-in mobile user within `vote_max_distance_m`, one

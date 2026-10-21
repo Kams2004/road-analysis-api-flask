@@ -5351,7 +5351,7 @@
           "Jobs"
         ],
         "summary": "Upload a video or image for processing",
-        "description": "Create a processing job from an uploaded file (`multipart/form-data`, field `file`) and queue it\n(RRAP-07-001). Answers `202 Accepted` with the job in status `pending`; follow it with\n`GET /jobs/{job_id}`. Detections appear as frames are processed (`processing` → `done`).\n\n`models` and `frame_skip` are **query** parameters. If the processing queue is unreachable the job\nis created directly in status `failed` (see `error`) and can be retried. Audited as `job.create`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "description": "Create a processing job from an uploaded file (`multipart/form-data`, field `file`) and queue it\n(RRAP-07-001). Answers `202 Accepted` with the job in status `pending`; follow it with\n`GET /jobs/{job_id}`. Detections appear as frames are processed (`processing` → `done`).\n\n`models` and `frame_skip` are **query** parameters. If the processing queue is unreachable the job\nis created directly in status `failed` (see `error`) and can be retried. Audited as `job.create`.\n\nThe content is fingerprinted (SHA-256) while it is received: when a job with the same content is\ndone, queued or processing, the upload is discarded and the answer is `409 duplicate_video` with\nthat job (`job_id`, `job_status`, `filename`, `processed_at`) — send it again with `force=true`\nto process it anyway (detections then join the existing clusters: no duplicate hazards).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
         "operationId": "submit_job",
         "parameters": [
           {
@@ -5391,6 +5391,18 @@
               "title": "Frame Skip"
             },
             "description": "Process one frame out of N (overrides the default sampling)."
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Process the file even when the same content (SHA-256) was already processed or is queued (`409 duplicate_video` otherwise).",
+              "default": false,
+              "title": "Force"
+            },
+            "description": "Process the file even when the same content (SHA-256) was already processed or is queued (`409 duplicate_video` otherwise)."
           }
         ],
         "requestBody": {
@@ -5499,6 +5511,32 @@
                       "detail": {
                         "code": "forbidden",
                         "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `duplicate_video`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "duplicate_video": {
+                    "summary": "duplicate_video",
+                    "value": {
+                      "detail": {
+                        "code": "duplicate_video",
+                        "message": "This video was already processed (job 7d0c5b9e…).",
+                        "job_id": "7d0c5b9e-2f1a-4c3d-8e6b-1a2b3c4d5e6f",
+                        "job_status": "done",
+                        "filename": "drive_0412.mp4",
+                        "processed_at": "2026-10-20T16:44:23",
+                        "fingerprint": "sha256:9f2c…"
                       }
                     }
                   }
@@ -11933,10 +11971,28 @@
                   "type": "null"
                 }
               ],
-              "description": "Only detections that belong to this hazard (UUID).",
+              "description": "Only detections that belong to this hazard / cluster (UUID).",
               "title": "Hazard Id"
             },
-            "description": "Only detections that belong to this hazard (UUID)."
+            "description": "Only detections that belong to this hazard / cluster (UUID)."
+          },
+          {
+            "name": "clustered",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`true` = only detections in a cluster, `false` = only those without one (no position yet).",
+              "title": "Clustered"
+            },
+            "description": "`true` = only detections in a cluster, `false` = only those without one (no position yet)."
           },
           {
             "name": "country",
@@ -12362,7 +12418,7 @@
           "Detections"
         ],
         "summary": "Get the validation queue",
-        "description": "The validation queue (RRAP-06-005): detections awaiting a decision, with the shared filters,\nsorting and pagination. Each item carries `cluster`: the active hazard it would join if accepted\nnow (same type, within the clustering radius of its area), or `null` when it would open a new\nhazard or its position is unknown.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
+        "description": "The validation queue (RRAP-06-005): detections awaiting a decision, with the shared filters,\nsorting and pagination. Each item carries `cluster`: the cluster it belongs to (cluster-first —\nattached at creation to the nearest open cluster of its type within the zone radius): a candidate\n`CL-…` (validated by nobody yet) or a confirmed hazard `HZ-…`; `null` when its position is unknown.\nGrouped review: `GET /hazards/review-queue`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
         "operationId": "validation_queue",
         "parameters": [
           {
@@ -12447,10 +12503,28 @@
                   "type": "null"
                 }
               ],
-              "description": "Only detections that belong to this hazard (UUID).",
+              "description": "Only detections that belong to this hazard / cluster (UUID).",
               "title": "Hazard Id"
             },
-            "description": "Only detections that belong to this hazard (UUID)."
+            "description": "Only detections that belong to this hazard / cluster (UUID)."
+          },
+          {
+            "name": "clustered",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`true` = only detections in a cluster, `false` = only those without one (no position yet).",
+              "title": "Clustered"
+            },
+            "description": "`true` = only detections in a cluster, `false` = only those without one (no position yet)."
           },
           {
             "name": "country",
@@ -15987,6 +16061,24 @@
             "description": "Detection type, e.g. `pothole`."
           },
           {
+            "name": "has_pending",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only hazards that have (true) / have no (false) member detections still awaiting a decision.",
+              "title": "Has Pending"
+            },
+            "description": "Only hazards that have (true) / have no (false) member detections still awaiting a decision."
+          },
+          {
             "name": "subtype",
             "in": "query",
             "required": false,
@@ -16996,6 +17088,633 @@
           }
         ],
         "x-permission": "detections:edit",
+        "x-api-key": false
+      }
+    },
+    "/hazards/review-queue": {
+      "get": {
+        "tags": [
+          "Hazards"
+        ],
+        "summary": "Get the validation queue grouped by cluster",
+        "description": "**Validation screen** — review by cluster, not by duplicate (docs/CLUSTERS.md). Every located\ndetection joins a cluster when it is created; this lists the clusters that have detections\nawaiting a decision: candidate clusters (`status=candidate`, code `CL-…`: validated by nobody yet,\nNOT hazards — they appear nowhere else) and confirmed hazards that received unreviewed\ndetections (only when `hazard_lifecycle` auto-validation of re-sightings is off for the type, or\nafter a reopen). Decide a whole cluster with `POST /hazards/{id}/accept` / `reject`, or each\ndetection individually (`GET /detections/queue?hazard_id=…`). `unclustered` counts unreviewed\ndetections without a position (they join a cluster once their position is fixed).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
+        "operationId": "review_queue",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Detection type.",
+              "examples": [
+                "pothole"
+              ],
+              "title": "Type"
+            },
+            "description": "Detection type."
+          },
+          {
+            "name": "subtype",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Detection subtype.",
+              "title": "Subtype"
+            },
+            "description": "Detection subtype."
+          },
+          {
+            "name": "job_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only clusters with an unreviewed detection of this job.",
+              "title": "Job Id"
+            },
+            "description": "Only clusters with an unreviewed detection of this job."
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Text in the cluster code or its place.",
+              "title": "Search"
+            },
+            "description": "Text in the cluster code or its place."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "`-pending_count`, `-last_detected_at`, `-max_confidence`, `code` (`-` = descending).",
+              "default": "-pending_count",
+              "title": "Sort"
+            },
+            "description": "`-pending_count`, `-last_detected_at`, `-max_confidence`, `code` (`-` = descending)."
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of clusters to skip.",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of clusters to skip."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Page size (max 100).",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Page size (max 100)."
+          },
+          {
+            "name": "members",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Unreviewed detections returned per cluster.",
+              "default": 12,
+              "title": "Members"
+            },
+            "description": "Unreviewed detections returned per cluster."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewClusterListOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks validations:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "validations",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity — `invalid_sort`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalid_sort": {
+                    "summary": "invalid_sort",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_sort",
+                        "message": "Unknown sort 'foo'.",
+                        "allowed": [
+                          "-pending_count",
+                          "pending_count",
+                          "-last_detected_at",
+                          "last_detected_at",
+                          "-max_confidence",
+                          "max_confidence",
+                          "code",
+                          "-code"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "validations:view",
+        "x-api-key": false
+      }
+    },
+    "/hazards/{hazard_id}/accept": {
+      "post": {
+        "tags": [
+          "Hazards"
+        ],
+        "summary": "Accept a whole cluster",
+        "description": "**Validation screen** — accept every detection of the cluster that awaits a decision with a\nconfirmed position (`pending` → `validated`, or `corrected` after a manual position fix), each\nthrough the normal workflow (history row, `detection.accept` audit, training sample). The first\nacceptance confirms a candidate: it becomes a hazard with a new `HZ-…` code (`confirmed` timeline\nevent) and appears on the hazard screens; the members left (approximate positions) are then\nauto-validated as re-sightings when the type's policy allows it. Corrections (class, box,\nposition) stay per detection. Audited as `hazard.accept_cluster`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:edit`",
+        "operationId": "accept_cluster",
+        "parameters": [
+          {
+            "name": "hazard_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Hazard id (UUID).",
+              "examples": [
+                "b8e4a0d2-5c3f-4f7e-9a61-0d2c4e8f1a77"
+              ],
+              "title": "Hazard Id"
+            },
+            "description": "Hazard id (UUID)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClusterAcceptIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterDecisionOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks validations:edit",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "validations",
+                        "action": "edit"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Hazard not found",
+                    "value": {
+                      "detail": "Hazard not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `invalid_transition`, `nothing_to_review`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "nothing_to_review": {
+                    "summary": "nothing_to_review",
+                    "value": {
+                      "detail": {
+                        "code": "nothing_to_review",
+                        "message": "This cluster has no detection awaiting a decision."
+                      }
+                    }
+                  },
+                  "invalid_transition": {
+                    "summary": "invalid_transition",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_transition",
+                        "message": "This cluster was dismissed."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "validations:edit",
+        "x-api-key": false
+      }
+    },
+    "/hazards/{hazard_id}/reject": {
+      "post": {
+        "tags": [
+          "Hazards"
+        ],
+        "summary": "Reject a whole cluster",
+        "description": "**Validation screen** — reject every detection of the cluster that awaits a decision (`pending`\nor `location_pending` → `rejected`, `rejection_source=human`) with the same reason (catalogue of\nthe type or `all`; its kind — false positive / real but redundant / unusable — decides what the\ntraining data learns), each through the normal workflow (history, `detection.reject` audit,\ntraining sample). Rejected detections leave the cluster: a candidate left empty is deleted\n(`hazard_status=deleted`); a confirmed hazard keeps its accepted members. Audited as\n`hazard.reject_cluster`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:edit`",
+        "operationId": "reject_cluster",
+        "parameters": [
+          {
+            "name": "hazard_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Hazard id (UUID).",
+              "examples": [
+                "b8e4a0d2-5c3f-4f7e-9a61-0d2c4e8f1a77"
+              ],
+              "title": "Hazard Id"
+            },
+            "description": "Hazard id (UUID)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClusterRejectIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterDecisionOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks validations:edit",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "validations",
+                        "action": "edit"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Hazard not found",
+                    "value": {
+                      "detail": "Hazard not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `invalid_transition`, `nothing_to_review`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "nothing_to_review": {
+                    "summary": "nothing_to_review",
+                    "value": {
+                      "detail": {
+                        "code": "nothing_to_review",
+                        "message": "This cluster has no detection awaiting a decision."
+                      }
+                    }
+                  },
+                  "invalid_transition": {
+                    "summary": "invalid_transition",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_transition",
+                        "message": "This cluster was dismissed."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity — `invalid_reason`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalid_reason": {
+                    "summary": "invalid_reason",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_reason",
+                        "message": "Unknown rejection reason 'blurry' for pothole."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "validations:edit",
         "x-api-key": false
       }
     },
@@ -29019,6 +29738,52 @@
         "title": "CloudFolderOut",
         "description": "A folder of the connected drive."
       },
+      "ClusterAcceptIn": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Review note stored on each detection."
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "Training label (default: subtype or type)."
+          },
+          "severity_score": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity Score",
+            "description": "Severity 0–3 (default 1)."
+          }
+        },
+        "type": "object",
+        "title": "ClusterAcceptIn",
+        "description": "Body of `POST /hazards/{id}/accept`."
+      },
       "ClusterAreaIn": {
         "properties": {
           "name": {
@@ -29449,6 +30214,90 @@
         "title": "ClusterConfigOut",
         "description": "Global clustering radius (legacy view of the Cluster Configuration)."
       },
+      "ClusterDecisionOut": {
+        "properties": {
+          "hazard_id": {
+            "type": "string",
+            "title": "Hazard Id",
+            "description": "Cluster id (unchanged when a candidate is confirmed)."
+          },
+          "hazard_code": {
+            "type": "string",
+            "title": "Hazard Code",
+            "description": "Code after the decision: the new `HZ-…` code of a confirmed candidate.",
+            "examples": [
+              "HZ-000045"
+            ]
+          },
+          "previous_code": {
+            "type": "string",
+            "title": "Previous Code",
+            "description": "Code before the decision (`CL-…` for a candidate).",
+            "examples": [
+              "CL-000123"
+            ]
+          },
+          "hazard_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hazard Status",
+            "description": "Status after the decision; `deleted` when a rejected candidate was left empty and removed.",
+            "examples": [
+              "active"
+            ]
+          },
+          "accepted": {
+            "type": "integer",
+            "title": "Accepted",
+            "description": "Detections accepted by the user.",
+            "default": 0
+          },
+          "auto_validated": {
+            "type": "integer",
+            "title": "Auto Validated",
+            "description": "Other members auto-validated as re-sightings of the confirmed hazard (approximate positions).",
+            "default": 0
+          },
+          "rejected": {
+            "type": "integer",
+            "title": "Rejected",
+            "description": "Detections rejected.",
+            "default": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "description": "Unreviewed members left untouched (e.g. no confirmed position).",
+            "default": 0
+          },
+          "hazard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HazardDetailOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The hazard after the decision (confirmed hazards only)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "hazard_id",
+          "hazard_code",
+          "previous_code",
+          "hazard_status"
+        ],
+        "title": "ClusterDecisionOut",
+        "description": "Outcome of a cluster decision."
+      },
       "ClusterOut": {
         "properties": {
           "cluster_id": {
@@ -29602,6 +30451,37 @@
         "type": "object",
         "title": "ClusterQueryIn",
         "description": "Optional filters of the on-the-fly clustering."
+      },
+      "ClusterRejectIn": {
+        "properties": {
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "description": "Rejection reason (catalogue of the hazard's type or `all`).",
+            "examples": [
+              "shadow"
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Review note."
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason_code"
+        ],
+        "title": "ClusterRejectIn",
+        "description": "Body of `POST /hazards/{id}/reject`."
       },
       "ClusteredDetectionsOut": {
         "properties": {
@@ -31793,9 +32673,24 @@
               }
             ],
             "title": "Hazard Code",
-            "description": "Code of that hazard.",
+            "description": "Code of that hazard — only once it is a confirmed hazard (`null` while its cluster is a candidate).",
             "examples": [
               "HZ-000012"
+            ]
+          },
+          "hazard_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hazard Status",
+            "description": "Status of its cluster: `candidate` (not validated yet, validation screen only), `active`, `resolved` or `dismissed`.",
+            "examples": [
+              "active"
             ]
           },
           "history": {
@@ -32722,9 +33617,24 @@
               }
             ],
             "title": "Hazard Code",
-            "description": "Code of that hazard.",
+            "description": "Code of that hazard — only once it is a confirmed hazard (`null` while its cluster is a candidate).",
             "examples": [
               "HZ-000012"
+            ]
+          },
+          "hazard_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hazard Status",
+            "description": "Status of its cluster: `candidate` (not validated yet, validation screen only), `active`, `resolved` or `dismissed`.",
+            "examples": [
+              "active"
             ]
           }
         },
@@ -33487,10 +34397,16 @@
           "status": {
             "type": "string",
             "title": "Status",
-            "description": "`active` or `resolved`.",
+            "description": "`active` or `resolved` (`candidate` only in the review queue).",
             "examples": [
               "active"
             ]
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "description": "A hazard validated by someone (or by the AI rule). `false` only for candidate clusters of the review queue.",
+            "default": true
           },
           "latitude": {
             "type": "number",
@@ -33882,6 +34798,26 @@
             "title": "Cover Image Url",
             "description": "Annotated frame of that member."
           },
+          "member_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Member Counts",
+            "description": "Member detections per review status (`pending`, `location_pending`, `validated`, `corrected`, `resolved`, `rejected`).",
+            "examples": [
+              {
+                "pending": 1,
+                "validated": 3
+              }
+            ]
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "description": "Members still awaiting a decision (pending + location_pending).",
+            "default": 0
+          },
           "detections": {
             "items": {
               "$ref": "#/components/schemas/HazardMemberOut"
@@ -33961,7 +34897,7 @@
           "kind": {
             "type": "string",
             "title": "Kind",
-            "description": "`seen`, `not_seen`, `vote_still_there`, `vote_not_there`, `expired`, `resolved` or `reopened`.",
+            "description": "`seen`, `not_seen`, `vote_still_there`, `vote_not_there`, `expired`, `resolved`, `reopened`, `confirmed` (the candidate cluster became this hazard; details.previous_code = its CL- code, details.by) or `merged` (a duplicate hazard was merged into it; details.merged_code).",
             "examples": [
               "not_seen"
             ]
@@ -34028,13 +34964,17 @@
               }
             ],
             "title": "Details",
-            "description": "Kind-specific details, e.g. a pass's `distance_m`, `speed_kmh`, `heading_deg`.",
+            "description": "Kind-specific details, e.g. a pass's `distance_m`, `speed_kmh`, `heading_deg`, `pass_number` / `threshold` (\"not seen in pass 1/3\") and `job_name`.",
             "examples": [
               {
                 "distance_m": 8.4,
                 "heading_deg": 87.5,
+                "job_id": "7d0c5b9e-2f1a-4c3d-8e6b-1a2b3c4d5e6f",
+                "job_name": "drive_0412.mp4",
+                "pass_number": 1,
                 "reason": "valid",
-                "speed_kmh": 32.0
+                "speed_kmh": 32.0,
+                "threshold": 3
               }
             ]
           },
@@ -34471,10 +35411,16 @@
           "status": {
             "type": "string",
             "title": "Status",
-            "description": "`active` or `resolved`.",
+            "description": "`active` or `resolved` (`candidate` only in the review queue).",
             "examples": [
               "active"
             ]
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "description": "A hazard validated by someone (or by the AI rule). `false` only for candidate clusters of the review queue.",
+            "default": true
           },
           "latitude": {
             "type": "number",
@@ -34865,6 +35811,26 @@
             ],
             "title": "Cover Image Url",
             "description": "Annotated frame of that member."
+          },
+          "member_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Member Counts",
+            "description": "Member detections per review status (`pending`, `location_pending`, `validated`, `corrected`, `resolved`, `rejected`).",
+            "examples": [
+              {
+                "pending": 1,
+                "validated": 3
+              }
+            ]
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "description": "Members still awaiting a decision (pending + location_pending).",
+            "default": 0
           }
         },
         "type": "object",
@@ -34899,12 +35865,12 @@
           "hazard_id": {
             "type": "string",
             "title": "Hazard Id",
-            "description": "Hazard id."
+            "description": "Cluster / hazard id."
           },
           "hazard_code": {
             "type": "string",
             "title": "Hazard Code",
-            "description": "Hazard code.",
+            "description": "`HZ-…` for a confirmed hazard, `CL-…` for a candidate cluster.",
             "examples": [
               "HZ-000012"
             ]
@@ -34912,10 +35878,22 @@
           "detection_count": {
             "type": "integer",
             "title": "Detection Count",
-            "description": "Detections already in the hazard.",
+            "description": "Non-rejected detections in the cluster.",
             "examples": [
               3
             ]
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "`candidate`, `active`, `resolved` or `dismissed`.",
+            "default": "active"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "description": "It is a hazard (validated by someone, or by the AI rule).",
+            "default": true
           }
         },
         "type": "object",
@@ -34925,7 +35903,7 @@
           "detection_count"
         ],
         "title": "HazardRefOut",
-        "description": "What a queued detection would join (or None = new hazard)."
+        "description": "The cluster a queued detection belongs to."
       },
       "HazardResolveIn": {
         "properties": {
@@ -39549,9 +40527,24 @@
               }
             ],
             "title": "Hazard Code",
-            "description": "Code of that hazard.",
+            "description": "Code of that hazard — only once it is a confirmed hazard (`null` while its cluster is a candidate).",
             "examples": [
               "HZ-000012"
+            ]
+          },
+          "hazard_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hazard Status",
+            "description": "Status of its cluster: `candidate` (not validated yet, validation screen only), `active`, `resolved` or `dismissed`.",
+            "examples": [
+              "active"
             ]
           },
           "cluster": {
@@ -39563,7 +40556,7 @@
                 "type": "null"
               }
             ],
-            "description": "Active hazard it would join if accepted now; `null` = it would open a new hazard (or position unknown)."
+            "description": "The cluster it belongs to (cluster-first: attached at creation); `null` = no position yet."
           }
         },
         "type": "object",
@@ -40554,6 +41547,74 @@
         ],
         "title": "ReviewBoxIn",
         "description": "One reviewed box, YOLO-normalised (0–1)."
+      },
+      "ReviewClusterListOut": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Matching clusters with unreviewed detections.",
+            "examples": [
+              12
+            ]
+          },
+          "candidates": {
+            "type": "integer",
+            "title": "Candidates",
+            "description": "Of which candidate clusters (not hazards yet).",
+            "examples": [
+              9
+            ]
+          },
+          "unclustered": {
+            "type": "integer",
+            "title": "Unclustered",
+            "description": "Unreviewed detections without a cluster (no position yet).",
+            "examples": [
+              3
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewClusterOut"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "The clusters of this page."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "candidates",
+          "unclustered",
+          "items"
+        ],
+        "title": "ReviewClusterListOut",
+        "description": "The validation queue grouped by cluster."
+      },
+      "ReviewClusterOut": {
+        "properties": {
+          "hazard": {
+            "$ref": "#/components/schemas/HazardOut",
+            "description": "The cluster: a candidate (`CL-…`, `confirmed=false`) or a confirmed hazard (`HZ-…`) that received new unreviewed detections."
+          },
+          "detections": {
+            "items": {
+              "$ref": "#/components/schemas/QueueItemOut"
+            },
+            "type": "array",
+            "title": "Detections",
+            "description": "Its unreviewed detections, highest confidence first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "hazard",
+          "detections"
+        ],
+        "title": "ReviewClusterOut",
+        "description": "A cluster with detections awaiting a decision."
       },
       "ReviewIn": {
         "properties": {
@@ -47691,7 +48752,7 @@
     },
     {
       "name": "Detections",
-      "description": "**Modules 5 & 6** — AI detections (potholes, traffic signs, speed bumps …) with their evidence, the human validation workflow and the spatial queries used by the mobile app.\n\n**Review statuses** — `location_pending` (no confirmed position yet), `pending` (awaiting a decision), `validated` (accepted as predicted), `corrected` (accepted after a class or location correction), `rejected` (not a hazard — human or automatic rule), `resolved` (accepted hazard later fixed). Every transition writes a review-history row and an audit entry; anything outside this table is refused with `409 invalid_transition`:\n\n| From | To | Actions |\n|---|---|---|\n| `location_pending` | `pending` | `location_fix` |\n| `location_pending` | `rejected` | `auto_reject`, `reject` |\n| `pending` | `pending` | `location_fix` |\n| `pending` | `validated` | `accept`, `auto_accept` |\n| `pending` | `corrected` | `accept`, `correct` |\n| `pending` | `rejected` | `auto_reject`, `reject` |\n| `validated` | `resolved` | `resolve` |\n| `corrected` | `resolved` | `resolve` |\n| `resolved` | `validated` | `unresolve` |\n| `resolved` | `corrected` | `unresolve` |\n| `validated` | `pending` | `reopen` |\n| `validated` | `location_pending` | `reopen` |\n| `corrected` | `pending` | `reopen` |\n| `corrected` | `location_pending` | `reopen` |\n| `rejected` | `pending` | `reopen` |\n| `rejected` | `location_pending` | `reopen` |\n| `resolved` | `pending` | `reopen` |\n| `resolved` | `location_pending` | `reopen` |",
+      "description": "**Modules 5 & 6** — AI detections (potholes, traffic signs, speed bumps …) with their evidence, the human validation workflow and the spatial queries used by the mobile app.\n\n**Review statuses** — `location_pending` (no confirmed position yet), `pending` (awaiting a decision), `validated` (accepted as predicted), `corrected` (accepted after a class or location correction), `rejected` (not a hazard — human or automatic rule), `resolved` (accepted hazard later fixed). Every transition writes a review-history row and an audit entry; anything outside this table is refused with `409 invalid_transition`:\n\n| From | To | Actions |\n|---|---|---|\n| `location_pending` | `pending` | `location_fix` |\n| `location_pending` | `rejected` | `auto_reject`, `reject` |\n| `location_pending` | `validated` | `resight` |\n| `pending` | `pending` | `location_fix` |\n| `pending` | `validated` | `accept`, `auto_accept`, `resight` |\n| `pending` | `corrected` | `accept`, `correct`, `resight` |\n| `pending` | `rejected` | `auto_reject`, `reject` |\n| `validated` | `resolved` | `resolve` |\n| `corrected` | `resolved` | `resolve` |\n| `resolved` | `validated` | `unresolve` |\n| `resolved` | `corrected` | `unresolve` |\n| `validated` | `pending` | `reopen` |\n| `validated` | `location_pending` | `reopen` |\n| `corrected` | `pending` | `reopen` |\n| `corrected` | `location_pending` | `reopen` |\n| `rejected` | `pending` | `reopen` |\n| `rejected` | `location_pending` | `reopen` |\n| `resolved` | `pending` | `reopen` |\n| `resolved` | `location_pending` | `reopen` |",
       "externalDocs": {
         "description": "Module 6 specification",
         "url": "https://github.com/Kams2004/road-analysis-api-flask/blob/main/road-risk-analysis/docs/spec-module6-hazard-validation.md"

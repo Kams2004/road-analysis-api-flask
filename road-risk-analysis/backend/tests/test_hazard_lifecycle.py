@@ -43,11 +43,13 @@ def test_section_registered_with_defaults():
     assert (CFG.recurring_min_occurrences, CFG.recurring_window_days) == (3, 30)
 
 
-def test_persistent_types_behave_as_before():
+def test_persistent_types_resolve_by_absence_after_three_passes():
     for t in ("pothole", "speed_bump"):
         p = resolve_policy(CFG, t)
-        assert p.expiry_hours is None and not p.absence_resolution and not p.recurring_enabled
+        assert p.expiry_hours is None and not p.recurring_enabled
+        assert p.absence_resolution and p.absences_to_resolve == 3 and p.require_same_direction
         assert p.votes_enabled and p.not_there_to_resolve == 3 and p.show_to_drivers
+        assert p.auto_confirm_resightings
     sign = resolve_policy(CFG, "traffic_sign", "speed_limit_50")
     assert sign.expiry_hours is None and sign.absence_resolution and sign.absences_to_resolve == 3
     assert sign.require_same_direction and sign.not_there_to_resolve == 3

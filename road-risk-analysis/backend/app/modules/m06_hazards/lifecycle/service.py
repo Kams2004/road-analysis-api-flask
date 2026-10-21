@@ -262,9 +262,12 @@ async def latest_resolved_near(db: AsyncSession, det: Detection, ctx) -> Optiona
     return None
 
 
-async def place_new(db: AsyncSession, det: Detection, ctx) -> tuple[Optional[Hazard], str]:
-    """No active hazard for an accepted `det`: (resolved hazard, "history" |
-    "reopen") when it belongs to a resolved one, else (None, "new")."""
+async def place_new(db: AsyncSession, det: Detection, ctx, *, accepted: bool = True) -> tuple[Optional[Hazard], str]:
+    """No open cluster for `det`: (resolved hazard, "history" | "reopen") when
+    it belongs to a resolved one, else (None, "new"). An UNREVIEWED detection
+    never reopens a hazard (it opens a candidate instead); it joins a
+    resolved hazard as history only when recorded before the resolution and
+    the policy auto-confirms re-sightings (it is then auto-validated)."""
     cfg = await load_settings(db)
     resolved = await latest_resolved_near(db, det, ctx)
     if resolved is None:
@@ -272,6 +275,8 @@ async def place_new(db: AsyncSession, det: Detection, ctx) -> tuple[Optional[Haz
     pol = resolve_policy(cfg, det.type, det.subtype, vehicle_class_of(det))
     mode = placement(det_time(det, cfg), await resolution_evidence_at(db, resolved), pol.reopen_on_sighting,
                      pol.reopen_window_hours)
+    if not accepted and (mode == "reopen" or not pol.auto_confirm_resightings):
+        return None, "new"
     if mode == "reopen":
         await reopen(db, resolved, source="sighting", seen_at=det_time(det, cfg), cfg=cfg,
                      reason=f"Seen again (detection {det.id})", details={"detection_id": det.id, "job_id": det.job_id})
@@ -302,16 +307,61 @@ async def on_attached(db: AsyncSession, hazard: Hazard, det: Detection, *, creat
 
 
 async def on_history_member(db: AsyncSession, hazard: Hazard, det: Detection) -> None:
-    """An accepted detection older than its resolved hazard's resolution:
-    kept as history — resolved at once."""
+    """A detection older than its resolved hazard's resolution: kept as
+    history — resolved at once (an unreviewed one is first auto-validated as
+    a re-sighting of the confirmed hazard)."""
     from app.modules.m06_hazards import detection_workflow as wf
     cfg = await load_settings(db)
     if not await events.exists(db, hazard.id, ("seen",), detection_id=det.id):
         events.record(db, hazard.id, "seen", source="review", job_id=det.job_id, detection_id=det.id,
                       recorded_at=det_time(det, cfg), details={"history": True, "newer": False})
+    if det.review_status in (ReviewStatus.pending, ReviewStatus.location_pending):
+        await wf.resight(db, det, hazard)
     if det.review_status in ACCEPTED_STATUSES:
         await wf.resolve(db, det, wf.SYSTEM, note=f"hazard {hazard.code} already resolved — recorded before "
                                                    "its resolution (history)")
+
+
+async def on_candidate_member(db: AsyncSession, hazard: Hazard, det: Detection) -> None:
+    """An unreviewed detection joined (or opened) a CANDIDATE cluster: it is a
+    sighting of the cluster (last_seen_at, absences recounted) — candidates
+    never expire by time, they are dismissed by absence passes only."""
+    cfg = await load_settings(db)
+    await apply_sighting(db, hazard, det, cfg, source="video")
+    hazard.expires_at = None
+
+
+async def dismiss(db: AsyncSession, hazard: Hazard, source: str, *, details: Optional[dict[str, Any]] = None,
+                  evidence_at: Optional[datetime] = None, members: Optional[list] = None) -> int:
+    """candidate → dismissed (it disappeared before anyone confirmed it). Its
+    unreviewed detections are rejected automatically with reason
+    `not_seen_again` (kind unusable: excluded from training) and stay
+    attached as history. Never shown outside the validation screen. Returns
+    the number of detections rejected."""
+    from app.core import audit
+    from app.modules.m06_hazards import detection_workflow as wf, hazard_service
+    if hazard.status != HazardStatus.candidate.value:
+        return 0
+    if members is None:
+        members = await hazard_service.members_of(db, hazard.id)
+    now = datetime.utcnow()
+    hazard.status = HazardStatus.dismissed.value
+    hazard.resolved_at, hazard.resolved_by, hazard.resolution_source = now, "system", source
+    hazard.updated_at = now
+    n = 0
+    for det in members:
+        if det.review_status in (ReviewStatus.pending, ReviewStatus.location_pending):
+            await wf.auto_reject(db, det, NOT_SEEN_AGAIN,
+                                 note=f"cluster {hazard.code} not seen again ({source}) — never confirmed")
+            n += 1
+    info = {"code": hazard.code, "source": source, "rejected": n, **(details or {})}
+    events.record(db, hazard.id, "dismissed", source=source, recorded_at=evidence_at or now, details=info)
+    audit.record_system(db, "hazard.dismiss", object_type="hazard", object_id=hazard.id, details=info)
+    logger.info(f"[hazard] candidate {hazard.code} dismissed ({source}) — {n} detection(s) rejected")
+    return n
+
+
+NOT_SEEN_AGAIN = "not_seen_again"
 
 
 # ── driver visibility ────────────────────────────────────────────────────────

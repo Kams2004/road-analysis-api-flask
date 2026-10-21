@@ -50,7 +50,9 @@ When the processor stores a detection:
 
 New table `hazards`: `id` (uuid), `code` (human id `HZ-000001`, unique, sequential), `type`, `subtype` (nullable), `status` (`active|resolved`), `latitude`, `longitude` (centroid of member detections), `radius_m` (radius rule applied), `country`, `city`, `location_name`, `detection_count`, `avg_confidence`, `max_confidence`, `first_detected_at`, `last_detected_at`, `resolved_at`, `resolved_by`, `resolution_note`, `created_at`, `updated_at`.
 
-Assignment (service `app/modules/m06_hazards/hazard_service.py`), run whenever a detection enters `validated`/`corrected` with `location_status=confirmed`:
+> **Superseded by cluster-first (docs/CLUSTERS.md):** every non-rejected detection with a confirmed or approximate position joins a cluster at creation; unvalidated clusters are `candidate` rows (code `CL-…`, validation screen only) that become hazards (`HZ-…`) when a detection is accepted; re-sightings of confirmed hazards are auto-validated; review is per cluster (`GET /hazards/review-queue`, `POST /hazards/{id}/accept|reject`). The rules below (radius, nearest, subtype) still select the cluster.
+
+Assignment (service `app/modules/m06_hazards/hazard_service.py`), originally run whenever a detection entered `validated`/`corrected` with `location_status=confirmed`:
 1. radius = matching `cluster_areas` rule (§5) for the detection position and type, else global `ClusterConfig.radius_m`.
 2. candidate = nearest ACTIVE hazard with same `type` within radius; if the type is listed in `validation.distinct_subtype_types` (default `["traffic_sign"]`) the subtype must also match (06-011: two different signs a few metres apart stay separate hazards).
 3. attach (update centroid, counts, confidence stats, last_detected_at) or create a new hazard.

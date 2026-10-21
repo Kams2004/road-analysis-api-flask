@@ -1,7 +1,11 @@
 """
-A hazard is a persisted cluster of accepted detections of the same kind at
-the same place (RRAP-06-001…004): one real-world pothole seen on several
-drives is one hazard with N detections. Membership is `detections.hazard_id`;
+A hazard is a persisted cluster of detections of the same kind at the same
+place (RRAP-06-001…004): one real-world pothole seen on several drives is
+one hazard with N detections. Every located, non-rejected detection belongs
+to a cluster from its creation (cluster-first, docs/CLUSTERS.md); a cluster
+nobody validated yet is a `candidate` (code CL-…, shown only in the
+validation screen) and becomes a hazard (`active`, code HZ-…) when one of its
+detections is accepted. Membership is `detections.hazard_id`;
 the aggregate columns below are recomputed by app.modules.m06_hazards.hazard_service
 whenever membership changes.
 
@@ -20,8 +24,19 @@ from app.core.db.session import Base
 
 
 class HazardStatus(str, enum.Enum):
-    active   = "active"
-    resolved = "resolved"
+    """candidate / dismissed rows are review clusters, NOT hazards: they are
+    never returned by the hazard screens, the dashboard, the maps or the
+    mobile API (PUBLIC_STATUSES). See docs/CLUSTERS.md."""
+    candidate = "candidate"   # cluster of unreviewed AI detections, validated by nobody yet (code CL-…)
+    active    = "active"      # confirmed hazard (code HZ-…)
+    resolved  = "resolved"    # confirmed, then gone
+    dismissed = "dismissed"   # candidate that disappeared before anyone confirmed it
+
+
+# Rows that are hazards for users (everything outside the validation screen).
+PUBLIC_STATUSES = (HazardStatus.active.value, HazardStatus.resolved.value)
+# Clusters a new detection may join.
+OPEN_STATUSES = (HazardStatus.candidate.value, HazardStatus.active.value)
 
 
 class ResolutionSource(str, enum.Enum):
@@ -32,6 +47,9 @@ class ResolutionSource(str, enum.Enum):
 
 
 HAZARD_NUMBER_SEQ = Sequence("hazards_number_seq")
+# Candidates get number = -nextval(hazard_candidates_seq) and code CL-…, so they
+# never consume HZ codes; the HZ number/code is assigned when they are confirmed.
+CANDIDATE_NUMBER_SEQ = Sequence("hazard_candidates_seq", metadata=Base.metadata)
 
 
 class Hazard(Base):
@@ -39,7 +57,7 @@ class Hazard(Base):
 
     id:       Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     number:   Mapped[int] = mapped_column(Integer, HAZARD_NUMBER_SEQ, unique=True)
-    code:     Mapped[str] = mapped_column(String, unique=True, index=True)   # HZ-000001
+    code:     Mapped[str] = mapped_column(String, unique=True, index=True)   # HZ-000001 (candidates: CL-000001)
     type:     Mapped[str] = mapped_column(String, index=True)
     subtype:  Mapped[str | None] = mapped_column(String, nullable=True)
     status:   Mapped[str] = mapped_column(String, default=HazardStatus.active.value, index=True)

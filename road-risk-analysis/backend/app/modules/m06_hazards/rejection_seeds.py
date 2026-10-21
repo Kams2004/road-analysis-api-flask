@@ -30,6 +30,7 @@ SEED_REASONS: list[tuple[str, str, str, str, str]] = [
     ("all", "out_of_frame",   "Out of frame",       "Object is partially cut off and cannot be confirmed", UNUSABLE),
     ("all", "low_confidence", "Low confidence",     "Automatically rejected: confidence below the configured threshold", UNUSABLE),
     ("all", "ai_verifier",    "Rejected by AI verifier", "Automatically rejected: the crop classifier judged it is not this hazard type", FP),
+    ("all", "not_seen_again", "Not seen again",     "Automatically rejected: its cluster was never confirmed and was not seen again on later valid video passes (dismissed candidate)", UNUSABLE),
     # ── pothole ────────────────────────────────────────────────────────────
     ("pothole", "shadow",           "Shadow / lighting",   "Dark patch caused by shadow, not a pothole", FP),
     ("pothole", "water_reflection", "Water reflection",    "Puddle reflection misidentified as a pothole", FP),

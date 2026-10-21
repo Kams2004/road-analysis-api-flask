@@ -29,6 +29,7 @@ class EffectivePolicy:
     show_to_drivers: bool
     alert_priority: str
     heavy_vehicle: bool = False
+    auto_confirm_resightings: bool = True
 
 
 def type_policy(cfg: HazardLifecycleSettings, det_type: str) -> TypePolicy:
@@ -65,6 +66,7 @@ def resolve_policy(cfg: HazardLifecycleSettings, det_type: str, subtype: Optiona
         show_to_drivers=bool(fields["show_to_drivers"]),
         alert_priority=str(fields["alert_priority"]),
         heavy_vehicle=heavy,
+        auto_confirm_resightings=bool(fields.get("auto_confirm_resightings", True)),
     )
 
 

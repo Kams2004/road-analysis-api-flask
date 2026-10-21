@@ -18,7 +18,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.db.session import Base
 from app.modules.m06_hazards.models import hazard as _hazard  # noqa: F401 — registers the hazards FK target
 
-EVENT_KINDS = ("seen", "not_seen", "vote_still_there", "vote_not_there", "expired", "resolved", "reopened")
+EVENT_KINDS = ("seen", "not_seen", "vote_still_there", "vote_not_there", "expired", "resolved", "reopened",
+               "confirmed", "dismissed", "merged")
 VOTE_VALUES = ("still_there", "not_there")
 
 

@@ -5,10 +5,13 @@ Detection validation workflow (RRAP-06-005/007/008/012/017/018).
            │                              │                                 ▲                          │
            └────────reject────────▶ rejected ◀──reject──┘                    └────────unresolve─────────┘
     validated | corrected | rejected | resolved ──reopen──▶ pending | location_pending
+    pending | location_pending ──resight (system)──▶ validated | corrected   (re-sighting of a confirmed hazard)
 
 Every transition goes through `_enter`, which writes a `detection_reviews`
 history row and an `audit_logs` row (`detection.<action>`), and keeps the
-hazard membership in step (accepted + located → attach, reopen → detach).
+cluster membership in step (docs/CLUSTERS.md): accepting confirms the
+detection's cluster, a location fix or class correction re-evaluates it,
+a rejection leaves it (a candidate left empty is deleted).
 Anything outside the table below is refused with HTTP 409
 `invalid_transition`, itself audited as a failure.
 
@@ -47,9 +50,10 @@ _FINAL = ("validated", "corrected", "rejected", "resolved")
 TRANSITIONS: dict[tuple[str, str], frozenset[str]] = {
     ("location_pending", "pending"):  frozenset({"location_fix"}),
     ("location_pending", "rejected"): frozenset({"reject", "auto_reject"}),
+    ("location_pending", "validated"): frozenset({"resight"}),           # re-sighting, approximate position
     ("pending", "pending"):           frozenset({"location_fix"}),       # location corrected before deciding
-    ("pending", "validated"):         frozenset({"accept", "auto_accept"}),
-    ("pending", "corrected"):         frozenset({"accept", "correct"}),  # accept after a manual location fix
+    ("pending", "validated"):         frozenset({"accept", "auto_accept", "resight"}),
+    ("pending", "corrected"):         frozenset({"accept", "correct", "resight"}),  # accept after a manual location fix
     ("pending", "rejected"):          frozenset({"reject", "auto_reject"}),
     ("validated", "resolved"):        frozenset({"resolve"}),
     ("corrected", "resolved"):        frozenset({"resolve"}),
@@ -136,21 +140,60 @@ async def check(det: Detection, to_status: str, action: str, actor: Actor) -> No
                     f"Cannot {action.replace('_', ' ')} a detection in status '{frm}'.", **details)
 
 
+_ACCEPTED = {s.value for s in ACCEPTED_STATUSES}
+_UNREVIEWED = {ReviewStatus.pending.value, ReviewStatus.location_pending.value}
+
+
 async def _enter(db: AsyncSession, det: Detection, to_status: str, action: str, actor: Actor, *,
                  note: Optional[str] = None, details: Optional[dict[str, Any]] = None,
-                 ctx: Optional[hazard_service.ClusterContext] = None) -> None:
-    """Apply an already-checked transition: status, history, audit, hazard."""
+                 ctx: Optional[hazard_service.ClusterContext] = None, resight_others: bool = True,
+                 cluster_changed: bool = False) -> None:
+    """Apply an already-checked transition: status, history, audit, cluster."""
     frm = _status(det)
     det.review_status = ReviewStatus(to_status)
     _history(db, det, frm, to_status, action, actor, note, details)
-
-    was_member = frm in {s.value for s in hazard_service.MEMBER_STATUSES}
-    if action == "reopen" and was_member and det.hazard_id:
-        await hazard_service.detach(db, det)
-    elif to_status in {s.value for s in ACCEPTED_STATUSES} and not was_member:
-        await hazard_service.attach(db, det, ctx)
     # training dataset (docs/TRAINING-DATA.md): sample upsert / supersede, frame marked dirty
     await training_data.record_decision(db, det, actor_type=actor.type)
+    await _sync_cluster(db, det, frm, to_status, action, actor, ctx, resight_others, cluster_changed)
+
+
+async def _sync_cluster(db: AsyncSession, det: Detection, frm: Optional[str], to_status: str, action: str,
+                        actor: Actor, ctx, resight_others: bool, cluster_changed: bool) -> None:
+    """Cluster membership after a transition (cluster-first, docs/CLUSTERS.md)."""
+    from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus
+    if action in ("resight", "resolve", "unresolve"):
+        return                                     # membership unchanged (the caller handles the hazard)
+    hazard = await db.get(Hazard, det.hazard_id) if det.hazard_id else None
+    if to_status == ReviewStatus.rejected.value:
+        if hazard is not None and hazard.status != HazardStatus.dismissed.value:
+            await hazard_service.detach(db, det)   # a candidate left empty is deleted
+        return
+    if action == "reopen":
+        # back to the queue: stays in (or re-joins) its cluster, never auto-decided again
+        if hazard is None or frm == ReviewStatus.rejected.value:
+            await hazard_service.attach(db, det, ctx, auto=False)
+        else:
+            await hazard_service.recompute(db, hazard)
+        return
+    if action == "location_fix" or cluster_changed:
+        await hazard_service.reattach(db, det, ctx)
+        return
+    if to_status in _ACCEPTED and frm in _UNREVIEWED:
+        if hazard is None:
+            hazard = await hazard_service.attach(db, det, ctx)
+            if hazard is not None and resight_others:
+                await hazard_service.resight_unreviewed(db, hazard, skip={det.id})
+            return
+        await hazard_service.recompute(db, hazard)
+        from app.modules.m06_hazards.lifecycle import service as lifecycle_service
+        if hazard.status == HazardStatus.resolved.value:
+            await lifecycle_service.on_history_member(db, hazard, det)
+            return
+        confirmed_now = await hazard_service.confirm(db, hazard, det, actor)
+        if hazard.status == HazardStatus.active.value:
+            await lifecycle_service.on_attached(db, hazard, det, created=False)
+            if confirmed_now and resight_others:
+                await hazard_service.resight_unreviewed(db, hazard, skip={det.id})
 
 
 def _history(db: AsyncSession, det: Detection, frm: Optional[str], to: str, action: str, actor: Actor,
@@ -231,7 +274,7 @@ def _set_bbox(det: Detection, bbox: Optional[list[float]]) -> Optional[dict]:
 
 async def accept(db: AsyncSession, det: Detection, actor: Actor, *, label: Optional[str] = None,
                  severity_score: Optional[int] = None, note: Optional[str] = None,
-                 bbox: Optional[list[float]] = None) -> None:
+                 bbox: Optional[list[float]] = None, resight_others: bool = True) -> None:
     """Accept as predicted; with `bbox` (box moved by the validator) the
     detection becomes `corrected`."""
     target = ReviewStatus.corrected.value if bbox is not None else accept_target(det.location_source)
@@ -243,7 +286,8 @@ async def accept(db: AsyncSession, det: Detection, actor: Actor, *, label: Optio
     details = {"label": label, "severity_score": severity_score} if label or severity_score is not None else {}
     if box_change:
         details["bbox"] = box_change
-    await _enter(db, det, target, "accept", actor, note=note, details=details or None)
+    await _enter(db, det, target, "accept", actor, note=note, details=details or None,
+                 resight_others=resight_others)
 
 
 async def correct(db: AsyncSession, det: Detection, actor: Actor, *, type: str, subtype: Optional[str],
@@ -260,7 +304,8 @@ async def correct(db: AsyncSession, det: Detection, actor: Actor, *, type: str, 
                         severity_score if severity_score is not None else 1, actor.name)
     await _enter(db, det, ReviewStatus.corrected.value, "correct", actor, note=note,
                  details={"previous": previous, "new": {"type": type, "subtype": subtype},
-                          **({"bbox": box_change} if box_change else {})})
+                          **({"bbox": box_change} if box_change else {})},
+                 cluster_changed=previous != {"type": type, "subtype": subtype})
 
 
 async def find_reason(db: AsyncSession, det_type: str, code: str) -> Optional[RejectionReason]:
@@ -283,6 +328,28 @@ async def reject(db: AsyncSession, det: Detection, actor: Actor, *, reason_code:
     _stamp(det, actor, note)
     await _enter(db, det, ReviewStatus.rejected.value, "reject", actor, note=note,
                  details={"reason_code": reason_code})
+
+
+async def auto_reject(db: AsyncSession, det: Detection, reason_code: str, *, note: Optional[str] = None) -> None:
+    """System rejection (e.g. `not_seen_again` when a candidate is dismissed)."""
+    await check(det, ReviewStatus.rejected.value, "auto_reject", SYSTEM)
+    det.rejection_code, det.rejection_source = reason_code, "auto"
+    _stamp(det, SYSTEM, note)
+    await _enter(db, det, ReviewStatus.rejected.value, "auto_reject", SYSTEM, note=note,
+                 details={"reason_code": reason_code})
+
+
+async def resight(db: AsyncSession, det: Detection, hazard) -> None:
+    """An unreviewed detection that joined a CONFIRMED hazard: decided by the
+    system (`validated`, or `corrected` after a manual location fix), note
+    "matches confirmed hazard HZ-…" (policy auto_confirm_resightings; the
+    caller records the sighting)."""
+    target = accept_target(det.location_source)
+    await check(det, target, "resight", SYSTEM)
+    note = f"matches confirmed hazard {hazard.code}"
+    _stamp(det, SYSTEM, note)
+    await _enter(db, det, target, "resight", SYSTEM, note=note,
+                 details={"hazard_id": hazard.id, "hazard_code": hazard.code})
 
 
 async def reopen(db: AsyncSession, det: Detection, actor: Actor, *, reason: str) -> None:

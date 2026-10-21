@@ -42,6 +42,10 @@ class TypePolicy(BaseModel):
     # sightings open a NEW hazard (counted for recurring spots).
     reopen_window_hours:        Optional[float] = Field(None, gt=0, le=24 * 365)
     recurring_enabled:          bool  = False
+    # A new detection that joins a CONFIRMED hazard is a re-sighting: decided
+    # `validated` by the system ("matches confirmed hazard HZ-…") instead of
+    # going to the review queue (docs/CLUSTERS.md).
+    auto_confirm_resightings:   bool  = True
     # Mobile app / alerts.
     show_to_drivers:            bool  = True
     alert_priority:             Literal["low", "normal", "high"] = "normal"
@@ -63,11 +67,13 @@ class TypePolicy(BaseModel):
 
 
 def _defaults() -> dict[str, dict[str, Any]]:
-    persistent = dict(expiry_hours=None, absence_resolution=False, votes_enabled=True,
-                      not_there_to_resolve=3, recurring_enabled=False)
+    persistent = dict(expiry_hours=None, absence_resolution=True, absences_to_resolve=3,
+                      require_same_direction=True, votes_enabled=True, not_there_to_resolve=3,
+                      recurring_enabled=False)
     return {
-        # Repairs are slow and a missed pothole in a video is common: no
-        # expiry, no absence resolution; drivers can still vote it away.
+        # Repairs are slow: no expiry. A missed pothole in one video is common,
+        # so absence resolution needs 3 valid passes in the direction it was
+        # seen (camera actually covering the spot); drivers can vote it away too.
         "pothole":    dict(persistent),
         "speed_bump": dict(persistent),
         "traffic_sign": dict(expiry_hours=None, absence_resolution=True, absences_to_resolve=3,
@@ -88,6 +94,26 @@ def _defaults() -> dict[str, dict[str, Any]]:
 
 
 DEFAULT_POLICIES: dict[str, dict[str, Any]] = _defaults()
+
+DEFAULTS_VERSION = 2
+# Absence fields of pothole / speed_bump under defaults version 1. A stored
+# policy carrying exactly these values was never changed by an administrator
+# on those fields (the console saves whole policies, so presence alone proves
+# nothing): they are dropped so the version-2 defaults apply. Any other
+# combination is an explicit choice and is kept.
+_V1_ABSENCE = {"absence_resolution": False, "absences_to_resolve": 2, "require_same_direction": False}
+
+
+def _upgrade_saved_policies(raw: dict[str, Any]) -> dict[str, Any]:
+    out = dict(raw)
+    for type_ in ("pothole", "speed_bump"):
+        pol = out.get(type_)
+        if not isinstance(pol, dict):
+            continue
+        stored = {k: pol.get(k, _V1_ABSENCE[k]) for k in _V1_ABSENCE}
+        if stored == _V1_ABSENCE:
+            out[type_] = {k: v for k, v in pol.items() if k not in _V1_ABSENCE}
+    return out
 
 # Hazard type → processing-job model keys (jobs.enabled_models) whose run
 # could have seen it. A video pass only counts when one of them was enabled.
@@ -138,6 +164,11 @@ class HazardLifecycleSettings(BaseModel):
     pass_max_speed_kmh:          float = Field(60.0, gt=0, le=300)     # … driven at most this fast there
     pass_heading_tolerance_deg:  float = Field(60.0, ge=0, le=180)     # … in the direction of the sighting
     pass_require_recording_time: bool  = True    # unknown recording time → not a valid pass
+    # … the track shows the vehicle APPROACHING the spot with it ahead of the
+    # camera (an earlier fix ≥ pass_approach_min_m farther away, spot in front):
+    # a video that starts at / after the spot never filmed it.
+    pass_require_approach:       bool  = True
+    pass_approach_min_m:         float = Field(10.0, ge=1, le=200)
     type_models:                 dict[str, list[str]] = Field(default_factory=lambda: {
         k: list(v) for k, v in DEFAULT_TYPE_MODELS.items()})
 
@@ -157,12 +188,19 @@ class HazardLifecycleSettings(BaseModel):
     policies: dict[str, TypePolicy] = Field(
         default_factory=lambda: {k: TypePolicy(**v) for k, v in DEFAULT_POLICIES.items()})
 
+    # Version of the built-in defaults the stored values were written with
+    # (see _upgrade_saved_policies). 2 = cluster-first defaults.
+    defaults_version:            int   = DEFAULTS_VERSION
+
     @model_validator(mode="before")
     @classmethod
     def _merge_default_policies(cls, data):
         if isinstance(data, dict) and isinstance(data.get("policies"), dict):
             base = {k: dict(v) for k, v in DEFAULT_POLICIES.items()}
             raw = {k: (v.model_dump() if isinstance(v, BaseModel) else v) for k, v in data["policies"].items()}
+            if int(data.get("defaults_version") or 1) < DEFAULTS_VERSION:
+                raw = _upgrade_saved_policies(raw)
+                data = {**data, "defaults_version": DEFAULTS_VERSION}
             data = {**data, "policies": _merge_policies(base, raw)}
         return data
 

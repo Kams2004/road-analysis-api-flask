@@ -17,7 +17,7 @@ EXPECTED = {
          "billboard", "vehicle_sticker", "tree_as_sign", "pothole_or_damage", "marking_or_crossing",
          "not_a_vehicle"},
     REDUNDANT: {"duplicate", "speed_bump_ok"},
-    UNUSABLE: {"image_quality", "out_of_frame", "sign_not_visible", "low_confidence"},
+    UNUSABLE: {"image_quality", "out_of_frame", "sign_not_visible", "low_confidence", "not_seen_again"},
 }
 
 

@@ -18,11 +18,21 @@ job is a VALID pass of a hazard (evaluate_pass, pure) when:
   5. the recording time there is known (unless pass_require_recording_time
      is off) and AFTER the hazard's last_seen_at;
   6. with policy pass_daylight_only, it lies within daylight_hours
-     (local time, hazard_lifecycle.timezone).
+     (local time, hazard_lifecycle.timezone);
+  7. the camera actually covered the spot (pass_require_approach): an
+     earlier confirmed fix of the track is ≥ pass_approach_min_m farther from
+     the spot than the closest one and has the spot ahead (within 90° of the
+     travel heading) — a video that starts at or after the spot never filmed
+     it;
+  8. the job is not one that produced the hazard's own detections.
 
-Each valid pass is one `not_seen` event (once per job and hazard). After
-policy absences_to_resolve valid passes since the last sighting the hazard
-is resolved with source `video_absence`.
+Each valid pass is one `not_seen` event (once per job and hazard, details
+pass_number / threshold / job name: "Not seen in pass 1/3 (job X)"). After
+policy absences_to_resolve valid passes since the last sighting a confirmed
+hazard is resolved with source `video_absence`; a CANDIDATE cluster (never
+validated) is dismissed (lifecycle.service.dismiss). Open clusters of every
+type whose policy enables absence_resolution are checked (all built-in
+types by default).
 
 Recording time of a track point = its own `recorded_at` (OSD time of the
 fix, set by the processor), else job recording start + its video_time_s;
@@ -39,7 +49,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.m06_hazards.models.detection import Detection
-from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus, ResolutionSource
+from app.modules.m06_hazards.models.hazard import OPEN_STATUSES, Hazard, HazardStatus, ResolutionSource
 from app.modules.m06_hazards.lifecycle import events
 from app.modules.m06_hazards.lifecycle.policy import policy_for_hazard
 from app.modules.m06_hazards.lifecycle.settings import HazardLifecycleSettings
@@ -73,6 +83,8 @@ class PassRules:
     daylight_only: bool = False
     daylight_hours: list = field(default_factory=lambda: [6, 18])
     timezone: str = "Africa/Douala"
+    require_approach: bool = False
+    approach_min_m: float = 10.0
 
 
 @dataclass
@@ -80,7 +92,8 @@ class PassResult:
     passed: bool                 # the vehicle came within max_distance_m (confirmed GPS)
     valid: bool                  # … and it is a valid "not seen" pass
     reason: str                  # valid | not_passed | detected | too_fast | unknown_speed | unknown_heading |
-                                 # wrong_direction | unknown_reference_heading | unknown_time | before_last_seen | not_daylight
+                                 # wrong_direction | unknown_reference_heading | not_approaching | unknown_time | before_last_seen |
+                                 # not_daylight
     distance_m: Optional[float] = None
     speed_kmh: Optional[float] = None
     heading_deg: Optional[float] = None
@@ -146,6 +159,21 @@ def closest_confirmed(points: Sequence[TrackPt], lat: float, lon: float) -> tupl
     return best_i, best_d
 
 
+def approached(points: Sequence[TrackPt], i: int, lat: float, lon: float, min_m: float) -> bool:
+    """The vehicle came towards the spot before its closest fix `i`: the
+    nearest earlier confirmed fix that is ≥ min_m farther away had the spot
+    ahead (within 90° of its heading; unknown heading → accepted)."""
+    d_i = _haversine_m(lat, lon, points[i].latitude, points[i].longitude)
+    for j in range(i - 1, -1, -1):
+        p = points[j]
+        if p.source not in CONFIRMED_SOURCES:
+            continue
+        if _haversine_m(lat, lon, p.latitude, p.longitude) >= d_i + min_m:
+            h = heading_at(points, j)
+            return h is None or angle_diff(h, bearing(p.latitude, p.longitude, lat, lon)) <= 90.0
+    return False
+
+
 def evaluate_pass(points: Sequence[TrackPt], hazard_lat: float, hazard_lon: float, *,
                   last_seen_at: Optional[datetime], ref_headings: Sequence[float],
                   start_time: Optional[datetime], rules: PassRules, detected_nearby: bool = False) -> PassResult:
@@ -175,6 +203,9 @@ def evaluate_pass(points: Sequence[TrackPt], hazard_lat: float, hazard_lon: floa
             return res
     elif rules.require_same_direction:
         res.reason = "unknown_reference_heading"
+        return res
+    if rules.require_approach and not approached(points, i, hazard_lat, hazard_lon, rules.approach_min_m):
+        res.reason = "not_approaching"
         return res
     if points[i].recorded_at is not None:
         res.recorded_at = to_utc_naive(points[i].recorded_at, rules.timezone)
@@ -220,7 +251,8 @@ def rules_for(cfg: HazardLifecycleSettings, pol) -> PassRules:
     return PassRules(max_distance_m=cfg.pass_max_distance_m, max_speed_kmh=cfg.pass_max_speed_kmh,
                      heading_tolerance_deg=cfg.pass_heading_tolerance_deg,
                      require_same_direction=pol.require_same_direction, daylight_only=pol.pass_daylight_only,
-                     daylight_hours=list(cfg.daylight_hours), timezone=cfg.timezone)
+                     daylight_hours=list(cfg.daylight_hours), timezone=cfg.timezone,
+                     require_approach=cfg.pass_require_approach, approach_min_m=cfg.pass_approach_min_m)
 
 
 # ── database ─────────────────────────────────────────────────────────────────
@@ -291,7 +323,7 @@ async def evaluate_job(db: AsyncSession, job_id: str, cfg: Optional[HazardLifecy
         lats, lons = [p.latitude for p in points], [p.longitude for p in points]
         dlat, dlon = hazard_service._bbox(sum(lats) / len(lats), sum(lons) / len(lons), pad)
         hazards = (await db.execute(select(Hazard).where(
-            Hazard.status == HazardStatus.active.value, Hazard.type.in_(types),
+            Hazard.status.in_(OPEN_STATUSES), Hazard.type.in_(types),
             Hazard.latitude.between(min(lats) - dlat, max(lats) + dlat),
             Hazard.longitude.between(min(lons) - dlon, max(lons) + dlon),
         ))).scalars().all()
@@ -302,6 +334,8 @@ async def evaluate_job(db: AsyncSession, job_id: str, cfg: Optional[HazardLifecy
                 continue
             if await events.exists(db, hazard.id, ("not_seen", "seen"), job_id=job_id):
                 continue
+            if any(m.job_id == job_id for m in members):
+                continue                                   # its own video: never an absence
             radius = hazard.radius_m or ctx.radius_for(hazard.latitude, hazard.longitude, hazard.type)
             nearby = any(_within(d, hazard, radius, ctx.distinct_subtype_types) for d in dets)
             res = evaluate_pass(points, hazard.latitude, hazard.longitude, last_seen_at=hazard.last_seen_at,
@@ -313,11 +347,20 @@ async def evaluate_job(db: AsyncSession, job_id: str, cfg: Optional[HazardLifecy
             if not res.valid:
                 summary["rejected"][res.reason] = summary["rejected"].get(res.reason, 0) + 1
                 continue
+            confirmed = hazard.status == HazardStatus.active.value
+            prior = await service.recount_absences(db, hazard)
             events.record(db, hazard.id, "not_seen", source="video", job_id=job_id, recorded_at=res.recorded_at,
-                          details=res.as_details())
+                          details={**res.as_details(), "pass_number": prior + 1,
+                                   "threshold": pol.absences_to_resolve, "job_id": job_id,
+                                   "job_name": job.source_name or job.filename, "hazard_confirmed": confirmed})
             summary["not_seen"] += 1
             count = await service.recount_absences(db, hazard)
-            if count >= pol.absences_to_resolve:
+            if count >= pol.absences_to_resolve and not confirmed:
+                await service.dismiss(db, hazard, ResolutionSource.video_absence.value, evidence_at=res.recorded_at,
+                                      members=members, details={"passes": count, "threshold": pol.absences_to_resolve,
+                                                                "job_id": job_id})
+                summary.setdefault("dismissed", []).append(hazard.code)
+            elif count >= pol.absences_to_resolve:
                 await service.resolve(db, hazard, ResolutionSource.video_absence.value, evidence_at=res.recorded_at,
                                       members=members,
                                       note=f"Not seen on {count} valid video pass(es).",

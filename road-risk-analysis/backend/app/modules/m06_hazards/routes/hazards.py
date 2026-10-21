@@ -7,6 +7,11 @@ them to their accepted status.
 Lifecycle (app.modules.m06_hazards.lifecycle): driver votes, the event
 timeline and recurring spots; automatic resolution (video passes, votes,
 expiry) is done by the lifecycle itself.
+
+Cluster-first (docs/CLUSTERS.md): candidate clusters (`candidate`,
+`dismissed`) share the table but are NOT hazards — every endpoint here
+filters them out (PUBLIC_STATUSES; their ids answer 404) except the
+validation endpoints /hazards/review-queue and /hazards/{id}/accept|reject.
 """
 from datetime import datetime, timedelta
 from typing import Annotated, Literal, Optional
@@ -20,9 +25,9 @@ from app.api.deps import Principal, api_error, get_principal
 from app.api.openapi import err, errors, legacy
 from app.core.db.session import get_db
 from app.modules.m06_hazards.models.detection import Detection, ReviewStatus
-from app.modules.m06_hazards.models.hazard import Hazard, HazardStatus, ResolutionSource
+from app.modules.m06_hazards.models.hazard import PUBLIC_STATUSES, Hazard, HazardStatus, ResolutionSource
 from app.modules.m06_hazards.schemas import (
-    HazardDetailOut, HazardListOut, HazardMemberOut, HazardOut, HazardResolveIn, ReopenIn,
+    HazardDetailOut, HazardListOut, HazardMemberOut, HazardOut, HazardResolveIn, QueueItemOut, ReopenIn,
 )
 from app.core import audit
 from app.modules.m06_hazards import detection_workflow as wf, hazard_service
@@ -62,7 +67,10 @@ class HazardEventOut(BaseModel):
     id:           str = Field(description="Event id (UUID).")
     hazard_id:    str = Field(description="Hazard id.")
     kind:         str = Field(description="`seen`, `not_seen`, `vote_still_there`, `vote_not_there`, `expired`, "
-                                          "`resolved` or `reopened`.", examples=["not_seen"])
+                                          "`resolved`, `reopened`, `confirmed` (the candidate cluster became this "
+                                          "hazard; details.previous_code = its CL- code, details.by) or `merged` "
+                                          "(a duplicate hazard was merged into it; details.merged_code).",
+                              examples=["not_seen"])
     source:       Optional[str] = Field(description="Where the evidence came from: `video` (processed video), "
                                                     "`review` (accepted detection), `vote`, `expiry`, `sighting`, "
                                                     "or the resolution source (`manual`, `video_absence`, "
@@ -71,9 +79,12 @@ class HazardEventOut(BaseModel):
     detection_id: Optional[str] = Field(description="Detection of a sighting.")
     user_id:      Optional[str] = Field(description="Voter or console user.")
     details:      Optional[dict] = Field(description="Kind-specific details, e.g. a pass's `distance_m`, "
-                                                     "`speed_kmh`, `heading_deg`.",
+                                                     "`speed_kmh`, `heading_deg`, `pass_number` / `threshold` "
+                                                     "(\"not seen in pass 1/3\") and `job_name`.",
                                          examples=[{"distance_m": 8.4, "speed_kmh": 32.0, "heading_deg": 87.5,
-                                                    "reason": "valid"}])
+                                                    "reason": "valid", "pass_number": 1, "threshold": 3,
+                                                    "job_id": "7d0c5b9e-2f1a-4c3d-8e6b-1a2b3c4d5e6f",
+                                                    "job_name": "drive_0412.mp4"}])
     recorded_at:  Optional[datetime] = Field(description="When the evidence happened (video recording / vote "
                                                          "time, UTC).")
     created_at:   datetime = Field(description="When the event was recorded (UTC).")
@@ -129,6 +140,8 @@ class RecurringSpotListOut(BaseModel):
 async def list_hazards(
     status:    Optional[str] = Query(None, pattern="^(active|resolved)$", description="`active` or `resolved`."),
     type:      Optional[str] = Query(None, description="Detection type, e.g. `pothole`.", examples=["pothole"]),
+    has_pending: Optional[bool] = Query(None, description="Only hazards that have (true) / have no (false) member "
+                                                          "detections still awaiting a decision."),
     subtype:   Optional[str] = Query(None, description="Detection subtype."),
     country:   Optional[str] = Query(None, description="Country (case-insensitive exact match)."),
     city:      Optional[str] = Query(None, description="City (case-insensitive exact match).", examples=["Douala"]),
@@ -161,8 +174,12 @@ async def list_hazards(
     (`first_detected_at`…`last_detected_at`) overlaps it. Each item carries its lifecycle state
     (`last_seen_at`, `expires_at`, `absence_count`, `resolution_source`, `recurring_spot`).
     """
-    q = select(Hazard)
+    q = select(Hazard).where(Hazard.status.in_(PUBLIC_STATUSES))       # never candidate clusters
     if status:    q = q.where(Hazard.status == status)
+    if has_pending is not None:
+        pend = select(Detection.id).where(Detection.hazard_id == Hazard.id,
+                                          Detection.review_status.in_(hazard_service.UNREVIEWED_STATUSES)).exists()
+        q = q.where(pend if has_pending else ~pend)
     if type:      q = q.where(Hazard.type == type)
     if subtype:   q = q.where(Hazard.subtype == subtype)
     if country:   q = q.where(Hazard.country.ilike(country))
@@ -192,14 +209,25 @@ async def list_hazards(
     return HazardListOut(total=total, items=await _with_covers(db, [HazardOut.model_validate(h) for h in rows]))
 
 
+def _counts_into(item, counts: dict) -> None:
+    item.member_counts = counts
+    item.pending_count = counts.get("pending", 0) + counts.get("location_pending", 0)
+    item.confirmed = item.status in PUBLIC_STATUSES
+
+
 async def _with_covers(db: AsyncSession, items: list) -> list:
-    """Best evidence of each hazard: crop / frame of its most confident member (one query)."""
+    """Best evidence of each hazard: crop / frame of its most confident
+    non-rejected member (one query), plus its member counts by review status."""
     ids = [h.id for h in items]
     if not ids:
         return items
+    counts = await hazard_service.member_counts(db, ids)
+    for h in items:
+        _counts_into(h, counts.get(h.id, {}))
     rows = (await db.execute(
         select(Detection.hazard_id, Detection.crop_url, Detection.image_url)
-        .where(Detection.hazard_id.in_(ids), or_(Detection.crop_url.isnot(None), Detection.image_url.isnot(None)))
+        .where(Detection.hazard_id.in_(ids), Detection.review_status != ReviewStatus.rejected,
+               or_(Detection.crop_url.isnot(None), Detection.image_url.isnot(None)))
         .order_by(Detection.hazard_id, Detection.confidence.desc())
         .distinct(Detection.hazard_id)
     )).all()
@@ -214,13 +242,14 @@ async def _with_covers(db: AsyncSession, items: list) -> list:
 async def hazards_summary(db: AsyncSession = Depends(get_db)):
     """Hazard counts by status and by type, for the dashboard."""
     rows = (await db.execute(
-        select(Hazard.type, Hazard.status, func.count()).group_by(Hazard.type, Hazard.status)
+        select(Hazard.type, Hazard.status, func.count()).where(Hazard.status.in_(PUBLIC_STATUSES))
+        .group_by(Hazard.type, Hazard.status)
     )).all()
-    by_status = {s.value: 0 for s in HazardStatus}
+    by_status = {s: 0 for s in PUBLIC_STATUSES}
     by_type: dict[str, dict[str, int]] = {}
     for det_type, status, n in rows:
         by_status[status] = by_status.get(status, 0) + n
-        by_type.setdefault(det_type, {s.value: 0 for s in HazardStatus})[status] = n
+        by_type.setdefault(det_type, {s: 0 for s in PUBLIC_STATUSES})[status] = n
     return {"total": sum(by_status.values()), "by_status": by_status, "by_type": by_type}
 
 
@@ -309,7 +338,8 @@ async def hazard_places(
     Reverse-geocoded towns that have hazards, most hazards first, each with its quartiers — the
     choices of the Hazard Track's place filter (`town` / `locality` of `GET /hazards/`).
     """
-    q = select(Hazard.town, Hazard.locality, func.count()).where(Hazard.town.isnot(None))
+    q = select(Hazard.town, Hazard.locality, func.count()).where(Hazard.town.isnot(None),
+                                                                 Hazard.status.in_(PUBLIC_STATUSES))
     if status: q = q.where(Hazard.status == status)
     if type:   q = q.where(Hazard.type == type)
     rows = (await db.execute(q.group_by(Hazard.town, Hazard.locality))).all()
@@ -359,9 +389,11 @@ async def geocode_backfill(
     return await _backfill_out(db, started)
 
 
-async def _get(db: AsyncSession, hazard_id: str) -> Hazard:
+async def _get(db: AsyncSession, hazard_id: str, *, candidates: bool = False) -> Hazard:
+    """A hazard; candidate / dismissed clusters are not hazards (404) unless
+    `candidates` (validation endpoints)."""
     hazard = await db.get(Hazard, hazard_id)
-    if hazard is None:
+    if hazard is None or (hazard.status not in PUBLIC_STATUSES and not candidates):
         raise HTTPException(404, "Hazard not found")
     return hazard
 
@@ -373,7 +405,229 @@ async def _detail(db: AsyncSession, hazard: Hazard) -> HazardDetailOut:
     best = max((d for d in members if d.crop_url or d.image_url), key=lambda d: d.confidence, default=None)
     if best is not None:
         out.cover_crop_url, out.cover_image_url = best.crop_url, best.image_url
+    _counts_into(out, (await hazard_service.member_counts(db, [hazard.id]))[hazard.id])
     return out
+
+
+# ── grouped review of clusters (validation screen) ──────────────────────────
+
+class ReviewClusterOut(BaseModel):
+    """A cluster with detections awaiting a decision."""
+    hazard:     HazardOut = Field(description="The cluster: a candidate (`CL-…`, `confirmed=false`) or a confirmed "
+                                              "hazard (`HZ-…`) that received new unreviewed detections.")
+    detections: list[QueueItemOut] = Field(description="Its unreviewed detections, highest confidence first.")
+
+
+class ReviewClusterListOut(BaseModel):
+    """The validation queue grouped by cluster."""
+    total:       int = Field(description="Matching clusters with unreviewed detections.", examples=[12])
+    candidates:  int = Field(description="Of which candidate clusters (not hazards yet).", examples=[9])
+    unclustered: int = Field(description="Unreviewed detections without a cluster (no position yet).", examples=[3])
+    items:       list[ReviewClusterOut] = Field(description="The clusters of this page.")
+
+
+class ClusterAcceptIn(BaseModel):
+    """Body of `POST /hazards/{id}/accept`."""
+    note:           Optional[str] = Field(None, max_length=1000, description="Review note stored on each detection.")
+    label:          Optional[str] = Field(None, description="Training label (default: subtype or type).")
+    severity_score: Optional[int] = Field(None, ge=0, le=3, description="Severity 0–3 (default 1).")
+
+
+class ClusterRejectIn(BaseModel):
+    """Body of `POST /hazards/{id}/reject`."""
+    reason_code: str = Field(description="Rejection reason (catalogue of the hazard's type or `all`).",
+                             examples=["shadow"])
+    note:        Optional[str] = Field(None, max_length=1000, description="Review note.")
+
+
+class ClusterDecisionOut(BaseModel):
+    """Outcome of a cluster decision."""
+    hazard_id:      str = Field(description="Cluster id (unchanged when a candidate is confirmed).")
+    hazard_code:    str = Field(description="Code after the decision: the new `HZ-…` code of a confirmed candidate.",
+                                examples=["HZ-000045"])
+    previous_code:  str = Field(description="Code before the decision (`CL-…` for a candidate).",
+                                examples=["CL-000123"])
+    hazard_status:  Optional[str] = Field(description="Status after the decision; `deleted` when a rejected "
+                                                      "candidate was left empty and removed.", examples=["active"])
+    accepted:       int = Field(0, description="Detections accepted by the user.")
+    auto_validated: int = Field(0, description="Other members auto-validated as re-sightings of the confirmed "
+                                               "hazard (approximate positions).")
+    rejected:       int = Field(0, description="Detections rejected.")
+    skipped:        int = Field(0, description="Unreviewed members left untouched (e.g. no confirmed position).")
+    hazard:         Optional[HazardDetailOut] = Field(None, description="The hazard after the decision (confirmed "
+                                                                       "hazards only).")
+
+
+_REVIEW_SORTS = ("-pending_count", "pending_count", "-last_detected_at", "last_detected_at",
+                 "-max_confidence", "max_confidence", "code", "-code")
+_REVIEWABLE = (HazardStatus.candidate.value, HazardStatus.active.value, HazardStatus.resolved.value)
+
+
+@router.get("/review-queue", response_model=ReviewClusterListOut, summary="Get the validation queue grouped by cluster",
+            responses=errors(err(422, "invalid_sort", "Unknown sort 'foo'.", allowed=list(_REVIEW_SORTS))))
+async def review_queue(
+    type:    Optional[str] = Query(None, description="Detection type.", examples=["pothole"]),
+    subtype: Optional[str] = Query(None, description="Detection subtype."),
+    job_id:  Optional[str] = Query(None, description="Only clusters with an unreviewed detection of this job."),
+    search:  Optional[str] = Query(None, description="Text in the cluster code or its place."),
+    sort:    str = Query("-pending_count", description="`-pending_count`, `-last_detected_at`, `-max_confidence`, "
+                                                       "`code` (`-` = descending)."),
+    skip:    int = Query(0, ge=0, description="Number of clusters to skip."),
+    limit:   int = Query(20, ge=1, le=100, description="Page size (max 100)."),
+    members: int = Query(12, ge=1, le=100, description="Unreviewed detections returned per cluster."),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    **Validation screen** — review by cluster, not by duplicate (docs/CLUSTERS.md). Every located
+    detection joins a cluster when it is created; this lists the clusters that have detections
+    awaiting a decision: candidate clusters (`status=candidate`, code `CL-…`: validated by nobody yet,
+    NOT hazards — they appear nowhere else) and confirmed hazards that received unreviewed
+    detections (only when `hazard_lifecycle` auto-validation of re-sightings is off for the type, or
+    after a reopen). Decide a whole cluster with `POST /hazards/{id}/accept` / `reject`, or each
+    detection individually (`GET /detections/queue?hazard_id=…`). `unclustered` counts unreviewed
+    detections without a position (they join a cluster once their position is fixed).
+    """
+    from app.modules.m06_hazards.routes.detections import attach_cluster_refs, _serialize
+    unreviewed = hazard_service.UNREVIEWED_STATUSES
+    member_cond = [Detection.hazard_id == Hazard.id, Detection.review_status.in_(unreviewed)]
+    if job_id:
+        member_cond.append(Detection.job_id == job_id)
+    pending_n = (select(func.count(Detection.id)).where(Detection.hazard_id == Hazard.id,
+                                                        Detection.review_status.in_(unreviewed))
+                 .correlate(Hazard).scalar_subquery())
+    q = select(Hazard).where(Hazard.status.in_(_REVIEWABLE), select(Detection.id).where(*member_cond).exists())
+    if type:    q = q.where(Hazard.type == type)
+    if subtype: q = q.where(Hazard.subtype == subtype)
+    if search:
+        s_ = search.strip()
+        q = q.where(or_(Hazard.code.ilike(f"%{s_}%"), Hazard.location_name.ilike(f"%{s_}%"),
+                        *(getattr(Hazard, c).ilike(f"%{s_}%") for c in PLACE_COLUMNS)))
+    if sort not in _REVIEW_SORTS:
+        raise api_error(422, "invalid_sort", f"Unknown sort '{sort}'.", allowed=list(_REVIEW_SORTS))
+    col = {"pending_count": pending_n, "last_detected_at": Hazard.last_detected_at,
+           "max_confidence": Hazard.max_confidence, "code": Hazard.number}[sort.lstrip("-")]
+    order = col.desc().nullslast() if sort.startswith("-") else col.asc().nullsfirst()
+
+    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar() or 0
+    candidates = (await db.execute(select(func.count()).select_from(
+        q.where(Hazard.status == HazardStatus.candidate.value).subquery()))).scalar() or 0
+    uq = select(func.count(Detection.id)).where(Detection.hazard_id.is_(None), Detection.review_status.in_(unreviewed))
+    if type:    uq = uq.where(Detection.type == type)
+    if subtype: uq = uq.where(Detection.subtype == subtype)
+    if job_id:  uq = uq.where(Detection.job_id == job_id)
+    unclustered = (await db.execute(uq)).scalar() or 0
+
+    rows = (await db.execute(q.order_by(order, Hazard.created_at).offset(skip).limit(limit))).scalars().all()
+    outs = await _with_covers(db, [HazardOut.model_validate(h) for h in rows])
+    items = []
+    for h, out in zip(rows, outs):
+        dets = (await db.execute(select(Detection).where(
+            Detection.hazard_id == h.id, Detection.review_status.in_(unreviewed))
+            .order_by(Detection.confidence.desc(), Detection.id).limit(members))).scalars().all()
+        det_items = await _serialize(db, list(dets), QueueItemOut)
+        await attach_cluster_refs(db, list(dets), det_items)
+        items.append(ReviewClusterOut(hazard=out, detections=det_items))
+    return ReviewClusterListOut(total=total, candidates=candidates, unclustered=unclustered, items=items)
+
+
+E_NOTHING = err(409, "nothing_to_review", "This cluster has no detection awaiting a decision.")
+E_CLUSTER_STATE = err(409, "invalid_transition", "This cluster was dismissed.")
+
+
+async def _cluster_for_review(db: AsyncSession, hazard_id: str, request: Request, principal: Principal,
+                              action: str) -> Hazard:
+    hazard = await _get(db, hazard_id, candidates=True)
+    if hazard.status not in _REVIEWABLE:
+        await audit.record_now(request, f"hazard.{action}", principal=principal, outcome="failure",
+                               object_type="hazard", object_id=hazard.id, details={"status": hazard.status})
+        raise api_error(409, "invalid_transition", f"This cluster is {hazard.status}.", status=hazard.status)
+    return hazard
+
+
+async def _decision_out(db: AsyncSession, hazard_id: str, previous_code: str, **counts) -> ClusterDecisionOut:
+    await db.commit()
+    from app.modules.m06_hazards.training_data import sync as training_sync
+    training_sync.kick()
+    hazard = await db.get(Hazard, hazard_id)
+    if hazard is not None:
+        await db.refresh(hazard)
+    public = hazard is not None and hazard.status in PUBLIC_STATUSES
+    return ClusterDecisionOut(
+        hazard_id=hazard_id, hazard_code=hazard.code if hazard is not None else previous_code,
+        previous_code=previous_code, hazard_status=hazard.status if hazard is not None else "deleted",
+        hazard=await _detail(db, hazard) if public else None, **counts)
+
+
+@router.post("/{hazard_id}/accept", response_model=ClusterDecisionOut, summary="Accept a whole cluster",
+             responses=errors(E_NOT_FOUND, E_NOTHING, E_CLUSTER_STATE))
+async def accept_cluster(hazard_id: HazardId, body: ClusterAcceptIn, request: Request,
+                         db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """
+    **Validation screen** — accept every detection of the cluster that awaits a decision with a
+    confirmed position (`pending` → `validated`, or `corrected` after a manual position fix), each
+    through the normal workflow (history row, `detection.accept` audit, training sample). The first
+    acceptance confirms a candidate: it becomes a hazard with a new `HZ-…` code (`confirmed` timeline
+    event) and appears on the hazard screens; the members left (approximate positions) are then
+    auto-validated as re-sightings when the type's policy allows it. Corrections (class, box,
+    position) stay per detection. Audited as `hazard.accept_cluster`.
+    """
+    actor = wf.user_actor(principal, request)
+    hazard = await _cluster_for_review(db, hazard_id, request, principal, "accept_cluster")
+    previous_code = hazard.code
+    members = await hazard_service.members_of(db, hazard.id)
+    pending = sorted((m for m in members if m.review_status == ReviewStatus.pending),
+                     key=lambda m: -(m.confidence or 0))
+    waiting = [m for m in members if m.review_status == ReviewStatus.location_pending]
+    if not pending:
+        raise api_error(409, "nothing_to_review",
+                        "This cluster has no detection awaiting a decision with a confirmed position."
+                        if waiting else "This cluster has no detection awaiting a decision.",
+                        location_pending=len(waiting))
+    for m in pending:
+        await wf.accept(db, m, actor, label=body.label, severity_score=body.severity_score, note=body.note,
+                        resight_others=False)
+    hazard = await db.get(Hazard, hazard_id)
+    auto = await hazard_service.resight_unreviewed(db, hazard) if hazard is not None else 0
+    skipped = len(waiting) - auto
+    audit.record(db, request, "hazard.accept_cluster", principal=principal, actor_label=actor.name,
+                 object_type="hazard", object_id=hazard_id,
+                 details={"code": hazard.code if hazard else previous_code, "previous_code": previous_code,
+                          "accepted": len(pending), "auto_validated": auto, "skipped": skipped, "note": body.note})
+    return await _decision_out(db, hazard_id, previous_code, accepted=len(pending), auto_validated=auto,
+                               skipped=skipped)
+
+
+@router.post("/{hazard_id}/reject", response_model=ClusterDecisionOut, summary="Reject a whole cluster",
+             responses=errors(E_NOT_FOUND, E_NOTHING, E_CLUSTER_STATE,
+                              err(422, "invalid_reason", "Unknown rejection reason 'blurry' for pothole.")))
+async def reject_cluster(hazard_id: HazardId, body: ClusterRejectIn, request: Request,
+                         db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """
+    **Validation screen** — reject every detection of the cluster that awaits a decision (`pending`
+    or `location_pending` → `rejected`, `rejection_source=human`) with the same reason (catalogue of
+    the type or `all`; its kind — false positive / real but redundant / unusable — decides what the
+    training data learns), each through the normal workflow (history, `detection.reject` audit,
+    training sample). Rejected detections leave the cluster: a candidate left empty is deleted
+    (`hazard_status=deleted`); a confirmed hazard keeps its accepted members. Audited as
+    `hazard.reject_cluster`.
+    """
+    actor = wf.user_actor(principal, request)
+    hazard = await _cluster_for_review(db, hazard_id, request, principal, "reject_cluster")
+    previous_code = hazard.code
+    if await wf.find_reason(db, hazard.type, body.reason_code) is None:
+        raise api_error(422, "invalid_reason", f"Unknown rejection reason '{body.reason_code}' for {hazard.type}.")
+    members = [m for m in await hazard_service.members_of(db, hazard.id)
+               if m.review_status in hazard_service.UNREVIEWED_STATUSES]
+    if not members:
+        raise api_error(409, "nothing_to_review", "This cluster has no detection awaiting a decision.")
+    htype = hazard.type
+    for m in members:
+        await wf.reject(db, m, actor, reason_code=body.reason_code, note=body.note)
+    audit.record(db, request, "hazard.reject_cluster", principal=principal, actor_label=actor.name,
+                 object_type="hazard", object_id=hazard_id,
+                 details={"code": previous_code, "type": htype, "rejected": len(members),
+                          "reason_code": body.reason_code, "note": body.note})
+    return await _decision_out(db, hazard_id, previous_code, rejected=len(members))
 
 
 @router.get("/{hazard_id}", response_model=HazardDetailOut, summary="Get a hazard", responses=errors(E_NOT_FOUND))
@@ -418,7 +672,7 @@ async def vote_hazard(hazard_id: HazardId, body: HazardVoteIn, request: Request,
     if principal.user is None:
         raise api_error(401, "not_authenticated", "Please sign in to vote.")
     hazard = await db.get(Hazard, hazard_id, with_for_update=True)
-    if hazard is None:
+    if hazard is None or hazard.status not in PUBLIC_STATUSES:
         raise HTTPException(404, "Hazard not found")
     cfg = await lifecycle.load_settings(db)
     result = await hazard_votes.cast_vote(db, hazard, body.vote, body.latitude, body.longitude, cfg,

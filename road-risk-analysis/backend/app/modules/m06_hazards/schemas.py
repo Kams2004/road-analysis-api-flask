@@ -134,7 +134,12 @@ class DetectionOut(BaseModel):
                                                                  "this hazard type/subtype (`low`, `normal`, "
                                                                  "`high`), from `hazard_lifecycle` policies.",
                                                examples=["high"])
-    hazard_code:       Optional[str]   = Field(None, description="Code of that hazard.", examples=["HZ-000012"])
+    hazard_code:       Optional[str]   = Field(None, description="Code of that hazard — only once it is a confirmed "
+                                                         "hazard (`null` while its cluster is a candidate).",
+                                       examples=["HZ-000012"])
+    hazard_status:     Optional[str]   = Field(None, description="Status of its cluster: `candidate` (not validated "
+                                                         "yet, validation screen only), `active`, `resolved` or "
+                                                         "`dismissed`.", examples=["active"])
 
     class Config:
         from_attributes = True
@@ -399,16 +404,19 @@ class DetectionReviewOut(BaseModel):
 
 
 class HazardRefOut(BaseModel):
-    """What a queued detection would join (or None = new hazard)."""
-    hazard_id:       str = Field(description="Hazard id.")
-    hazard_code:     str = Field(description="Hazard code.", examples=["HZ-000012"])
-    detection_count: int = Field(description="Detections already in the hazard.", examples=[3])
+    """The cluster a queued detection belongs to."""
+    hazard_id:       str = Field(description="Cluster / hazard id.")
+    hazard_code:     str = Field(description="`HZ-…` for a confirmed hazard, `CL-…` for a candidate cluster.",
+                                 examples=["HZ-000012"])
+    detection_count: int = Field(description="Non-rejected detections in the cluster.", examples=[3])
+    status:          str = Field("active", description="`candidate`, `active`, `resolved` or `dismissed`.")
+    confirmed:       bool = Field(True, description="It is a hazard (validated by someone, or by the AI rule).")
 
 
 class QueueItemOut(DetectionOut):
     """A detection of the validation queue."""
-    cluster: Optional[HazardRefOut] = Field(None, description="Active hazard it would join if accepted now; `null` = "
-                                                              "it would open a new hazard (or position unknown).")
+    cluster: Optional[HazardRefOut] = Field(None, description="The cluster it belongs to (cluster-first: attached at "
+                                                              "creation); `null` = no position yet.")
 
 
 class QueueListOut(BaseModel):
@@ -424,7 +432,10 @@ class HazardOut(BaseModel):
     type:              str = Field(description="Detection type.", examples=["pothole"])
     subtype:           Optional[str] = Field(description="Subtype (for types clustered per subtype, e.g. "
                                                          "traffic signs).")
-    status:            str = Field(description="`active` or `resolved`.", examples=["active"])
+    status:            str = Field(description="`active` or `resolved` (`candidate` only in the review queue).",
+                                   examples=["active"])
+    confirmed:         bool = Field(True, description="A hazard validated by someone (or by the AI rule). `false` "
+                                                      "only for candidate clusters of the review queue.")
     latitude:          float = Field(description="WGS84 latitude of the centroid.", examples=[4.0512])
     longitude:         float = Field(description="WGS84 longitude of the centroid.", examples=[9.7085])
     radius_m:          float = Field(description="Clustering radius applied, in metres.", examples=[50.0])
@@ -475,6 +486,10 @@ class HazardOut(BaseModel):
     cover_crop_url:    Optional[str] = Field(None, description="Best evidence: clean crop of the member with the "
                                                                "highest confidence (hazard list / detail).")
     cover_image_url:   Optional[str] = Field(None, description="Annotated frame of that member.")
+    member_counts:     dict[str, int] = Field(default_factory=dict, description=(
+        "Member detections per review status (`pending`, `location_pending`, `validated`, `corrected`, "
+        "`resolved`, `rejected`)."), examples=[{"validated": 3, "pending": 1}])
+    pending_count:     int = Field(0, description="Members still awaiting a decision (pending + location_pending).")
 
     class Config:
         from_attributes = True

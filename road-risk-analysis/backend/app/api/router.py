@@ -139,6 +139,10 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(hazards.router, prefix="/hazards", tags=[doc.TAG_HAZARDS], dependencies=[module_guard(
         "detections",
         overrides={
+            # Cluster review (validation screen) — same rights as reviewing a detection.
+            ("GET",  "/hazards/review-queue"):        ("validations", VIEW),
+            ("POST", "/hazards/{hazard_id}/accept"):  ("validations", EDIT),
+            ("POST", "/hazards/{hazard_id}/reject"):  ("validations", EDIT),
             ("POST", "/hazards/{hazard_id}/resolve"): ("detections", EDIT),
             ("POST", "/hazards/{hazard_id}/reopen"):  ("detections", EDIT),
             ("POST", "/hazards/{hazard_id}/votes"):   ("detections", EDIT),

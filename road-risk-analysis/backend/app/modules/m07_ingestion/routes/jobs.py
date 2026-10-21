@@ -25,7 +25,7 @@ from app.modules.m07_ingestion.schemas.jobs import (
     JobCapacityOut, JobDetailOut, JobEventOut, JobListOut, JobOut, JobSummaryOut,
 )
 from app.core import audit
-from app.modules.m07_ingestion import job_service
+from app.modules.m07_ingestion import fingerprint, job_service
 from app.core.settings_service import get_section
 
 router = APIRouter()
@@ -69,7 +69,10 @@ async def _refuse(request: Request, principal: Principal, action: str, job: Job,
                  legacy(400, "Unsupported file type: .txt", summary="unsupported file extension"),
                  legacy(400, "Unknown model(s): ['cars']. Valid options: ['pothole', 'signs', 'speedbump', 'vehicles']",
                         summary="unknown model"),
-                 legacy(400, "models parameter is empty.", summary="empty model list")))
+                 legacy(400, "models parameter is empty.", summary="empty model list"),
+                 err(409, "duplicate_video", "This video was already processed (job 7d0c5b9e…).",
+                     job_id="7d0c5b9e-2f1a-4c3d-8e6b-1a2b3c4d5e6f", job_status="done", filename="drive_0412.mp4",
+                     processed_at="2026-10-20T16:44:23", fingerprint="sha256:9f2c…")))
 async def submit_job(
     request: Request,
     file: UploadFile = File(..., description=(
@@ -87,6 +90,8 @@ async def submit_job(
     ),
     frame_skip: Optional[int] = Query(None, ge=1, le=60,
                                       description="Process one frame out of N (overrides the default sampling)."),
+    force: bool = Query(False, description="Process the file even when the same content (SHA-256) was already "
+                                           "processed or is queued (`409 duplicate_video` otherwise)."),
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
@@ -97,6 +102,11 @@ async def submit_job(
 
     `models` and `frame_skip` are **query** parameters. If the processing queue is unreachable the job
     is created directly in status `failed` (see `error`) and can be retried. Audited as `job.create`.
+
+    The content is fingerprinted (SHA-256) while it is received: when a job with the same content is
+    done, queued or processing, the upload is discarded and the answer is `409 duplicate_video` with
+    that job (`job_id`, `job_status`, `filename`, `processed_at`) — send it again with `force=true`
+    to process it anyway (detections then join the existing clusters: no duplicate hazards).
     """
     ext = Path(file.filename or "").suffix.lower()
     if ext not in IMAGE_EXTS | VIDEO_EXTS:
@@ -107,18 +117,31 @@ async def submit_job(
         raise HTTPException(400, str(exc))
 
     tmp_path = TEMP_DIR / f"{uuid.uuid4().hex}{ext}"
+    hasher = fingerprint.Hasher()
     with open(tmp_path, "wb") as fh:
         while chunk := await file.read(1 << 20):
             fh.write(chunk)
+            hasher.update(chunk)
+    fp = hasher.fingerprint()
 
     actor = _actor(principal)
+    previous = await fingerprint.find_duplicate(db, fp)
+    if previous is not None and not force:
+        tmp_path.unlink(missing_ok=True)
+        details = fingerprint.duplicate_details(previous)
+        await audit.record_now(request, "job.create", principal=principal, outcome="failure", object_type="job",
+                               details={"code": "duplicate_video", "filename": file.filename, **details})
+        raise api_error(409, "duplicate_video",
+                        f"This video was already processed (job {previous.id}).", fingerprint=fp, **details)
     job = await job_service.new_job(
         db, filename=file.filename, source_type=SourceType.upload.value, enabled=enabled,
         source_path=str(tmp_path), submitted_by=actor, frame_skip_override=frame_skip,
         source_name=file.filename,
     )
+    job.content_fingerprint = fp
     audit.record(db, request, "job.create", principal=principal, object_type="job", object_id=job.id,
-                 details={"filename": file.filename, "models": enabled, "frame_skip": job.frame_skip})
+                 details={"filename": file.filename, "models": enabled, "frame_skip": job.frame_skip,
+                          **({"forced_duplicate_of": previous.id} if previous is not None else {})})
     await job_service.enqueue_and_commit(db, job, actor)
     await db.refresh(job)
     return job

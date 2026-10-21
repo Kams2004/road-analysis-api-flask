@@ -271,6 +271,15 @@ REJECTION_KIND_COLUMNS = [
     "ALTER TABLE training_samples ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
+# ── Hazard clusters (migrations/add_hazard_clusters.sql, docs/CLUSTERS.md) ───
+# Candidate clusters live in `hazards` (status candidate/dismissed, plain strings)
+# with number = -nextval(hazard_candidates_seq) and code CL-…; jobs get the
+# content fingerprint of their media (duplicate video detection).
+HAZARD_CLUSTER_STATEMENTS = [
+    "CREATE SEQUENCE IF NOT EXISTS hazard_candidates_seq",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS content_fingerprint VARCHAR",
+]
+
 _ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
 
 
@@ -295,7 +304,8 @@ async def run(engine: AsyncEngine) -> None:
                      + AI_VALIDATION_COLUMNS + SIGN_CLASSIFIER_COLUMNS
                      + HAZARD_LIFECYCLE_COLUMNS + HAZARD_LIFECYCLE_BACKFILL + PARKED_VEHICLE_COLUMNS
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
-                     + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS):
+                     + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS
+                     + HAZARD_CLUSTER_STATEMENTS):
             m = _ADD_COLUMN.match(stmt)
             if m and (m.group(1).lower(), m.group(2).lower()) in existing:
                 skipped += 1

@@ -81,6 +81,9 @@ The radius is the global Cluster Configuration resolved at the new
 detection's position for its type (app.modules.m06_hazards.clustering: zone →
 urban/rural profile → per-type value). Falls back to pixel-distance when
 GPS is None.
+Across jobs (the same road driven again, the same video processed twice)
+duplicates are prevented by the clusters: every stored detection that is
+not rejected joins its cluster at once (hazard_service.attach, docs/CLUSTERS.md).
 
 Job lifecycle (Module 7, app.modules.m07_ingestion.job_service):
   - frame sampling: zero-based frame_index % step == 0, step = job.frame_skip
@@ -572,7 +575,10 @@ async def _store_detection(db, ctx: _JobContext, det_id: str, model_key: str, de
     wf.record_creation(db, det, action, details, audited=decision.audit_sample)
     if status in (ReviewStatus.validated.value, ReviewStatus.corrected.value, ReviewStatus.rejected.value):
         await training_data.record_decision(db, det, job=job, actor_type="system")
-    if status in (ReviewStatus.validated.value, ReviewStatus.corrected.value):
+    if status != ReviewStatus.rejected.value:
+        # Cluster-first (docs/CLUSTERS.md): every located detection joins its cluster now —
+        # an accepted one confirms it; an unreviewed one joining a confirmed hazard is a
+        # re-sighting (auto-validated), else it waits in a candidate cluster for review.
         await db.flush()
         await hazard_service.attach(db, det, ctx.clusters)
     return det
