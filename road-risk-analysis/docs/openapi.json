@@ -32195,6 +32195,51 @@
               "ocr"
             ]
           },
+          "object_latitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Latitude",
+            "description": "Estimated latitude of the detected OBJECT (`latitude` / `longitude` are the recording vehicle's GPS fix): vehicle fix + range along the heading. `null` = no estimate (the vehicle position is used for clustering).",
+            "examples": [
+              4.05132
+            ]
+          },
+          "object_longitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Longitude",
+            "description": "Estimated longitude of the detected object.",
+            "examples": [
+              9.70861
+            ]
+          },
+          "object_position_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Position Source",
+            "description": "`estimated` (object position computed) or `vehicle` (no estimate: heading / box / camera unknown); `null` = not computed.",
+            "examples": [
+              "estimated"
+            ]
+          },
           "country": {
             "anyOf": [
               {
@@ -33137,6 +33182,51 @@
             "description": "`ocr`, `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
             "examples": [
               "ocr"
+            ]
+          },
+          "object_latitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Latitude",
+            "description": "Estimated latitude of the detected OBJECT (`latitude` / `longitude` are the recording vehicle's GPS fix): vehicle fix + range along the heading. `null` = no estimate (the vehicle position is used for clustering).",
+            "examples": [
+              4.05132
+            ]
+          },
+          "object_longitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Longitude",
+            "description": "Estimated longitude of the detected object.",
+            "examples": [
+              9.70861
+            ]
+          },
+          "object_position_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Position Source",
+            "description": "`estimated` (object position computed) or `vehicle` (no estimate: heading / box / camera unknown); `null` = not computed.",
+            "examples": [
+              "estimated"
             ]
           },
           "country": {
@@ -40047,6 +40137,51 @@
             "description": "`ocr`, `interpolated`, `map_pin`, `trajectory`, `ocr_text` or `none`.",
             "examples": [
               "ocr"
+            ]
+          },
+          "object_latitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Latitude",
+            "description": "Estimated latitude of the detected OBJECT (`latitude` / `longitude` are the recording vehicle's GPS fix): vehicle fix + range along the heading. `null` = no estimate (the vehicle position is used for clustering).",
+            "examples": [
+              4.05132
+            ]
+          },
+          "object_longitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Longitude",
+            "description": "Estimated longitude of the detected object.",
+            "examples": [
+              9.70861
+            ]
+          },
+          "object_position_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Position Source",
+            "description": "`estimated` (object position computed) or `vehicle` (no estimate: heading / box / camera unknown); `null` = not computed.",
+            "examples": [
+              "estimated"
             ]
           },
           "country": {

@@ -84,6 +84,17 @@ GPS is None.
 Across jobs (the same road driven again, the same video processed twice)
 duplicates are prevented by the clusters: every stored detection that is
 not rejected joins its cluster at once (hazard_service.attach, docs/CLUSTERS.md).
+Repeated observations: a finished track whose best sighting is the same
+observation as an already stored detection — same type (subtype for signs),
+same camera (OSD vehicle id), same recording instant (OSD time ± 1 s, else the
+same OSD GPS reading) and same frame region, whatever the job / file
+(app.modules.m06_hazards.observations; e.g. a clip cut from a video already
+processed) — is not stored: counted as `duplicates_skipped` in the job stats.
+Object position: every stored detection gets an estimated ground position of
+the object (object_latitude / object_longitude, app.modules.m06_hazards.object_position:
+vehicle fix + flat-road range along the heading of the ego GPS track, parked-
+vehicle camera calibration) — the clustering uses it; latitude / longitude
+stay the vehicle's fix.
 
 Job lifecycle (Module 7, app.modules.m07_ingestion.job_service):
   - frame sampling: zero-based frame_index % step == 0, step = job.frame_skip
@@ -102,6 +113,7 @@ from bisect import bisect_left
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
@@ -114,7 +126,7 @@ from app.modules.m07_ingestion.models.job import Job, JobStatus
 from app.modules.m06_hazards.models.detection import Detection, ReviewStatus
 from app.modules.m07_ingestion.models.job_track_point import JobTrackPoint
 from app.modules.m05_ai_detection import ai_validation, model_registry, static_check
-from app.modules.m06_hazards import detection_workflow as wf, hazard_service, training_data
+from app.modules.m06_hazards import detection_workflow as wf, hazard_service, object_position, observations, training_data
 from app.modules.m07_ingestion import job_service
 from app.modules.m06_hazards.clustering.zones import haversine_m
 from app.modules.m05_ai_detection.sign_taxonomy import TRAFFIC_LIGHT, UNKNOWN_SIGN, is_negative
@@ -469,6 +481,14 @@ class _JobContext:
             self.osd_times.append((t, osd.timestamp))
         self.ego.add(t, osd.latitude, osd.longitude, osd.speed_kmh, osd.gps_interpolated)
 
+    def heading_at(self, frame_num: int) -> Optional[float]:
+        """Ego heading (° from north) at a frame from the OCR GPS fixes around it."""
+        t = self.video_time(frame_num)
+        t = float(frame_num) if t is None else t
+        w = object_position.HEADING_WINDOW_S
+        return object_position.heading_from_fixes(
+            [(s.t_s, s.lat, s.lon) for s in self.ego.window(t - w, t + w, pad=0.0)], t)
+
     def recorded_at(self, frame_num: int, osd: OSDData) -> Optional[datetime]:
         """Recording time of a frame (see module docstring), timezone-aware."""
         when = osd.timestamp
@@ -555,6 +575,15 @@ async def _store_detection(db, ctx: _JobContext, det_id: str, model_key: str, de
         geocoded_at=datetime.utcnow() if has_address(geo) else None,
         review_status=ReviewStatus(status),
     )
+    if frame is not None:
+        h, w = frame.shape[:2]
+        aid = ai_details or {}
+        vclass = aid.get("vehicle_class")
+        object_position.apply(det, object_position.estimate(
+            det_type, (x1, y1, x2, y2), w, h, osd.latitude, osd.longitude, ctx.heading_at(frame_num),
+            ctx.pv.camera_for(osd.vehicle_id),
+            vehicle_height_m=ctx.pv.class_heights_m.get(vclass) if vclass else None,
+            target=aid.get("target_position")))
     if action != "create":
         det.reviewed_by, det.reviewed_at = "system", datetime.utcnow()
     if rejection_code:
@@ -599,6 +628,7 @@ class _Stats:
 
     def __init__(self):
         self.count, self.conf_sum, self.by_model = 0, 0.0, {}
+        self.duplicates_skipped = 0                      # repeated observations not stored
         self.vehicle_verdicts: dict[str, int] = {}     # parked-vehicle tracks per verdict (stored or not)
         self.vehicle_masked = 0                         # vehicle boxes ignored by the masks
 
@@ -606,10 +636,11 @@ class _Stats:
         self.vehicle_verdicts[verdict] = self.vehicle_verdicts.get(verdict, 0) + 1
 
     def event_details(self) -> dict:
-        """Extra job-event details (parked vehicles), empty when the model did not run."""
-        if not self.vehicle_verdicts and not self.vehicle_masked:
-            return {}
-        return {"vehicle_verdicts": dict(self.vehicle_verdicts), "vehicle_boxes_masked": self.vehicle_masked}
+        """Extra job-event details: repeated observations skipped, parked vehicles (when the model ran)."""
+        out: dict = {"duplicates_skipped": self.duplicates_skipped} if self.duplicates_skipped else {}
+        if self.vehicle_verdicts or self.vehicle_masked:
+            out.update(vehicle_verdicts=dict(self.vehicle_verdicts), vehicle_boxes_masked=self.vehicle_masked)
+        return out
 
     def add(self, model_key: str, conf: float) -> None:
         self.count += 1
@@ -754,6 +785,25 @@ class _Best:
         self.frame, self.frame_num, self.box, self.conf, self.osd = frame, frame_num, box, conf, osd
 
 
+async def _repeated_observation(db, ctx: _JobContext, det_type: str, subtype, box, frame: np.ndarray,
+                                frame_num: int, osd: OSDData, stats: "_Stats") -> bool:
+    """True (and counted) when the track repeats an observation already stored —
+    the same footage processed before under another job / file (module docstring)."""
+    h, w = frame.shape[:2]
+    obs = SimpleNamespace(id=None, type=det_type, subtype=subtype, predicted_type=det_type,
+                          predicted_subtype=subtype, vehicle_id=osd.vehicle_id,
+                          recorded_at=ctx.recorded_at(frame_num, osd), raw_gps_text=osd.raw_gps_text,
+                          bbox_x1=box[0], bbox_y1=box[1], bbox_x2=box[2], bbox_y2=box[3],
+                          frame_width=w, frame_height=h)
+    existing = await observations.find_existing(db, obs, ctx.clusters.distinct_subtype_types)
+    if existing is None:
+        return False
+    stats.duplicates_skipped += 1
+    logger.info(f"[Job {ctx.job.id}] {det_type} @ frame={frame_num}: same observation as detection "
+                f"{existing.id} (job {existing.job_id}) — not stored")
+    return True
+
+
 def _sign_stage(ctx: _JobContext, label: str, frame: np.ndarray, box) -> dict:
     """Subtype / classifier outputs of a finished sign track (see module docstring)."""
     if label == TRAFFIC_LIGHT:
@@ -791,6 +841,8 @@ async def _finalize(db, ctx: _JobContext, key: str, track: static_check.Track, g
         out["verifier_score"] = _verify("pothole", frame, x1, y1, x2, y2)
     elif key == "signs":
         out = _sign_stage(ctx, track.label, frame, best.box)
+    if await _repeated_observation(db, ctx, det_type, out["subtype"], best.box, frame, frame_num, osd, stats):
+        return
     ai = ctx.ai
     blockers = static_check.assess(det_type, track, frame.shape[0], min_frames=ai.min_frames_for_auto_accept,
                                    max_drift_m=ai.max_static_drift_m, video=video,
@@ -896,6 +948,8 @@ async def _finalize_vehicle(db, ctx: _JobContext, track: static_check.Track, geo
                              _dedup_radius(ctx, osd.latitude, osd.longitude, pv.DETECTION_TYPE)):
             return
     elif _is_pixel_duplicate([x1, y1, x2, y2], px_seen[key], settings.DEDUP_DISTANCE_PX):
+        return
+    if await _repeated_observation(db, ctx, pv.DETECTION_TYPE, ev.subtype, best.box, frame, frame_num, osd, stats):
         return
     _det_type, colour, tag = _DETECTORS[key]
     annotated = frame.copy()

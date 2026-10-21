@@ -246,17 +246,20 @@ async def resolution_evidence_at(db: AsyncSession, hazard: Hazard) -> Optional[d
 async def latest_resolved_near(db: AsyncSession, det: Detection, ctx) -> Optional[Hazard]:
     """The most recently resolved hazard `det` would have joined."""
     from app.modules.m06_hazards import hazard_service
-    if det.latitude is None or det.longitude is None:
+    from app.modules.m06_hazards.object_position import position
+    pos = position(det)                   # estimated object position, else the vehicle's
+    if pos is None:
         return None
-    radius = ctx.radius_for(det.latitude, det.longitude, det.type)
-    dlat, dlon = hazard_service._bbox(det.latitude, det.longitude, radius)
+    lat, lon = pos
+    radius = ctx.radius_for(lat, lon, det.type)
+    dlat, dlon = hazard_service._bbox(lat, lon, radius)
     rows = (await db.execute(select(Hazard).where(
         Hazard.status == HazardStatus.resolved.value, Hazard.type == det.type,
-        Hazard.latitude.between(det.latitude - dlat, det.latitude + dlat),
-        Hazard.longitude.between(det.longitude - dlon, det.longitude + dlon),
+        Hazard.latitude.between(lat - dlat, lat + dlat),
+        Hazard.longitude.between(lon - dlon, lon + dlon),
     ).order_by(Hazard.resolved_at.desc().nullslast()))).scalars().all()
     for h in rows:   # newest resolution first
-        if hazard_service.pick_hazard([h], det.latitude, det.longitude, det.type, det.subtype,
+        if hazard_service.pick_hazard([h], lat, lon, det.type, det.subtype,
                                       radius, ctx.distinct_subtype_types) is not None:
             return h
     return None

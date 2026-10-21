@@ -14,7 +14,14 @@ approximate GPS) belongs to a cluster from its creation:
   3. attach and recompute the aggregates, or open a new cluster: a `candidate`
      (code CL-…, never shown outside the validation screen) when the detection
      is unreviewed, a confirmed hazard (`active`, code HZ-…) when it is
-     already accepted (AI auto-accept).
+     already accepted (AI auto-accept);
+  4. merge: the cluster's centre moved — any other open cluster of the same
+     type (and subtype rule) whose centre is within the larger of the two
+     radii is merged into it (`merge_nearby`: confirmed before candidate, then
+     the oldest is kept with its code; `merged` event).
+Distances use the estimated OBJECT position of a detection when there is one
+(object_latitude / object_longitude, app.modules.m06_hazards.object_position),
+else the vehicle position (latitude / longitude, the OSD GPS fix).
 A candidate becomes a hazard (`confirm`: HZ code, `confirmed` event) when
 one of its detections is accepted. A detection joining a CONFIRMED hazard is
 a re-sighting, auto-validated by the system (policy auto_confirm_resightings).
@@ -46,6 +53,7 @@ from app.modules.m06_hazards.clustering import service as clustering_service
 from app.modules.m06_hazards.clustering.resolver import Resolution, Snapshot, resolve as resolve_radius
 from app.core.settings_service import ValidationSettings, get_section
 from app.core.spatial import _haversine_m
+from app.modules.m06_hazards.object_position import position
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +131,9 @@ def aggregate(members: Sequence) -> dict:
     times = [m.captured_at or m.created_at for m in members if (m.captured_at or m.created_at)]
     located = [m for m in members if getattr(m, "location_status", None) == LocationStatus.confirmed.value] \
         or list(members)
-    lat = sum(m.latitude for m in located) / len(located)
-    lon = sum(m.longitude for m in located) / len(located)
+    points = [position(m) for m in located]
+    lat = sum(p[0] for p in points) / len(points)
+    lon = sum(p[1] for p in points) / len(points)
     named = address_member(members, lat, lon)
     out = {
         "latitude":          lat,
@@ -151,7 +160,7 @@ def address_member(members: Sequence, lat: float, lon: float):
     with a structured address (display_location / town), else the most
     central with any place name; higher confidence breaks ties."""
     def central(cands):
-        return min(cands, key=lambda m: (_haversine_m(lat, lon, m.latitude, m.longitude), -m.confidence),
+        return min(cands, key=lambda m: (_haversine_m(lat, lon, *position(m)), -m.confidence),
                    default=None)
     structured = [m for m in members if getattr(m, "display_location", None) or getattr(m, "town", None)]
     return central(structured) or central([m for m in members if m.location_name or m.city or m.country])
@@ -192,21 +201,22 @@ async def candidate_for(db: AsyncSession, det: Detection, ctx: ClusterContext,
     Python): nearest hazard of the same type (and subtype for distinct-subtype
     types) within the zone-resolved radius, among `status` (one status or a
     tuple; default the open ones — candidate or confirmed active)."""
-    if det.latitude is None or det.longitude is None:
+    pos = position(det)
+    if pos is None:
         return None
+    lat, lon = pos
     statuses = (status,) if isinstance(status, str) else tuple(status)
-    radius = ctx.radius_for(det.latitude, det.longitude, det.type)
-    dlat, dlon = _bbox(det.latitude, det.longitude, radius)
+    radius = ctx.radius_for(lat, lon, det.type)
+    dlat, dlon = _bbox(lat, lon, radius)
     q = select(Hazard).where(
         Hazard.status.in_(statuses), Hazard.type == det.type,
-        Hazard.latitude.between(det.latitude - dlat, det.latitude + dlat),
-        Hazard.longitude.between(det.longitude - dlon, det.longitude + dlon),
+        Hazard.latitude.between(lat - dlat, lat + dlat),
+        Hazard.longitude.between(lon - dlon, lon + dlon),
     )
     if exclude_id:
         q = q.where(Hazard.id != exclude_id)
     rows = (await db.execute(q)).scalars().all()
-    return pick_hazard(rows, det.latitude, det.longitude, det.type, det.subtype,
-                       radius, ctx.distinct_subtype_types)
+    return pick_hazard(rows, lat, lon, det.type, det.subtype, radius, ctx.distinct_subtype_types)
 
 
 # Dry runs (recluster-detections --dry-run) roll everything back but sequences
@@ -230,11 +240,12 @@ async def _new_cluster(db: AsyncSession, det: Detection, ctx: ClusterContext, st
     else:
         number = await _next_number(db, HAZARD_NUMBER_SEQ)
         code = hazard_code(number)
-    res = ctx.resolve(det.latitude, det.longitude, det.type)
+    lat, lon = position(det)  # type: ignore[misc]
+    res = ctx.resolve(lat, lon, det.type)
     hazard = Hazard(
         number=number, code=code, type=det.type,
         subtype=det.subtype if det.type in ctx.distinct_subtype_types else None,
-        status=status, latitude=det.latitude, longitude=det.longitude,
+        status=status, latitude=lat, longitude=lon,
         radius_m=res.radius_m, cluster_zone_id=res.zone_id, cluster_zone_name=res.zone_name,
         cluster_environment=res.environment,
     )
@@ -294,6 +305,97 @@ async def attach(db: AsyncSession, det: Detection, ctx: Optional[ClusterContext]
         await lifecycle_service.on_attached(db, hazard, det, created=created)
     elif hazard.status == HazardStatus.candidate.value:
         await lifecycle_service.on_candidate_member(db, hazard, det)
+    if status is None:
+        hazard = await merge_nearby(db, hazard, ctx, auto=auto)
+    return hazard
+
+
+# ── merging clusters ──────────────────────────────────────────────────────────
+
+MERGE_SEARCH_M = 150.0     # bounding box searched for merge partners (≥ any cluster radius)
+
+
+def keep_order(h) -> tuple:
+    """Merge target first: confirmed (active) before candidate, then oldest."""
+    return (0 if h.status == HazardStatus.active.value else 1, h.created_at, h.number if h.number > 0 else 1e12)
+
+
+def merge_pair(hazards: Sequence, radius_of, distinct_subtype_types: Sequence[str]):
+    """(keep, duplicate) of the first pair of open clusters of the same type
+    (and subtype for distinct-subtype types) whose centres are within the
+    larger of their two radii (`radius_of(h)`), in keep order; None."""
+    ordered = sorted(hazards, key=keep_order)
+    radii = {h.id: radius_of(h) for h in ordered}
+    for i, keep in enumerate(ordered):
+        for dup in ordered[i + 1:]:
+            if dup.type != keep.type:
+                continue
+            if keep.type in distinct_subtype_types and (dup.subtype or None) != (keep.subtype or None):
+                continue
+            if _haversine_m(keep.latitude, keep.longitude, dup.latitude, dup.longitude) <= \
+                    max(radii[keep.id], radii[dup.id]):
+                return keep, dup
+    return None
+
+
+async def merge(db: AsyncSession, keep: Hazard, dup: Hazard, log: Optional[list] = None) -> Hazard:
+    """Merge cluster `dup` into `keep`: members, timeline and votes move, a
+    `merged` event is recorded on `keep` (code unchanged), `dup` is deleted
+    and the aggregates recomputed."""
+    from app.core import audit
+    from app.modules.m06_hazards.lifecycle import events
+    from app.modules.m06_hazards.models.hazard_lifecycle import HazardEvent, HazardVote
+    members = (await db.execute(select(Detection).where(Detection.hazard_id == dup.id)
+                                .execution_options(populate_existing=True))).scalars().all()
+    for m in members:
+        m.hazard_id = keep.id
+    await db.execute(update(HazardEvent).where(HazardEvent.hazard_id == dup.id).values(hazard_id=keep.id))
+    await db.execute(update(HazardVote).where(HazardVote.hazard_id == dup.id).values(hazard_id=keep.id))
+    info = {"merged_id": dup.id, "merged_code": dup.code, "merged_status": dup.status, "detections": len(members),
+            "distance_m": round(_haversine_m(keep.latitude, keep.longitude, dup.latitude, dup.longitude), 1)}
+    events.record(db, keep.id, "merged", source="system", details=info)
+    audit.record_system(db, "hazard.merge", object_type="hazard", object_id=keep.id,
+                        details={"code": keep.code, **info})
+    if dup.last_seen_at and (keep.last_seen_at is None or dup.last_seen_at > keep.last_seen_at):
+        keep.last_seen_at = dup.last_seen_at
+    await db.delete(dup)
+    await db.flush()
+    await recompute(db, keep)
+    line = f"merge {info['merged_code']} ({info['merged_status']}, {len(members)} det.) → {keep.code} " \
+           f"({info['distance_m']} m)"
+    logger.info(f"[hazard] {line}")
+    if log is not None:
+        log.append(line)
+    return keep
+
+
+async def merge_nearby(db: AsyncSession, hazard: Optional[Hazard], ctx: ClusterContext, *, auto: bool = True,
+                       log: Optional[list] = None) -> Optional[Hazard]:
+    """Merge the open clusters within reach of `hazard` (its centre moved)
+    into one; returns the cluster that holds its members afterwards. A
+    candidate merged into a confirmed hazard: its unreviewed members are
+    re-sightings (`auto`)."""
+    while hazard is not None and hazard.status in OPEN_STATUSES:
+        dlat, dlon = _bbox(hazard.latitude, hazard.longitude, MERGE_SEARCH_M)
+        rows = (await db.execute(select(Hazard).where(
+            Hazard.status.in_(OPEN_STATUSES), Hazard.type == hazard.type, Hazard.id != hazard.id,
+            Hazard.latitude.between(hazard.latitude - dlat, hazard.latitude + dlat),
+            Hazard.longitude.between(hazard.longitude - dlon, hazard.longitude + dlon),
+        ))).scalars().all()
+        radius_of = lambda h: ctx.radius_for(h.latitude, h.longitude, h.type)   # noqa: E731
+        pair = None
+        for other in sorted(rows, key=lambda h: _haversine_m(hazard.latitude, hazard.longitude,
+                                                             h.latitude, h.longitude)):
+            pair = merge_pair([hazard, other], radius_of, ctx.distinct_subtype_types)
+            if pair is not None:
+                break
+        if pair is None:
+            return hazard
+        keep, dup = pair
+        was_candidate = dup.status == HazardStatus.candidate.value
+        hazard = await merge(db, keep, dup, log)
+        if auto and was_candidate and keep.status == HazardStatus.active.value:
+            await resight_unreviewed(db, keep)
     return hazard
 
 

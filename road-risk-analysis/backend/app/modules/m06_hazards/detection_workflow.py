@@ -430,7 +430,10 @@ async def fix_location(db: AsyncSession, det: Detection, actor: Actor, *, method
 
     previous = {"latitude": det.latitude, "longitude": det.longitude,
                 "location_status": det.location_status, "location_source": det.location_source}
+    old_lat, old_lon = det.latitude, det.longitude
     det.latitude, det.longitude = latitude, longitude
+    from app.modules.m06_hazards import object_position
+    object_position.on_location_fix(det, old_lat, old_lon, method)
     if speed is not None:
         det.speed_kmh = speed
     det.location_status = LocationStatus.confirmed.value

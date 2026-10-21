@@ -1,7 +1,7 @@
 import uuid
 import enum
 from datetime import datetime
-from sqlalchemy import String, Float, DateTime, Integer, Boolean, ForeignKey, JSON, Enum as SAEnum
+from sqlalchemy import Index, String, Float, DateTime, Integer, Boolean, ForeignKey, JSON, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.db.session import Base
 from app.modules.m06_hazards.models import hazard as _hazard  # noqa: F401 — registers the hazard_id FK target
@@ -43,6 +43,8 @@ MANUAL_LOCATION_SOURCES = (LocationSource.map_pin.value, LocationSource.trajecto
 
 class Detection(Base):
     __tablename__ = "detections"
+    # observation identity lookups (app.modules.m06_hazards.observations): type + recording instant
+    __table_args__ = (Index("ix_detections_type_recorded_at", "type", "recorded_at"),)
 
     id:           Mapped[str]   = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     job_id:       Mapped[str]   = mapped_column(String, ForeignKey("jobs.id"))
@@ -61,6 +63,13 @@ class Detection(Base):
     latitude:      Mapped[float | None]    = mapped_column(Float, nullable=True)
     longitude:     Mapped[float | None]    = mapped_column(Float, nullable=True)
     gps_interpolated: Mapped[bool]         = mapped_column(Boolean, default=False)  # True = from voter window
+    # Estimated ground position of the OBJECT (latitude/longitude above = the
+    # recording vehicle, kept as evidence): vehicle fix + range along the GPS
+    # heading (app.modules.m06_hazards.object_position). Clustering uses it when set.
+    # source: estimated | vehicle (no estimate → the vehicle position is used) | NULL (not computed).
+    object_latitude:  Mapped[float | None] = mapped_column(Float, nullable=True)
+    object_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    object_position_source: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Other OSD fields
     speed_kmh:     Mapped[float | None]    = mapped_column(Float, nullable=True)

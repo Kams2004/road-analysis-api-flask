@@ -289,7 +289,9 @@ def _within(det, hazard: Hazard, radius_m: float, distinct_subtype_types) -> boo
         return False
     if hazard.type in distinct_subtype_types and (hazard.subtype or None) != (det.subtype or None):
         return False
-    return _haversine_m(det.latitude, det.longitude, hazard.latitude, hazard.longitude) <= radius_m
+    from app.modules.m06_hazards.object_position import position
+    lat, lon = position(det)  # type: ignore[misc]   # estimated object position, else the vehicle's
+    return _haversine_m(lat, lon, hazard.latitude, hazard.longitude) <= radius_m
 
 
 async def evaluate_job(db: AsyncSession, job_id: str, cfg: Optional[HazardLifecycleSettings] = None) -> dict:

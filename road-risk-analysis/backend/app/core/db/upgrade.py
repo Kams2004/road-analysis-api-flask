@@ -280,6 +280,16 @@ HAZARD_CLUSTER_STATEMENTS = [
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS content_fingerprint VARCHAR",
 ]
 
+# ── Observation identity & object position (migrations/add_object_position.sql,
+# docs/CLUSTERS.md) — estimated object ground position used by the clustering;
+# (type, recorded_at) index for the duplicate-observation lookups.
+OBJECT_POSITION_STATEMENTS = [
+    "ALTER TABLE detections ADD COLUMN IF NOT EXISTS object_latitude DOUBLE PRECISION",
+    "ALTER TABLE detections ADD COLUMN IF NOT EXISTS object_longitude DOUBLE PRECISION",
+    "ALTER TABLE detections ADD COLUMN IF NOT EXISTS object_position_source VARCHAR",
+    "CREATE INDEX IF NOT EXISTS ix_detections_type_recorded_at ON detections (type, recorded_at)",
+]
+
 _ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
 
 
@@ -305,7 +315,7 @@ async def run(engine: AsyncEngine) -> None:
                      + HAZARD_LIFECYCLE_COLUMNS + HAZARD_LIFECYCLE_BACKFILL + PARKED_VEHICLE_COLUMNS
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
                      + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS
-                     + HAZARD_CLUSTER_STATEMENTS):
+                     + HAZARD_CLUSTER_STATEMENTS + OBJECT_POSITION_STATEMENTS):
             m = _ADD_COLUMN.match(stmt)
             if m and (m.group(1).lower(), m.group(2).lower()) in existing:
                 skipped += 1

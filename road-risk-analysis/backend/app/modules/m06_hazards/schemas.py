@@ -63,6 +63,18 @@ class DetectionOut(BaseModel):
                                                                  "or `missing`.", examples=["confirmed"])
     location_source:   Optional[str]   = Field(None, description="`ocr`, `interpolated`, `map_pin`, `trajectory`, "
                                                                  "`ocr_text` or `none`.", examples=["ocr"])
+    object_latitude:   Optional[float] = Field(None, description="Estimated latitude of the detected OBJECT "
+                                                                 "(`latitude` / `longitude` are the recording "
+                                                                 "vehicle's GPS fix): vehicle fix + range along "
+                                                                 "the heading. `null` = no estimate (the vehicle "
+                                                                 "position is used for clustering).",
+                                               examples=[4.05132])
+    object_longitude:  Optional[float] = Field(None, description="Estimated longitude of the detected object.",
+                                               examples=[9.70861])
+    object_position_source: Optional[str] = Field(None, description="`estimated` (object position computed) or "
+                                                                    "`vehicle` (no estimate: heading / box / "
+                                                                    "camera unknown); `null` = not computed.",
+                                                  examples=["estimated"])
     country:           Optional[str]   = Field(None, description="Reverse-geocoded country.", examples=["Cameroon"])
     city:              Optional[str]   = Field(None, description="Reverse-geocoded city.", examples=["Douala"])
     road:              Optional[str] = Field(None, description="Reverse-geocoded street.", examples=["Rue Joss"])

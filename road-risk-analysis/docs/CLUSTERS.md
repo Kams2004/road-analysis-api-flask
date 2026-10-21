@@ -31,8 +31,68 @@ without members is deleted. Aggregates (centroid — from confirmed positions wh
 any —, counts, first / last seen, confidence, cover image, address, zone) cover every
 non-rejected member; `member_counts` gives them by review status.
 
+After attaching, the cluster's centre has moved: any other **open cluster** of the same type
+(same subtype rule) whose centre is within the **larger of the two radii** is **merged** into
+it (`hazard_service.merge_nearby`): confirmed (`active`) before candidate, then the oldest is
+kept with its code; members, timeline and votes move; `merged` event (+ audit
+`hazard.merge`); a candidate merged into a confirmed hazard has its unreviewed members
+auto-validated as re-sightings.
+
 The per-job geo dedup of the processor still suppresses repeats inside one video; the
 clusters handle repeats across videos.
+
+### Object position
+
+`detections.latitude / longitude` is the **recording vehicle's GPS fix** at the stored frame
+(evidence, unchanged). The same pothole seen from 60 m on one pass and from 10 m on another
+would land 50 m apart — beyond a rural radius. Every detection therefore also gets an
+**estimated ground position of the object** (`object_latitude`, `object_longitude`,
+`object_position_source`; `app/modules/m06_hazards/object_position.py`):
+
+```
+object = vehicle fix + range ahead along the heading + lateral offset
+```
+
+* **heading** — bearing of the vehicle's own OCR GPS fixes from frame time − 4 s to + 4 s
+  (≥ 3 m apart; interpolated fixes never used). Processor: the ego track of the job;
+  back-fill: `job_track_points`.
+* **range** — flat-road pinhole model (`parked_vehicle/geometry.py`): ground objects
+  (pothole, speed bump) from the box bottom below the horizon, upright objects (signs,
+  lights) from the apparent height of a ~0.75 m plate, parked vehicles from their pipeline's
+  own estimate (`ai_details.target_position`) or the class height; clamped to 1–50 m.
+* **lateral** — box centre offset from the optical axis at that range, clamped to ±15 m.
+* **camera** — the parked-vehicle calibration: settings `parked_vehicle.camera`
+  (`horizon_y` 0.45, `camera_height_m` 1.4, `vertical_fov_deg` 60, `center_offset`) with the
+  per-vehicle override `parked_vehicle.camera_profiles[<OSD vehicle id>]`. Calibrate those
+  per dashcam to improve every estimate.
+
+`object_position_source` = `estimated`, or `vehicle` when heading / box / camera is unknown
+(object columns NULL → the vehicle position is used), NULL = not computed yet. All the
+clustering distances use the object position when there is one: attach, cluster centroid
+and address, merges, reopening resolved hazards, "seen nearby" in video passes,
+`recluster-detections`. A validator's position fix keeps the estimate's offset (trajectory
+point / OCR text) or replaces it with the pin (map pin). `DetectionOut` exposes the three
+fields (optional).
+
+### Observation identity
+
+The same footage processed several times (the full video, then clips cut from it, a
+re-upload under another name …) yields the **same observation**, not new sightings. Two
+detections are the same observation (`app/modules/m06_hazards/observations.py`) when they
+have:
+
+* the same **type** (current or predicted class) — and subtype for distinct-subtype types;
+* the same **camera** — OSD vehicle id (both unknown counts as the same);
+* the same **instant** — `recorded_at` (OSD camera time) within ±1 s; when neither has one
+  (OSD time unreadable), the same OSD GPS reading (the two coordinate fields of
+  `raw_gps_text`); one with and one without a time are different;
+* the same **frame region** — normalised box IoU ≥ 0.3, or centres < 3 % of the frame apart.
+
+The job / file name plays no part. The processor looks it up for every finished track (one
+query: type + `recorded_at` ± 1 s, index `ix_detections_type_recorded_at`; without a time,
+type + same GPS text) against every stored detection, whatever its review status; a repeat
+is **not stored** (no evidence uploaded) and is counted as `duplicates_skipped` in the job's
+`done` event details.
 
 ## 2. Candidates are not hazards
 
@@ -117,6 +177,29 @@ confirmed one, else the oldest; kept code unchanged; members, events and votes m
 auto-validates re-sightings of confirmed hazards. Idempotent; short transactions, no DDL
 (safe while jobs are processing). Reports clusters by status, review queue size and
 duplicate pairs (< 30 m, same type, different clusters) before / after.
+
+Clusters are merged when their centres are within the larger of their two radii (the same
+rule as after an attach); the report includes `cluster_pairs_within_radius` (0 after a run).
+
+```
+python -m app.cli dedupe-observations --dry-run --verbose --show HZ-001054   # report only
+python -m app.cli dedupe-observations                                         # apply
+```
+
+1. adds the object-position columns / index when missing (no lock once they exist);
+2. **duplicate observations** (identity rule above, grouped transitively): per group the
+   **earliest created detection a person reviewed** is kept (its decision, history and
+   training sample stay intact), else the earliest created; the others are deleted — hazard
+   events pointing to them are re-pointed to the kept one, their validation label moves (or
+   goes), their training sample goes (its frame is re-synced, its crop removed); evidence
+   objects in MinIO are removed only when no remaining detection or training frame refers to
+   them; differing human decisions in one group are reported as conflicts;
+3. back-fills the object positions, recomputes every cluster centre;
+4. runs `recluster-detections` (merges, attachments, re-sightings).
+
+Idempotent; short transactions (the dry run is one rolled-back transaction). Reports
+detections, clusters by status, duplicate observation groups, cluster pairs within radius
+and object-position sources before / after.
 
 `python -m app.cli rebuild-hazards` still rebuilds everything from scratch (accepted
 detections → hazards, unreviewed → candidates; lifecycle history is lost).

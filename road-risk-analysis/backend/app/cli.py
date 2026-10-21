@@ -5,6 +5,7 @@ Admin command line.
     python -m app.cli create-api-client --name "VIASafe mobile"
     python -m app.cli rebuild-hazards
     python -m app.cli recluster-detections [--dry-run] [--verbose]
+    python -m app.cli dedupe-observations [--dry-run] [--verbose] [--show HZ-000001]
     python -m app.cli geocode-backfill --limit 500
 
 create-admin prompts for the password (or reads ADMIN_PASSWORD) and adds the
@@ -15,6 +16,11 @@ recluster-detections migrates existing data to cluster-first hazards
 (docs/CLUSTERS.md): merges duplicate hazards, attaches every located
 detection to its cluster, auto-validates re-sightings of confirmed hazards;
 short transactions and no DDL, so it is safe while jobs are processing.
+dedupe-observations deletes the duplicate observations already stored (the
+same footage processed several times: same camera, recording instant, type
+and frame region — app.modules.m06_hazards.observations), back-fills the
+estimated object positions, recomputes the cluster centres and runs
+recluster-detections (merges); idempotent, short transactions.
 geocode-backfill reverse-geocodes (street, quartier, town …) located
 detections that have no structured address yet, ≤ 1 Nominatim request/s.
 """
@@ -96,6 +102,95 @@ async def recluster_detections(dry_run: bool, verbose: bool) -> None:
     print("after: ", json.dumps(res["after"], sort_keys=True))
 
 
+async def _ensure_object_position_schema(db) -> None:
+    """The columns / index of the object position (upgrade.OBJECT_POSITION_STATEMENTS)
+    — only what is missing, so nothing is locked once they exist."""
+    from sqlalchemy import text
+    from app.core.db import upgrade
+    existing = {c for (c,) in (await db.execute(text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'detections'"))).all()}
+    for stmt in upgrade.OBJECT_POSITION_STATEMENTS:
+        m = upgrade._ADD_COLUMN.match(stmt)
+        if m and m.group(2).lower() in existing:
+            continue
+        await db.execute(text(stmt))
+    await db.commit()
+
+
+async def _dedupe_report(db, ctx, show: list[str]) -> dict:
+    from app.modules.m06_hazards import observations, recluster
+    from app.modules.m06_hazards.models.detection import Detection
+    from app.modules.m06_hazards.models.hazard import Hazard
+    dets = (await db.execute(select(Detection))).scalars().all()
+    by_status = dict((await db.execute(select(Hazard.status, func.count()).group_by(Hazard.status))).all())
+    out = {"detections": len(dets), "hazards": by_status,
+           "duplicate_observation_groups": len(observations.groups(dets, ctx.distinct_subtype_types)),
+           "cluster_pairs_within_radius": await recluster.cluster_pairs_within_radius(db, ctx),
+           "object_positions": {str(k): n for k, n in (await db.execute(
+               select(Detection.object_position_source, func.count())
+               .group_by(Detection.object_position_source))).all()}}
+    for code in show:
+        h = (await db.execute(select(Hazard).where(Hazard.code == code))).scalar_one_or_none()
+        if h is None:
+            out[code] = "not found"
+            continue
+        ms = (await db.execute(select(Detection).where(Detection.hazard_id == h.id))).scalars().all()
+        out[code] = {"status": h.status, "members": [
+            f"{m.id[:8]} job {m.job_id[:8]} f{m.frame_number} {m.review_status.value}" for m in ms]}
+    return out
+
+
+async def dedupe_observations(dry_run: bool, verbose: bool, show: list[str]) -> None:
+    import json
+    from sqlalchemy import text
+    from app.core.db.registry import import_all_models
+    from app.modules.m06_hazards import hazard_service, object_position, observations, recluster
+    from app.modules.m06_hazards.models.hazard import Hazard
+    from app.modules.m06_hazards.rejection_seeds import seed_rejection_reasons
+    import_all_models()                                # no init_db(): see recluster_detections
+    async with AsyncSessionLocal() as db:
+        await _ensure_object_position_schema(db)
+        await db.execute(text("CREATE SEQUENCE IF NOT EXISTS hazard_candidates_seq"))
+        await db.commit()
+        await seed_rejection_reasons(db)
+        ctx = await hazard_service.load_context(db)
+        before = await _dedupe_report(db, ctx, show)
+
+        async def commit():
+            await (db.flush() if dry_run else db.commit())
+
+        log: list[str] = []
+        res = await observations.dedupe(db, dry_run=dry_run, commit=commit, log=log)
+        pos = await object_position.backfill(db)
+        await commit()
+        from app.modules.m06_hazards.models.detection import Detection, ReviewStatus
+        with_members = select(Detection.hazard_id).where(Detection.hazard_id.isnot(None),
+                                                         Detection.review_status != ReviewStatus.rejected)
+        for hazard in (await db.execute(select(Hazard).where(Hazard.id.in_(with_members)))).scalars().all():
+            await hazard_service.recompute(db, hazard)                   # centres from the object positions
+        await commit()
+        rc = await recluster.run(db, dry_run=dry_run, keep_open=True)
+        after = await _dedupe_report(db, ctx, show)
+        if dry_run:
+            await db.rollback()
+        else:
+            await db.commit()
+            removed = observations.delete_objects(res["objects"], res["crop_keys"])
+            from app.modules.m06_hazards.training_data import sync
+            await sync.sync_dirty(db, limit=500)
+            log.append(f"{removed} evidence / training object(s) removed from MinIO")
+    if verbose:
+        for line in log + rc["log"]:
+            print("  " + line)
+    print(("DRY RUN — nothing written. " if dry_run else "") +
+          f"duplicate groups: {res['groups']}, duplicates deleted: {res['deleted']} "
+          f"(human decision conflicts: {res['conflicts']}), evidence objects exclusively theirs: "
+          f"{len(res['objects'])}; object positions: {pos}; merged clusters: {rc['merges']}, "
+          f"attached: {rc['attached']}, re-sightings auto-validated: {rc['auto_validated']}")
+    print("before:", json.dumps(before, sort_keys=True, default=str))
+    print("after: ", json.dumps(after, sort_keys=True, default=str))
+
+
 async def geocode_backfill(limit: int) -> None:
     from app.modules.m03_maps import geocoding_backfill
     await init_db()
@@ -167,6 +262,11 @@ def main() -> None:
                         help="attach detections to clusters, merge duplicate hazards (docs/CLUSTERS.md)")
     rc.add_argument("--dry-run", action="store_true")
     rc.add_argument("--verbose", action="store_true")
+    dd = sub.add_parser("dedupe-observations",
+                        help="delete duplicate observations, back-fill object positions, re-cluster")
+    dd.add_argument("--dry-run", action="store_true")
+    dd.add_argument("--verbose", action="store_true")
+    dd.add_argument("--show", action="append", default=[], help="hazard / cluster code to list the members of")
     g = sub.add_parser("geocode-backfill")
     g.add_argument("--limit", type=int, default=500)
     r = sub.add_parser("resync-training-rejections",
@@ -179,6 +279,8 @@ def main() -> None:
         asyncio.run(rebuild_hazards())
     elif args.cmd == "recluster-detections":
         asyncio.run(recluster_detections(args.dry_run, args.verbose))
+    elif args.cmd == "dedupe-observations":
+        asyncio.run(dedupe_observations(args.dry_run, args.verbose, args.show))
     elif args.cmd == "resync-training-rejections":
         asyncio.run(resync_training_rejections(args.only_unclassified))
     elif args.cmd == "geocode-backfill":
