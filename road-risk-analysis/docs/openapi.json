@@ -23476,7 +23476,7 @@
           "Rejection reasons"
         ],
         "summary": "List rejection reasons",
-        "description": "Seeded and custom rejection reasons (seeded first, then by label).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
+        "description": "Seeded and custom rejection reasons (seeded first, then by label) — the list offered when rejecting.\nThe settings page uses the paginated `GET /rejection-reasons/page`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
         "operationId": "list_reasons",
         "parameters": [
           {
@@ -23499,6 +23499,33 @@
               "title": "Detection Type"
             },
             "description": "Only the reasons for this type plus the `all` ones."
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of reasons to skip (offset).",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of reasons to skip (offset)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "description": "Maximum number of reasons.",
+              "default": 200,
+              "title": "Limit"
+            },
+            "description": "Maximum number of reasons."
           }
         ],
         "responses": {
@@ -23722,6 +23749,287 @@
           }
         ],
         "x-permission": "validations:add",
+        "x-api-key": false
+      }
+    },
+    "/rejection-reasons/types": {
+      "get": {
+        "tags": [
+          "Rejection reasons"
+        ],
+        "summary": "Count rejection reasons per type",
+        "description": "How many reasons each detection type has (the settings page shows one paginated table per type).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
+        "operationId": "count_reasons_by_type",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RejectionReasonTypeCount"
+                  },
+                  "type": "array",
+                  "title": "Response Count Reasons By Type"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks validations:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "validations",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "validations:view",
+        "x-api-key": false
+      }
+    },
+    "/rejection-reasons/page": {
+      "get": {
+        "tags": [
+          "Rejection reasons"
+        ],
+        "summary": "Rejection reasons of one type, paginated",
+        "description": "The reasons of one detection type, one page at a time, with the total for the pager.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `validations:view`",
+        "operationId": "page_reasons",
+        "parameters": [
+          {
+            "name": "detection_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Exactly this type (`all` = the reasons offered for every type).",
+              "examples": [
+                "pothole"
+              ],
+              "title": "Detection Type"
+            },
+            "description": "Exactly this type (`all` = the reasons offered for every type)."
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "false_positive",
+                    "real_redundant",
+                    "unusable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this kind.",
+              "title": "Kind"
+            },
+            "description": "Only this kind."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search in code, label and description.",
+              "title": "Q"
+            },
+            "description": "Search in code, label and description."
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of reasons to skip (offset).",
+              "default": 0,
+              "title": "Skip"
+            },
+            "description": "Number of reasons to skip (offset)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Page size.",
+              "default": 10,
+              "title": "Limit"
+            },
+            "description": "Page size."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RejectionReasonPageOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks validations:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "validations",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "validations:view",
         "x-api-key": false
       }
     },
@@ -47852,6 +48160,53 @@
         ],
         "title": "RejectionReasonOut",
         "description": "A rejection reason offered to validators."
+      },
+      "RejectionReasonPageOut": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Reasons matching the filters."
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RejectionReasonOut"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "This page, AI mistakes first, then real-but-redundant, then can't-judge; system before custom; by code."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "items"
+        ],
+        "title": "RejectionReasonPageOut",
+        "description": "One page of the rejection reasons of a detection type."
+      },
+      "RejectionReasonTypeCount": {
+        "properties": {
+          "detection_type": {
+            "type": "string",
+            "title": "Detection Type",
+            "description": "Detection type (or `all`).",
+            "examples": [
+              "pothole"
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Reasons of this type."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detection_type",
+          "total"
+        ],
+        "title": "RejectionReasonTypeCount"
       },
       "RejectionReasonUpdate": {
         "properties": {

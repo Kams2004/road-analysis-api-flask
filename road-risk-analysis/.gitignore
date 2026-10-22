@@ -52,3 +52,4 @@
 **/work/
 **/runs/
 .DS_Store
+/tools/signs_compare/out*/

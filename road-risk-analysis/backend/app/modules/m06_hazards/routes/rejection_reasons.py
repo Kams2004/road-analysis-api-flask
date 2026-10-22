@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import case, func, select, or_
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from datetime import datetime
@@ -50,21 +50,72 @@ class RejectionReasonUpdate(BaseModel):
     kind: Optional[RejectionKind] = Field(None, description=_KIND_DOC)
 
 
+class RejectionReasonPageOut(BaseModel):
+    """One page of the rejection reasons of a detection type."""
+    total: int = Field(description="Reasons matching the filters.")
+    items: list[RejectionReasonOut] = Field(description="This page, AI mistakes first, then real-but-redundant, "
+                                                        "then can't-judge; system before custom; by code.")
+
+
+class RejectionReasonTypeCount(BaseModel):
+    detection_type: str = Field(description="Detection type (or `all`).", examples=["pothole"])
+    total: int = Field(description="Reasons of this type.")
+
+
+_KIND_ORDER = case({"false_positive": 0, "real_redundant": 1, "unusable": 2}, value=RejectionReason.kind, else_=3)
+
+
 @router.get("/", response_model=list[RejectionReasonOut], summary="List rejection reasons")
 async def list_reasons(
     detection_type: Optional[str] = Query(None, description="Only the reasons for this type plus the `all` ones.",
                                           examples=["pothole"]),
+    skip: int = Query(0, ge=0, description="Number of reasons to skip (offset)."),
+    limit: int = Query(200, ge=1, le=500, description="Maximum number of reasons."),
     db: AsyncSession = Depends(get_db),
 ):
-    """Seeded and custom rejection reasons (seeded first, then by label)."""
-    q = select(RejectionReason).order_by(RejectionReason.is_custom, RejectionReason.label)
+    """Seeded and custom rejection reasons (seeded first, then by label) — the list offered when rejecting.
+    The settings page uses the paginated `GET /rejection-reasons/page`."""
+    q = select(RejectionReason).order_by(RejectionReason.is_custom, RejectionReason.label, RejectionReason.id)
     if detection_type:
         q = q.where(
             or_(RejectionReason.detection_type == detection_type,
                 RejectionReason.detection_type == "all")
         )
-    rows = (await db.execute(q)).scalars().all()
+    rows = (await db.execute(q.offset(skip).limit(limit))).scalars().all()
     return rows
+
+
+@router.get("/types", response_model=list[RejectionReasonTypeCount], summary="Count rejection reasons per type")
+async def count_reasons_by_type(db: AsyncSession = Depends(get_db)):
+    """How many reasons each detection type has (the settings page shows one paginated table per type)."""
+    rows = (await db.execute(select(RejectionReason.detection_type, func.count())
+                             .group_by(RejectionReason.detection_type)
+                             .order_by(RejectionReason.detection_type))).all()
+    return [{"detection_type": t, "total": n} for t, n in rows]
+
+
+@router.get("/page", response_model=RejectionReasonPageOut, summary="Rejection reasons of one type, paginated")
+async def page_reasons(
+    detection_type: str = Query(..., description="Exactly this type (`all` = the reasons offered for every type).",
+                                examples=["pothole"]),
+    kind: Optional[RejectionKind] = Query(None, description="Only this kind."),
+    q: Optional[str] = Query(None, max_length=100, description="Search in code, label and description."),
+    skip: int = Query(0, ge=0, description="Number of reasons to skip (offset)."),
+    limit: int = Query(10, ge=1, le=100, description="Page size."),
+    db: AsyncSession = Depends(get_db),
+):
+    """The reasons of one detection type, one page at a time, with the total for the pager."""
+    stmt = select(RejectionReason).where(RejectionReason.detection_type == detection_type)
+    if kind:
+        stmt = stmt.where(RejectionReason.kind == kind)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(or_(RejectionReason.code.ilike(like), RejectionReason.label.ilike(like),
+                              RejectionReason.description.ilike(like)))
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(stmt.order_by(_KIND_ORDER, RejectionReason.is_custom, RejectionReason.code,
+                                           RejectionReason.id).offset(skip).limit(limit))).scalars().all()
+    return {"total": total, "items": rows}
 
 
 @router.post("/", response_model=RejectionReasonOut, status_code=201, summary="Add a custom rejection reason",
