@@ -37,7 +37,7 @@ echo "▶ infra/"
   --exclude 'secrets/*_rsa' --exclude 'secrets/*_ecdsa' \
   infra/ "$SERVER:~/viasafe-v2/infra/"
 echo "▶ ai/models/"
-"${RSYNC[@]}" ai/models/ "$SERVER:~/viasafe-v2/ai/models/"
+"${RSYNC[@]}" --exclude 'incoming/' ai/models/ "$SERVER:~/viasafe-v2/ai/models/"   # incoming/ = downloaded packages
 echo "▶ docs/"
 "${RSYNC[@]}" docs/ "$SERVER:~/viasafe-v2/docs/"
 
