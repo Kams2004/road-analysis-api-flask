@@ -77,10 +77,31 @@ EOF
   exit 0
 fi
 set -a; . ./.env; set +a
+LS_PORT="${LS_PORT:-18085}"
+
+# ── Label Studio settings (box review of the training data), generated once ─
+LS_ENV=../../secrets/labelstudio.env
+if [ ! -f "$LS_ENV" ]; then
+  mkdir -p ../../secrets
+  ( umask 077; cat > "$LS_ENV" <<EOF
+# Label Studio of the web console's "Training data" page — generated $(date -Is). Keep private.
+# Read by the labelstudio container (env_file) and by the API (/app/secrets/labelstudio.env).
+LABEL_STUDIO_USERNAME=${ADMIN_EMAIL:-admin@viasafe.local}
+LABEL_STUDIO_PASSWORD=Ls-$(rand 8)
+LABEL_STUDIO_USER_TOKEN=$(rand 20)
+LABEL_STUDIO_ENABLE_LEGACY_API_TOKEN=true
+LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
+VIASAFE_LS_URL=http://labelstudio:8080
+VIASAFE_LS_PUBLIC_URL=http://${PUBLIC_HOST}:${LS_PORT}
+VIASAFE_PUBLIC_API_URL=http://${PUBLIC_HOST}:${API_PORT}
+EOF
+  )
+  echo "▶ Label Studio settings created: $(cd ../../secrets && pwd)/labelstudio.env"
+fi
 
 # ── safety checks ──────────────────────────────────────────────────────────
 running_here="$(docker ps --filter "label=com.docker.compose.project=$P" -q | wc -l)"
-for port in "$API_PORT" "$WEB_PORT" "$MEDIA_PORT"; do
+for port in "$API_PORT" "$WEB_PORT" "$MEDIA_PORT" "$LS_PORT"; do
   if ss -ltn | awk '{print $4}' | grep -Eq "[:.]${port}$"; then
     if [ "$running_here" -gt 0 ] && docker ps --filter "label=com.docker.compose.project=$P" --format '{{.Ports}}' | grep -q ":${port}->"; then
       continue   # it is our own stack (update)
@@ -88,7 +109,7 @@ for port in "$API_PORT" "$WEB_PORT" "$MEDIA_PORT"; do
     echo "✖ port ${port} is already in use on this server — choose another one in .env"; exit 1
   fi
 done
-echo "▶ ports ${API_PORT} (API), ${WEB_PORT} (web), ${MEDIA_PORT} (media) are free or ours"
+echo "▶ ports ${API_PORT} (API), ${WEB_PORT} (web), ${MEDIA_PORT} (media), ${LS_PORT} (Label Studio) are free or ours"
 
 [ "${1:-}" = "--seed-only" ] && WITH_DEMO=1
 if [ "${1:-}" != "--seed-only" ]; then
@@ -139,6 +160,7 @@ cat <<EOF
   Web console : http://${PUBLIC_HOST}:${WEB_PORT}
   API         : http://${PUBLIC_HOST}:${API_PORT}   (docs: /docs)
   Admin       : ${ADMIN_EMAIL}    password: grep ADMIN_PASSWORD .env
+  Label Studio: http://${PUBLIC_HOST}:${LS_PORT}   login: grep LABEL_STUDIO_ ../../secrets/labelstudio.env  (Training data page → Send to Label Studio)
   Status/logs : ./deploy.sh --status | --logs [api|web|worker|beat]
   Help        : ./deploy.sh --help
 EOF

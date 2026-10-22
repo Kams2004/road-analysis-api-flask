@@ -117,6 +117,19 @@ services:
       redis:
         condition: service_healthy
 
+  # Label Studio for the box review of the training data (web console → Training data →
+  # "Send to Label Studio"). Login + API token: infra/secrets/labelstudio.env (chmod 600,
+  # also read by the API). http://localhost:8086, capped at 2 CPUs / 2 GB.
+  labelstudio:
+    image: heartexlabs/label-studio:1.23.2
+    env_file: ./secrets/labelstudio.env
+    volumes:
+      - ls_data:/label-studio/data
+    ports:
+      - "127.0.0.1:8086:8080"
+    mem_limit: 2g
+    cpus: 2
+
   # Demo unit simulator — off by default (test phase); start it with
   # `docker compose ... --profile demo up -d simulator`.
   simulator:
@@ -146,3 +159,4 @@ services:
 volumes:
   demo_db_data:
   demo_minio_data:
+  ls_data:

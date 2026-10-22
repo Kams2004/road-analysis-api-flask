@@ -16,6 +16,7 @@ from app.modules.m03_maps.routes import route_sections
 from app.modules.m05_ai_detection.routes import ai_models
 from app.modules.m06_hazards.routes import detections, datasets, rejection_reasons, cluster_config
 from app.modules.m06_hazards.routes import hazards, cluster_areas, clustering
+from app.modules.m06_hazards.routes import labelstudio
 from app.modules.m07_ingestion.routes import cloud_connections, cloud_imports, streams
 from app.modules.m07_ingestion.routes import jobs
 from app.modules.m08_historical.routes import historical
@@ -154,6 +155,11 @@ def register_routes(app: FastAPI) -> None:
         client_routes={("POST", "/hazards/{hazard_id}/votes")},
     )])
     app.include_router(datasets.router, prefix="/datasets", tags=[doc.TAG_DATASETS], dependencies=[module_guard("datasets")])
+    # Box review in the server's Label Studio (Training data page); the signed frame images
+    # are public on purpose — Label Studio loads them in the annotator's browser.
+    app.include_router(labelstudio.router, prefix="/labelstudio", tags=[doc.TAG_DATASETS], dependencies=[
+        module_guard("datasets", overrides={("POST", "/labelstudio/{detection_type}/fetch"): ("datasets", EDIT)})])
+    app.include_router(labelstudio.image_router, prefix="/labelstudio", tags=[doc.TAG_DATASETS])
     # Model registry + live AI quality: settings:view or detections:view, checked
     # per endpoint (ai_models.model_reader).
     app.include_router(ai_models.router, prefix="/models", tags=[doc.TAG_AI_MODELS])

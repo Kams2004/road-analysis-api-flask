@@ -20083,6 +20083,421 @@
         "x-api-key": false
       }
     },
+    "/labelstudio/status": {
+      "get": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Label Studio connection and projects",
+        "description": "Whether the server's Label Studio is configured / reachable and, per detection type, its\nproject counters (tasks, annotated, written back).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `datasets:view`",
+        "operationId": "ls_status",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LsStatusOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks datasets:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "datasets",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "datasets:view",
+        "x-api-key": false
+      }
+    },
+    "/labelstudio/{detection_type}/send": {
+      "post": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Send the frames to review to Label Studio",
+        "description": "Creates the type's project (\"VIASafe – <type>\") if needed and one task per training frame still\n`needs_box_review` (its current boxes as pre-annotations). Re-running only adds the new frames.\nAudited as `dataset.labelstudio_send`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `datasets:add`",
+        "operationId": "ls_send",
+        "parameters": [
+          {
+            "name": "detection_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Detection type.",
+              "examples": [
+                "pothole"
+              ],
+              "title": "Detection Type"
+            },
+            "description": "Detection type."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LsSendOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks datasets:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "datasets",
+                        "action": "add"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity — `invalid_detection_type`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalid_detection_type": {
+                    "summary": "invalid_detection_type",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_detection_type",
+                        "message": "Unknown detection type 'foo'.",
+                        "allowed": [
+                          "pothole",
+                          "speed_bump",
+                          "traffic_sign",
+                          "parked_vehicle"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable — `labelstudio_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "labelstudio_unavailable": {
+                    "summary": "labelstudio_unavailable",
+                    "value": {
+                      "detail": {
+                        "code": "labelstudio_unavailable",
+                        "message": "Label Studio is not reachable at http://labelstudio:8080 (…)."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "datasets:add",
+        "x-api-key": false
+      }
+    },
+    "/labelstudio/{detection_type}/fetch": {
+      "post": {
+        "tags": [
+          "Datasets"
+        ],
+        "summary": "Write back the boxes corrected in Label Studio",
+        "description": "Every annotation submitted (or edited) in Label Studio since the last fetch replaces the boxes\nof its frame — `box_reviewed`, an empty annotation = reviewed background. Skipped tasks are\nignored. Audited as `dataset.labelstudio_fetch`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `datasets:edit`",
+        "operationId": "ls_fetch",
+        "parameters": [
+          {
+            "name": "detection_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Detection type.",
+              "examples": [
+                "pothole"
+              ],
+              "title": "Detection Type"
+            },
+            "description": "Detection type."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LsFetchOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks datasets:edit",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "datasets",
+                        "action": "edit"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity — `invalid_detection_type`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalid_detection_type": {
+                    "summary": "invalid_detection_type",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_detection_type",
+                        "message": "Unknown detection type 'foo'.",
+                        "allowed": [
+                          "pothole",
+                          "speed_bump",
+                          "traffic_sign",
+                          "parked_vehicle"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable — `labelstudio_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "labelstudio_unavailable": {
+                    "summary": "labelstudio_unavailable",
+                    "value": {
+                      "detail": {
+                        "code": "labelstudio_unavailable",
+                        "message": "Label Studio is not reachable at http://labelstudio:8080 (…)."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "datasets:edit",
+        "x-api-key": false
+      }
+    },
     "/models/": {
       "get": {
         "tags": [
@@ -43582,6 +43997,211 @@
         ],
         "title": "LoginOut",
         "description": "Result of a sign-in step.\n\n* `ok` — `token` (send as `Authorization: Bearer`), `expires_at` and `user` are set;\n* `mfa_required` — continue with `POST /auth/mfa/verify` and `challenge_token`;\n* `mfa_setup_required` — enrol with `POST /auth/mfa/setup` + `POST /auth/mfa/enable` and `challenge_token`."
+      },
+      "LsFetchOut": {
+        "properties": {
+          "detection_type": {
+            "type": "string",
+            "title": "Detection Type"
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id"
+          },
+          "applied": {
+            "type": "integer",
+            "title": "Applied",
+            "description": "Frames updated with the Label Studio boxes (now box_reviewed)."
+          },
+          "unchanged": {
+            "type": "integer",
+            "title": "Unchanged",
+            "description": "Annotations already written back."
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "description": "Skipped tasks (ignored)."
+          },
+          "missing": {
+            "type": "integer",
+            "title": "Missing",
+            "description": "Tasks whose frame left the training data."
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "description": "Annotations that could not be applied (unknown class …)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detection_type",
+          "project_id",
+          "applied",
+          "unchanged",
+          "skipped",
+          "missing",
+          "errors"
+        ],
+        "title": "LsFetchOut"
+      },
+      "LsProjectOut": {
+        "properties": {
+          "detection_type": {
+            "type": "string",
+            "title": "Detection Type",
+            "description": "Detection type.",
+            "examples": [
+              "pothole"
+            ]
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "description": "Label Studio project id."
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Project page in Label Studio (public address)."
+          },
+          "tasks": {
+            "type": "integer",
+            "title": "Tasks",
+            "description": "Tasks (frames) in the project."
+          },
+          "annotated": {
+            "type": "integer",
+            "title": "Annotated",
+            "description": "Tasks with a submitted annotation."
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "description": "Skipped annotations (not written back)."
+          },
+          "applied": {
+            "type": "integer",
+            "title": "Applied",
+            "description": "Frames whose Label Studio boxes were written back."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detection_type",
+          "project_id",
+          "url",
+          "tasks",
+          "annotated",
+          "skipped",
+          "applied"
+        ],
+        "title": "LsProjectOut"
+      },
+      "LsSendOut": {
+        "properties": {
+          "detection_type": {
+            "type": "string",
+            "title": "Detection Type"
+          },
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id"
+          },
+          "project_url": {
+            "type": "string",
+            "title": "Project Url",
+            "description": "Open this page to review."
+          },
+          "sent": {
+            "type": "integer",
+            "title": "Sent",
+            "description": "New tasks created."
+          },
+          "renewed": {
+            "type": "integer",
+            "title": "Renewed",
+            "description": "Frames reset by a later decision: their old task was replaced."
+          },
+          "already_there": {
+            "type": "integer",
+            "title": "Already There",
+            "description": "Frames already waiting in Label Studio."
+          },
+          "not_ready": {
+            "type": "integer",
+            "title": "Not Ready",
+            "description": "Frames whose image is not written yet (sent next time)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detection_type",
+          "project_id",
+          "project_url",
+          "sent",
+          "renewed",
+          "already_there",
+          "not_ready"
+        ],
+        "title": "LsSendOut"
+      },
+      "LsStatusOut": {
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "title": "Configured",
+            "description": "infra/secrets/labelstudio.env present with a token."
+          },
+          "reachable": {
+            "type": "boolean",
+            "title": "Reachable",
+            "description": "The API reached Label Studio."
+          },
+          "public_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Url",
+            "description": "Label Studio address for the browser."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Why Label Studio is not reachable."
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/LsProjectOut"
+            },
+            "type": "array",
+            "title": "Projects",
+            "description": "One project per detection type sent so far."
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured",
+          "reachable",
+          "projects"
+        ],
+        "title": "LsStatusOut"
       },
       "MapConfigOut": {
         "properties": {

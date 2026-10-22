@@ -355,10 +355,7 @@ async def put_frame_labels(
         boxes = td_export.clean_review_boxes([b.model_dump() for b in body.boxes], classes)
     except (ValueError, KeyError) as exc:
         raise api_error(422, "invalid_boxes", str(exc))
-    now = datetime.utcnow()
-    fr.reviewed_boxes, fr.review_status = boxes, "box_reviewed"
-    fr.box_reviewer = body.reviewer or actor_name(principal) or principal.label or "anonymous"
-    fr.box_reviewed_at, fr.dirty, fr.sync_attempts, fr.updated_at = now, True, 0, now
+    td_export.apply_review(fr, boxes, body.reviewer or actor_name(principal) or principal.label or "anonymous")
     audit.record(db, request, "dataset.frame_review", principal=principal, object_type="training_frame",
                  object_id=f"{det_type}/{frame_key}", details={"boxes": len(boxes)})
     await db.commit()

@@ -30,6 +30,7 @@ done
 
 echo "▶ Starting containers…"
 docker start roaddemo_db_1 roaddemo_redis_1 roaddemo_osrm_1 roaddemo_minio_1 >/dev/null
+docker start roaddemo_labelstudio_1 >/dev/null 2>&1 || true   # box review (Training data page), :8086
 docker start "$API" >/dev/null
 if [ "$DEMO" = 1 ]; then
   docker start roaddemo_simulator_1 >/dev/null 2>&1 || true

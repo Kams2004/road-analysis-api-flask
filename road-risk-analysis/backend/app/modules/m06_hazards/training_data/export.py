@@ -245,3 +245,12 @@ def clean_review_boxes(boxes: list[dict], classes: list[str]) -> list[dict]:
                     "cy": round((y1 + y2) / 2, 6), "w": round(x2 - x1, 6), "h": round(y2 - y1, 6),
                     "detection_id": None, "source": "box_review"})
     return out
+
+
+def apply_review(fr: TrainingFrame, boxes: list[dict], reviewer: str) -> None:
+    """Reviewed boxes (clean_review_boxes) replace the decisions' label of the frame
+    (box_reviewed; [] = reviewed background). The caller commits, then syncs the frame."""
+    now = datetime.utcnow()
+    fr.reviewed_boxes, fr.review_status = boxes, "box_reviewed"
+    fr.box_reviewer = reviewer
+    fr.box_reviewed_at, fr.dirty, fr.sync_attempts, fr.updated_at = now, True, 0, now

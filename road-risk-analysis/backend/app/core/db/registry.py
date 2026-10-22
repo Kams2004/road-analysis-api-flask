@@ -17,7 +17,7 @@ def import_all_models() -> None:
     from app.modules.m01_security.models import auth_token, user  # noqa: F401
     from app.modules.m06_hazards.models import (  # noqa: F401
         cluster_area, cluster_config, cluster_zone, dataset, detection, detection_review, hazard,
-        hazard_lifecycle, rejection_reason, training_sample, validation_label,
+        hazard_lifecycle, labelstudio_task, rejection_reason, training_sample, validation_label,
     )
     from app.modules.m07_ingestion.models import (  # noqa: F401
         cloud_connection, cloud_import, job, job_event, job_track_point, stream_source,
