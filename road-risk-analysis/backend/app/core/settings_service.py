@@ -191,6 +191,9 @@ class AiValidationSettings(BaseModel):
     pothole_max_width_ratio:      float = Field(0.40, gt=0, le=1)    # 1 = rule off
     pothole_max_area_ratio:       float = Field(0.12, gt=0, le=1)    # 1 = rule off
     pothole_reject_edge_touching: bool  = True
+    # Dashcam text overlay: pothole / sign / speed-bump boxes whose centre lies in a text field of
+    # the job's OSD layout (date, GPS, plate, company …) are ignored — the overlay is not a road object.
+    ignore_osd_text_boxes:        bool  = True
 
 
 _FRAME_SKIP_SOURCES = ("upload", "google_drive", "onedrive", "sftp", "stream")

@@ -140,6 +140,7 @@ from app.modules.m03_maps.osrm.client import OSRMUnavailableError, get_osrm_clie
 from app.modules.m07_ingestion.job_service import CANCEL_CHECK_EVERY, PermanentJobError
 from app.core.storage.minio_service import upload_image
 from app.modules.m05_ai_detection.osd_parser import OsdReader, reset_last, OSDData, GpsVoter
+from app.modules.m05_ai_detection.osd_layouts import FULL_FRAME as FULL_FRAME_PROFILE
 from app.modules.m05_ai_detection.osd_settings import OsdSettings, layout_for_job
 from app.modules.m03_maps.geocoding import empty_address, has_address, reverse_geocode_details
 from app.core.settings_service import (
@@ -752,6 +753,7 @@ class _Stats:
         self.duplicates_skipped = 0                      # repeated observations not stored
         self.vehicle_verdicts: dict[str, int] = {}     # parked-vehicle tracks per verdict (stored or not)
         self.vehicle_masked = 0                         # vehicle boxes ignored by the masks
+        self.osd_text_masked: dict[str, int] = {}       # pothole / sign / bump boxes on the dashcam text
 
     def verdict(self, verdict: str) -> None:
         self.vehicle_verdicts[verdict] = self.vehicle_verdicts.get(verdict, 0) + 1
@@ -759,6 +761,8 @@ class _Stats:
     def event_details(self) -> dict:
         """Extra job-event details: repeated observations skipped, parked vehicles (when the model ran)."""
         out: dict = {"duplicates_skipped": self.duplicates_skipped} if self.duplicates_skipped else {}
+        if self.osd_text_masked:
+            out.update(boxes_on_osd_text=dict(self.osd_text_masked))
         if self.vehicle_verdicts or self.vehicle_masked:
             out.update(vehicle_verdicts=dict(self.vehicle_verdicts), vehicle_boxes_masked=self.vehicle_masked)
         return out
@@ -1142,6 +1146,18 @@ async def _finalize_vehicle(db, ctx: _JobContext, track: static_check.Track, geo
                 f"lat={osd.latitude} lon={osd.longitude}")
 
 
+def _on_osd_text(ctx: "_JobContext", box, w: int, h: int) -> bool:
+    """Box centre inside a text field of the job's OSD layout (ai_validation.ignore_osd_text_boxes).
+    Before the layout is known, or with the full-frame fallback, nothing is masked."""
+    reader = ctx.osd_reader
+    profile = getattr(reader, "profile", None) if reader is not None else None
+    if not ctx.ai.ignore_osd_text_boxes or profile is None or profile.name == FULL_FRAME_PROFILE or not w or not h:
+        return False
+    x1, y1, x2, y2 = box
+    cx, cy = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
+    return any(r.box[0] <= cx <= r.box[2] and r.box[1] <= cy <= r.box[3] for r in profile.rois)
+
+
 def _observe_vehicles(ctx: _JobContext, tracker: static_check.Tracker, results, frame: np.ndarray, frame_num: int,
                       osd: OSDData, step: int, stats: _Stats) -> None:
     """Feed the vehicle boxes of a frame to the vehicle tracker (masks applied)."""
@@ -1243,8 +1259,12 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
             results = _models[key](frame, conf=settings.CONF_THRESHOLD,
                                    iou=settings.IOU_THRESHOLD, verbose=False, **_predict_kwargs(key))
             names = results[0].names
+            fh, fw = frame.shape[:2]
             for box in results[0].boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                if _on_osd_text(ctx, (x1, y1, x2, y2), fw, fh):        # the dashcam's own text, not an object
+                    stats.osd_text_masked[key] = stats.osd_text_masked.get(key, 0) + 1
+                    continue
                 conf = round(box.conf[0].item(), 4)
                 label = str(names[int(box.cls[0].item())]) if key == "signs" else key
                 sighting = static_check.Sighting(frame_num, (x1, y1, x2, y2), conf, osd.latitude, osd.longitude)
