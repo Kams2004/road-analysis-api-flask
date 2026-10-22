@@ -293,6 +293,13 @@ OBJECT_POSITION_STATEMENTS = [
 ]
 
 _ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
+# ── Driver behaviour analytics (Module 5 reads historical_events by type,
+# period, driver and vehicle — migrations/add_driver_behaviour.sql) ──────────
+DRIVER_BEHAVIOUR_STATEMENTS = [
+    "CREATE INDEX IF NOT EXISTS ix_historical_events_type_occurred ON historical_events (event_type, occurred_at)",
+    "CREATE INDEX IF NOT EXISTS ix_historical_events_driver ON historical_events (driver_external_id)",
+    "CREATE INDEX IF NOT EXISTS ix_historical_events_vehicle ON historical_events (vehicle_external_id)",
+]
 
 
 async def _existing_columns(conn) -> set[tuple[str, str]]:
@@ -317,7 +324,8 @@ async def run(engine: AsyncEngine) -> None:
                      + HAZARD_LIFECYCLE_COLUMNS + HAZARD_LIFECYCLE_BACKFILL + PARKED_VEHICLE_COLUMNS
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
                      + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS
-                     + HAZARD_CLUSTER_STATEMENTS + OBJECT_POSITION_STATEMENTS):
+                     + HAZARD_CLUSTER_STATEMENTS + OBJECT_POSITION_STATEMENTS
+                     + DRIVER_BEHAVIOUR_STATEMENTS):
             m = _ADD_COLUMN.match(stmt)
             if m and (m.group(1).lower(), m.group(2).lower()) in existing:
                 skipped += 1

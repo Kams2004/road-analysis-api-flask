@@ -58,6 +58,7 @@ TAG_STREAMS = "Streams"
 TAG_CLOUD = "Cloud connections"
 TAG_CLOUD_IMPORTS = "Cloud imports"
 TAG_HISTORICAL = "Historical risk"
+TAG_DRIVER_BEHAVIOUR = "Driver behaviour"
 TAG_VEHICLES = "Vehicles & telemetry"
 TAG_ROAD_STATE = "Road state"
 TAG_TRAJECTORY = "Trajectory"
@@ -67,6 +68,7 @@ TAG_SIGNALEMENTS = "Community reports"
 TAG_MOBILE = "Mobile configuration"
 TAG_SETTINGS = "Platform settings"
 TAG_AUDIT = "Audit trail"
+TAG_REPORTS = "Reports"
 
 
 def _review_transitions_md() -> str:
@@ -173,8 +175,14 @@ def _tags() -> list[dict[str, Any]]:
             "and `job_progress` follow the processing job. Poll `GET /imports/{batch_id}` every 1–2 s while "
             "`active`.")},
         {"name": TAG_HISTORICAL, "description": (
-            "**Module 8** — historical telematics events (speeding, harsh braking …) aggregated into zone "
-            "and route risk profiles.")},
+            "**Module 8** (functional Module 4, Historical Risk Analysis) — historical driving events "
+            "imported into stable grid cells and turned into normalised 0–1 risk scores: zone, route and "
+            "heatmap queries, top risk zones, risk trend over time, import history.")},
+        {"name": TAG_DRIVER_BEHAVIOUR, "description": (
+            "**Module 9** (functional Module 5, Driver Behaviour Analytics, RRAP-09) — speeding, harsh "
+            "braking, hard acceleration and harsh cornering events (stored in the historical event store): "
+            "KPIs per behaviour, driver / vehicle risk scores and rankings, heatmaps, time trends and "
+            "high-risk behaviour zones. Scores are event-based indicators, not accident probabilities.")},
         {"name": TAG_VEHICLES, "description": (
             "**Module 10** — vehicle/device registration and live telemetry pings (WGS84, m/s). A ping feeds "
             "the road-state → trajectory → collision → alert pipeline.")},
@@ -199,6 +207,10 @@ def _tags() -> list[dict[str, Any]]:
             "rules, AI validation mode, mobile, community, collision …). Secrets are write-only; changes are "
             "audited.")},
         {"name": TAG_AUDIT, "description": "**Module 13** — audit trail of sign-ins, administrative changes and every state-changing user call (RRAP-13-006)."},
+        {"name": TAG_REPORTS, "description": (
+            "**Module 14** — PDF reports generated server-side (AI hazards, community reports, historical "
+            "risk, driver behaviour, collision prevention) with type, period, area and path (road section "
+            "or from → to corridor) filters; generated files are kept for re-download (RRAP-13-011/012/013).")},
     ]
 
 

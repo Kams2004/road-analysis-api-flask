@@ -19,6 +19,8 @@ from app.modules.m06_hazards.routes import hazards, cluster_areas, clustering
 from app.modules.m07_ingestion.routes import cloud_connections, cloud_imports, streams
 from app.modules.m07_ingestion.routes import jobs
 from app.modules.m08_historical.routes import historical
+from app.modules.m09_driver_behaviour.routes import driver_behaviour
+from app.modules.m14_reports.routes import reports
 from app.modules.m10_collision.routes import vehicles, road_state, trajectory, collisions, alerts
 from app.modules.m11_community.routes import signalements
 from app.modules.m12_integration.routes import api_clients
@@ -214,3 +216,9 @@ def register_routes(app: FastAPI) -> None:
         read_posts={"/historical/risk/route"},
         client_routes={("POST", "/historical/risk/route"), ("GET", "/historical/risk/zone")},
     )])
+    app.include_router(driver_behaviour.router, prefix="/driver-behaviour", tags=[doc.TAG_DRIVER_BEHAVIOUR],
+                       dependencies=[module_guard("driver_behaviour")])
+    # Reports: view = list / download, add = generate, delete = remove a stored report.
+    # Generating also needs the view right of the module the report reads (checked per type).
+    app.include_router(reports.router, prefix="/reports", tags=[doc.TAG_REPORTS],
+                       dependencies=[module_guard("reports")])

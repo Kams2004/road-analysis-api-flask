@@ -265,3 +265,61 @@ async def test_route_preview_rejects_bad_input_and_no_route(monkeypatch):
     with pytest.raises(HTTPException) as e:
         await routes.route_preview(from_="4.05,9.70", to="4.06,9.71", alternatives=True)
     assert e.value.status_code == 404
+
+
+# ── Module 4 dashboard endpoints (SQLite) ────────────────────────────────────
+
+@pytest.fixture
+async def hist_client():
+    from datetime import timedelta
+    import httpx
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from app.core.db.session import Base, get_db
+    from app.modules.m08_historical.routes.historical import router
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=[HistoricalEventRecord.__table__]))
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.utcnow()
+    async with Session() as s:
+        hot = grid_cell_id(*KAMBO, 150.0)
+        for i in range(8):                       # 8 accidents in one cell → score 1.0 (5 × 8 / 20)
+            s.add(HistoricalEventRecord(source="pytest", source_event_id=f"a{i}", event_type="ACCIDENT",
+                                        occurred_at=now - timedelta(days=i), latitude=KAMBO[0], longitude=KAMBO[1],
+                                        grid_cell_id=hot, raw={}))
+        s.add(HistoricalEventRecord(source="ymane", source_event_id="z", event_type="SPEEDING",
+                                    occurred_at=now - timedelta(days=200), latitude=KAMBO[0] + 0.05,
+                                    longitude=KAMBO[1], grid_cell_id=grid_cell_id(KAMBO[0] + 0.05, KAMBO[1], 150.0),
+                                    raw={}))
+        await s.commit()
+
+    async def _db():
+        async with Session() as s:
+            yield s
+
+    app = FastAPI()
+    app.include_router(router, prefix="/historical")
+    app.dependency_overrides[get_db] = _db
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        yield c
+    await engine.dispose()
+
+
+async def test_historical_overview_zones_trends_imports(hist_client):
+    c = hist_client
+    o = (await c.get("/historical/overview")).json()
+    assert o["total_events"] == 9 and o["cells"] == 2 and o["high_risk_cells"] == 1
+    assert o["low_coverage_cells"] == 1 and o["accidents"] == 8 and o["sources"] == {"pytest": 8, "ymane": 1}
+    assert (await c.get("/historical/overview", params={"period": "30d"})).json()["total_events"] == 8
+    z = (await c.get("/historical/zones")).json()
+    assert len(z) == 1 and z[0]["historical_risk_score"] == 1.0 and z[0]["coverage"] == "medium"
+    h = (await c.get("/historical/heatmap")).json()
+    assert {x["coverage"] for x in h} == {"medium", "low"}
+    t = (await c.get("/historical/trends", params={"period": "30d"})).json()
+    assert t["unit"] == "day" and sum(p["events"] for p in t["series"]) == 8
+    assert sum(p["risk_points"] for p in t["series"]) == 40.0
+    imp = (await c.get("/historical/imports")).json()
+    assert {b["source"] for b in imp} == {"pytest", "ymane"}
+    assert (await c.get("/historical/overview", params={"period": "x"})).status_code == 422

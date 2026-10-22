@@ -224,3 +224,80 @@ async def get_zone_risk_profiles_along_route(
 
     filtered = [r for r in rows if _near_route(r)]
     return _aggregate_by_cell(filtered)
+
+
+# ── Module 4 dashboard: overview, heatmap, risk zones, trend, import history ──
+
+# A cell with fewer events than this has LOW data coverage: a low score there
+# does not mean a safe place (RRAP-08-013 / RRAP-08-015).
+LOW_COVERAGE_EVENTS = 3
+HIGH_RISK_SCORE = 0.5
+MAX_ROWS = 200_000
+
+
+def coverage_level(total_events: int) -> str:
+    if total_events < LOW_COVERAGE_EVENTS:
+        return "low"
+    if total_events < LOW_COVERAGE_EVENTS * 4:
+        return "medium"
+    return "good"
+
+
+async def load_rows(db: AsyncSession, start=None, end=None, bbox=None) -> List[HistoricalEventRecord]:
+    q = select(HistoricalEventRecord)
+    if start is not None:
+        q = q.where(HistoricalEventRecord.occurred_at >= start)
+    if end is not None:
+        q = q.where(HistoricalEventRecord.occurred_at < end)
+    if bbox:
+        s, w, n, e = bbox
+        q = q.where(HistoricalEventRecord.latitude.between(s, n), HistoricalEventRecord.longitude.between(w, e))
+    return list((await db.execute(q.order_by(HistoricalEventRecord.occurred_at).limit(MAX_ROWS))).scalars().all())
+
+
+def risk_points(rows) -> float:
+    w = weights()
+    return sum(w.get(r.event_type, 0.5) for r in rows)
+
+
+def trend_series(rows, start, end, unit: str) -> List[dict]:
+    """Risk evolution: per bucket, events, weighted risk points, accidents and
+    the number of distinct grid cells with events (Module 4 — overall risk,
+    not per behaviour: that is Module 5)."""
+    from app.modules.m09_driver_behaviour.analytics import bucket_floor, bucket_starts
+    buckets = {b: [] for b in bucket_starts(start, end, unit)}
+    for r in rows:
+        b = bucket_floor(r.occurred_at, unit)
+        if b in buckets:
+            buckets[b].append(r)
+    out = []
+    for b, rs in buckets.items():
+        out.append({
+            "bucket": b, "events": len(rs), "risk_points": round(risk_points(rs), 2),
+            "accidents": sum(1 for r in rs if r.event_type == HistoricalEventType.ACCIDENT.value),
+            "cells": len({r.grid_cell_id for r in rs}),
+        })
+    return out
+
+
+def import_history(rows) -> List[dict]:
+    """Import batches: events grouped by source and import minute."""
+    groups: Dict[Tuple[str, str], list] = defaultdict(list)
+    for r in rows:
+        at = r.imported_at.replace(second=0, microsecond=0) if r.imported_at else None
+        groups[(r.source, at.isoformat() if at else "")].append(r)
+    out = []
+    for (src, at), rs in groups.items():
+        occ = [r.occurred_at for r in rs]
+        out.append({
+            "source": src, "imported_at": at or None, "events": len(rs),
+            "first_event_at": min(occ), "last_event_at": max(occ),
+            "by_type": dict(sorted(((t, sum(1 for r in rs if r.event_type == t)) for t in {r.event_type for r in rs}),
+                                   key=lambda kv: -kv[1])),
+        })
+    out.sort(key=lambda g: g["imported_at"] or "", reverse=True)
+    return out
+
+
+def weights() -> Dict[str, float]:
+    return {t.value: w for t, w in _EVENT_TYPE_WEIGHT.items()}

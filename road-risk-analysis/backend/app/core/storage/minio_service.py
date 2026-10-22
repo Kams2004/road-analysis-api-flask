@@ -59,3 +59,53 @@ def upload_signalement_audio(data: bytes, object_name: str, content_type: str = 
         content_type=content_type,
     )
     return f"{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET_SIGNALEMENTS}/{object_name}"
+
+
+# ── Generated reports (Module 14) — private bucket, served only through the
+# authenticated GET /reports/{id}/download. ─────────────────────────────────
+
+def _ensure_bucket(client: Minio, bucket: str) -> None:
+    if not client.bucket_exists(bucket):
+        client.make_bucket(bucket)
+
+
+def upload_report(data: bytes, object_name: str) -> None:
+    client = get_minio()
+    _ensure_bucket(client, settings.MINIO_BUCKET_REPORTS)
+    client.put_object(settings.MINIO_BUCKET_REPORTS, object_name, io.BytesIO(data),
+                      length=len(data), content_type="application/pdf")
+
+
+def get_report(object_name: str) -> bytes:
+    resp = get_minio().get_object(settings.MINIO_BUCKET_REPORTS, object_name)
+    try:
+        return resp.read()
+    finally:
+        resp.close()
+        resp.release_conn()
+
+
+def remove_report(object_name: str) -> None:
+    try:
+        get_minio().remove_object(settings.MINIO_BUCKET_REPORTS, object_name)
+    except S3Error:
+        pass
+
+
+def read_object_url(url: str, max_bytes: int = 15_000_000) -> bytes | None:
+    """Bytes of an object stored as "<endpoint>/<bucket>/<object>" (the URL
+    form saved on detections / reports), or None when it cannot be read."""
+    path = url.split("://", 1)[-1]
+    parts = path.split("/", 2)
+    if len(parts) < 3:
+        return None
+    _, bucket, obj = parts
+    try:
+        resp = get_minio().get_object(bucket, obj)
+        try:
+            return resp.read(max_bytes)
+        finally:
+            resp.close()
+            resp.release_conn()
+    except Exception:
+        return None

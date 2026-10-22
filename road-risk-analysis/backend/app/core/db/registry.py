@@ -27,3 +27,4 @@ def import_all_models() -> None:
     from app.modules.m11_community.models import signalement, signalement_vote  # noqa: F401
     from app.modules.m12_integration.models import api_client  # noqa: F401
     from app.modules.m13_admin.models import audit_log, system_setting  # noqa: F401
+    from app.modules.m14_reports.models import report  # noqa: F401

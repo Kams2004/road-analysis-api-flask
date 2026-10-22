@@ -34,3 +34,6 @@ cryptography>=42.0.0
 
 # SFTP video sources (own Dockerfile layer, after cryptography)
 paramiko==4.0.0
+
+# PDF reports (Module 14 — own Dockerfile layer)
+reportlab==4.4.4

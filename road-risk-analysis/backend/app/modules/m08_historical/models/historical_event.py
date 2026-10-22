@@ -26,6 +26,10 @@ class HistoricalEventRecord(Base):
         UniqueConstraint("source", "source_event_id", name="uq_historical_event_source"),
         Index("ix_historical_events_grid_cell", "grid_cell_id"),
         Index("ix_historical_events_occurred_at", "occurred_at"),
+        # Module 5 (driver behaviour) filters
+        Index("ix_historical_events_type_occurred", "event_type", "occurred_at"),
+        Index("ix_historical_events_driver", "driver_external_id"),
+        Index("ix_historical_events_vehicle", "vehicle_external_id"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
