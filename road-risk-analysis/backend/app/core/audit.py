@@ -3,6 +3,7 @@ Helpers to append to the audit trail. `record` adds to the caller's session
 (committed with the change it describes); `record_now` commits on its own
 session, for events that must survive a failing request (e.g. bad logins).
 """
+import ipaddress
 from typing import Any
 
 from fastapi import Request
@@ -12,13 +13,25 @@ from app.core.db.session import AsyncSessionLocal
 from app.modules.m13_admin.models.audit_log import AuditLog
 
 
+def _internal(host: str | None) -> bool:
+    try:
+        ip = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback
+
+
 def client_ip(request: Request | None) -> str | None:
+    """The caller's IP. `X-Forwarded-For` is only believed when the request comes from
+    the internal network (the web console's server-side proxy, a reverse proxy) —
+    a client calling the public API directly cannot forge its address."""
     if request is None:
         return None
+    peer = request.client.host if request.client else None
     fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else None
+    if fwd and _internal(peer):
+        return fwd.split(",")[0].strip()[:64] or peer
+    return peer
 
 
 def _build(request: Request | None, action: str, *, principal=None, outcome: str = "success",

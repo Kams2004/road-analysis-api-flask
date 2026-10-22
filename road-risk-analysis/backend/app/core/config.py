@@ -4,6 +4,17 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # PostgreSQL
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/road_analysis"
+    # Connection pool per process (API worker / Celery worker): pool + overflow connections at most.
+    # Keep (API_WORKERS + Celery processes) × (size + overflow) under Postgres max_connections (100).
+    DB_POOL_SIZE:      int = 5
+    DB_MAX_OVERFLOW:   int = 10
+    DB_POOL_TIMEOUT_S: int = 30      # wait for a free connection, then 500 instead of hanging
+    DB_POOL_RECYCLE_S: int = 1800    # renew connections (server-side idle timeouts, failover)
+
+    # Per-client-IP limit of the sensitive public endpoints (login, sign-up, password reset,
+    # MFA, Label Studio images): requests per minute, 0 = off. Counted in Redis (fail-open).
+    RATE_LIMIT_AUTH_PER_MIN:   int = 30
+    RATE_LIMIT_PUBLIC_PER_MIN: int = 600
 
     # MinIO
     MINIO_ENDPOINT:          str  = "localhost:9000"

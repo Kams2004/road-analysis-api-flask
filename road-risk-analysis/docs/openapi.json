@@ -13067,6 +13067,7 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "minimum": 0,
               "description": "Number of items to skip (offset).",
               "default": 0,
               "title": "Skip"
@@ -14266,6 +14267,7 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "minimum": 0,
               "description": "Number of items to skip (offset).",
               "default": 0,
               "title": "Skip"
@@ -14278,6 +14280,8 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
               "description": "Maximum number of items.",
               "default": 100,
               "title": "Limit"
@@ -24078,6 +24082,7 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "minimum": 0,
               "description": "Number of matching reports to skip (offset).",
               "default": 0,
               "title": "Skip"
@@ -24090,6 +24095,8 @@
             "required": false,
             "schema": {
               "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
               "description": "Page size.",
               "default": 50,
               "title": "Limit"

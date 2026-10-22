@@ -395,8 +395,8 @@ async def list_signalements(
     reported_by: Optional[str]              = Query(None, description="Only reports by this reporter (exact match)."),
     expired:     Optional[bool]             = Query(None, description=(
         "`true` = only expired reports, `false` = only fresh ones; omitted = both.")),
-    skip:  int = Query(0, description="Number of matching reports to skip (offset)."),
-    limit: int = Query(50, description="Page size."),
+    skip:  int = Query(0, ge=0, description="Number of matching reports to skip (offset)."),
+    limit: int = Query(50, ge=1, le=1000, description="Page size."),
     db: AsyncSession = Depends(get_db),
 ):
     """

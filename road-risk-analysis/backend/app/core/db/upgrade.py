@@ -293,6 +293,18 @@ OBJECT_POSITION_STATEMENTS = [
 ]
 
 _ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
+_CREATE_INDEX = re.compile(r"^\s*CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\s+(\w+)\b", re.I)
+
+# ── Load: the filters of the busiest list / map queries (per job, newest first,
+# map bounding boxes) — app/core/spatial.py, Module 6 lists, Module 11 maps ──
+SCALE_INDEX_STATEMENTS = [
+    "CREATE INDEX IF NOT EXISTS ix_detections_job_id ON detections (job_id)",
+    "CREATE INDEX IF NOT EXISTS ix_detections_created_at ON detections (created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_detections_lat_lon ON detections (latitude, longitude)",
+    "CREATE INDEX IF NOT EXISTS ix_hazards_lat_lon ON hazards (latitude, longitude)",
+    "CREATE INDEX IF NOT EXISTS ix_signalements_lat_lon ON signalements (latitude, longitude)",
+    "CREATE INDEX IF NOT EXISTS ix_historical_events_lat_lon ON historical_events (latitude, longitude)",
+]
 # ── Driver behaviour analytics (Module 5 reads historical_events by type,
 # period, driver and vehicle — migrations/add_driver_behaviour.sql) ──────────
 DRIVER_BEHAVIOUR_STATEMENTS = [
@@ -308,6 +320,11 @@ async def _existing_columns(conn) -> set[tuple[str, str]]:
     return {(t, c) for t, c in rows.all()}
 
 
+async def _existing_indexes(conn) -> set[str]:
+    rows = await conn.exec_driver_sql("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")
+    return {i for (i,) in rows.all()}
+
+
 async def run(engine: AsyncEngine) -> None:
     async with engine.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
@@ -318,6 +335,7 @@ async def run(engine: AsyncEngine) -> None:
         # (IF NOT EXISTS is checked under the lock): skipping existing columns keeps an
         # API restart from deadlocking with a worker that is inserting detections.
         existing = await _existing_columns(conn)
+        indexes = await _existing_indexes(conn)
         skipped = 0
         for stmt in (MODULE6_COLUMNS + MODULE6_BACKFILL + MODULE7_COLUMNS + MOBILE_COLUMNS + COMMUNITY_COLUMNS
                      + AI_VALIDATION_COLUMNS + SIGN_CLASSIFIER_COLUMNS
@@ -325,10 +343,14 @@ async def run(engine: AsyncEngine) -> None:
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
                      + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS
                      + HAZARD_CLUSTER_STATEMENTS + OBJECT_POSITION_STATEMENTS
-                     + DRIVER_BEHAVIOUR_STATEMENTS):
+                     + DRIVER_BEHAVIOUR_STATEMENTS + SCALE_INDEX_STATEMENTS):
             m = _ADD_COLUMN.match(stmt)
             if m and (m.group(1).lower(), m.group(2).lower()) in existing:
                 skipped += 1
                 continue
+            i = _CREATE_INDEX.match(stmt)
+            if i and i.group(1).lower() in indexes:      # no table lock for an index that exists
+                skipped += 1
+                continue
             await conn.exec_driver_sql(stmt)
-    logger.info("Schema upgrade checked (%d existing columns skipped)", skipped)
+    logger.info("Schema upgrade checked (%d existing columns / indexes skipped)", skipped)

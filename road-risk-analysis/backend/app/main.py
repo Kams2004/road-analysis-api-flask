@@ -7,6 +7,7 @@ from app.api.router import register_routes
 from app.api import openapi as doc
 from app.core.config import settings
 from app.core import audit as audit_service
+from app.core import rate_limit
 from app.core.db.session import init_db, AsyncSessionLocal
 from app.modules.m01_security.auth_service import seed_roles, bootstrap_admin
 from app.modules.m06_hazards import hazard_service
@@ -18,8 +19,30 @@ logging.basicConfig(
 )
 
 
+STARTUP_LOCK_ID = 7_412_309_001     # pg advisory lock: one API process at a time runs the start-up work
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Several API processes (uvicorn --workers N) start together: the schema upgrade, seeds and
+    # back-fills below run in one process at a time (the others wait, then find them done).
+    from sqlalchemy import text as _sql
+    from app.core.db.session import engine as _engine
+    async with _engine.connect() as lock_conn:
+        await lock_conn.execute(_sql("SELECT pg_advisory_lock(:k)"), {"k": STARTUP_LOCK_ID})
+        try:
+            await _startup()
+        finally:
+            await lock_conn.execute(_sql("SELECT pg_advisory_unlock(:k)"), {"k": STARTUP_LOCK_ID})
+            await lock_conn.commit()
+    if settings.SECRET_KEY == "dev-insecure-secret-change-me":
+        logging.getLogger(__name__).warning("SECRET_KEY is the development default — set it in .env for production")
+    if not settings.AUTH_ENFORCED:
+        logging.getLogger(__name__).warning("AUTH_ENFORCED=false — API routes are open to anonymous callers")
+    yield
+
+
+async def _startup() -> None:
     await init_db()
     async with AsyncSessionLocal() as db:
         marked = await mark_stale_jobs(db)
@@ -48,19 +71,24 @@ async def lifespan(app: FastAPI):
             await hazard_service.ensure_built(db)
         except Exception:  # a failed back-fill must not keep the API down
             logging.getLogger(__name__).exception("Hazard back-fill failed — run `python -m app.cli rebuild-hazards`")
-    # Structured addresses of detections stored before they existed: a
-    # bounded, throttled background run (app.modules.m03_maps.geocoding_backfill).
-    if settings.GEOCODING_ENABLED and settings.GEOCODING_BACKFILL_ON_STARTUP > 0:
+    # Structured addresses of detections stored before they existed: a bounded, throttled
+    # background run (app.modules.m03_maps.geocoding_backfill) — in one API process only.
+    if settings.GEOCODING_ENABLED and settings.GEOCODING_BACKFILL_ON_STARTUP > 0 and await _claim("geocoding_backfill", 900):
         from app.modules.m03_maps import geocoding_backfill
         geocoding_backfill.start_background(settings.GEOCODING_BACKFILL_ON_STARTUP)
-    # Training-data objects left unwritten before a restart (docs/TRAINING-DATA.md)
+    # Training-data objects left unwritten before a restart (docs/TRAINING-DATA.md; SKIP LOCKED)
     from app.modules.m06_hazards.training_data import sync as training_sync
     training_sync.kick(delay_s=15)
-    if settings.SECRET_KEY == "dev-insecure-secret-change-me":
-        logging.getLogger(__name__).warning("SECRET_KEY is the development default — set it in .env for production")
-    if not settings.AUTH_ENFORCED:
-        logging.getLogger(__name__).warning("AUTH_ENFORCED=false — API routes are open to anonymous callers")
-    yield
+
+
+async def _claim(name: str, ttl_s: int) -> bool:
+    """True in the first API process claiming `name` within `ttl_s` (Redis; True without Redis)."""
+    try:
+        from app.core.storage.redis_client import get_redis
+        import os
+        return bool(await get_redis().set(f"startup:{name}", str(os.getpid()), nx=True, ex=ttl_s))
+    except Exception:
+        return True
 
 app = FastAPI(
     **doc.APP_METADATA,
@@ -110,6 +138,20 @@ async def audit_mutations(request: Request, call_next):
             )
         except Exception:  # auditing must never break the request itself
             logging.getLogger(__name__).exception("audit write failed")
+    return response
+
+
+# Per-IP limits of the sensitive public endpoints (sign-in, sign-up, password reset,
+# MFA, Label Studio images) — app/core/rate_limit.py.
+app.middleware("http")(rate_limit.middleware)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
     return response
 
 

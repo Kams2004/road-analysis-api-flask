@@ -94,7 +94,9 @@ services:
     build:
       context: ../../../backend
     image: viasafe-v2-api:latest
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    # API_WORKERS processes share the load (start-up work is serialised by a Postgres lock);
+    # each has DB_POOL_SIZE + DB_MAX_OVERFLOW connections at most.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers ${API_WORKERS:-2} --timeout-keep-alive 15
     environment: *api-env
     volumes:
       - ../../../ai/models:/models:ro

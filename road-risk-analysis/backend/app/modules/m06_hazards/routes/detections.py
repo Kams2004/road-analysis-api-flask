@@ -249,7 +249,7 @@ async def validation_queue(
 @router.get("/pending", response_model=DetectionListOut, summary="List detections awaiting review (legacy)",
             deprecated=True)
 async def list_pending(
-    skip: int = Query(0, description="Number of items to skip (offset)."),
+    skip: int = Query(0, ge=0, description="Number of items to skip (offset)."),
     limit: int = Query(50, ge=1, le=MAX_LIMIT, description=f"Page size (max {MAX_LIMIT})."),
     db: AsyncSession = Depends(get_db),
 ):
@@ -642,8 +642,8 @@ async def list_labels(
     detection_type: Optional[str] = Query(None, description="`pothole`, `traffic_sign` or `speed_bump`.",
                                           examples=["pothole"]),
     label:          Optional[str] = Query(None, description="Exact label (class name chosen by the validator)."),
-    skip: int = Query(0, description="Number of items to skip (offset)."),
-    limit: int = Query(100, description="Maximum number of items."),
+    skip: int = Query(0, ge=0, description="Number of items to skip (offset)."),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of items."),
     db: AsyncSession = Depends(get_db),
 ):
     """
