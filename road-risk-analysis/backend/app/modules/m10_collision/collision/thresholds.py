@@ -173,6 +173,12 @@ def set_current(cfg: Optional[CollisionSettings]) -> None:
     _loaded_at = time.monotonic() if cfg is not None else 0.0
 
 
+def expire() -> None:
+    """Make the next refresh() reload (another process saved new thresholds — cache_bus)."""
+    global _loaded_at
+    _loaded_at = 0.0
+
+
 async def refresh(db=None, force: bool = False) -> CollisionSettings:
     """Reload from the settings table if the snapshot is older than CACHE_TTL_S.
     A database error keeps the previous snapshot (never breaks the pipeline)."""

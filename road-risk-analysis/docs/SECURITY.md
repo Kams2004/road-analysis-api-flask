@@ -44,7 +44,9 @@ annotator  ──▶ Label Studio (:18085) ──images──▶ API /labelstudi
 
 * **API processes** — `API_WORKERS` (server `.env`, default 2) uvicorn workers. The start-up work (schema upgrade,
   seeds, back-fills) is serialised by a Postgres advisory lock; the geocoding back-fill runs in one process only.
-  Caches are per process with a 10 s TTL, so a settings change is everywhere within 10 s.
+  Settings are cached per process; saving one clears it in every API and video-worker process at once
+  (Redis pub/sub, `app/core/cache_bus.py`: settings sections, cluster rules, collision thresholds, map tiles).
+  The 10 s TTL remains as the safety net, and a process that lost Redis clears all its caches on reconnect.
 * **Database pool** — per process `DB_POOL_SIZE` (5) + `DB_MAX_OVERFLOW` (10), `DB_POOL_TIMEOUT_S` 30,
   `DB_POOL_RECYCLE_S` 1800. Keep `(API_WORKERS + Celery processes) × 15` under Postgres `max_connections` (100).
 * **Indexes** for the busiest filters (detections per job / newest first, map bounding boxes on detections, hazards,

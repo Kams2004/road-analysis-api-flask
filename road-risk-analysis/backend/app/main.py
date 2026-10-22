@@ -39,7 +39,11 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning("SECRET_KEY is the development default — set it in .env for production")
     if not settings.AUTH_ENFORCED:
         logging.getLogger(__name__).warning("AUTH_ENFORCED=false — API routes are open to anonymous callers")
+    # Settings saved by another process apply here at once (app/core/cache_bus.py)
+    from app.core import cache_bus
+    cache_bus.start_listener()
     yield
+    await cache_bus.stop_listener()
 
 
 async def _startup() -> None:

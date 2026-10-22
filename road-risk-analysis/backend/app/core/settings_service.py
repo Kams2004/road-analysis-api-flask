@@ -431,8 +431,8 @@ async def get_section(db: AsyncSession, section: str) -> BaseModel:
 
 
 # Short in-process cache for sections read on hot paths (every nearby query,
-# vote, ping). update_section clears the local entry; other processes pick a
-# change up within CACHE_TTL_S.
+# vote, ping). update_section clears the local entry and tells the other
+# processes at once (app.core.cache_bus); CACHE_TTL_S is the safety net.
 CACHE_TTL_S = 10.0
 _cache: dict[str, tuple[float, BaseModel]] = {}
 
@@ -529,5 +529,7 @@ async def update_section(db: AsyncSession, section: str, patch: dict, actor: str
         _set_collision_thresholds(updated)  # type: ignore[arg-type]
     if section == "clustering":
         from app.modules.m06_hazards.clustering import service as clustering_service
-        clustering_service.invalidate()
+        clustering_service.invalidate(broadcast=False)
+    from app.core import cache_bus
+    cache_bus.publish(f"settings:{section}")      # the other API / worker processes, at once
     return before, redact(section, updated)

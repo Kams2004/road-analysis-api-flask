@@ -41,10 +41,15 @@ _cache: dict[str, tuple[float, Snapshot]] = {}
 LEGACY_DEFAULT_RADIUS_M = 50.0
 
 
-def invalidate() -> None:
+def invalidate(broadcast: bool = True) -> None:
+    """Drop the cached rules here — and, by default, in every other API / worker
+    process at once (app.core.cache_bus; call it after the commit)."""
     _cache.clear()
     from app.core.settings_service import clear_cache
     clear_cache("clustering")
+    if broadcast:
+        from app.core import cache_bus
+        cache_bus.publish("clustering")
 
 
 def rule_from_row(z) -> ZoneRule:

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from celery import Celery
+from celery.signals import worker_process_init
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -10,6 +11,14 @@ celery_app = Celery(
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
 )
+
+
+@worker_process_init.connect
+def _start_cache_bus(**_):
+    """Each worker process drops its cached settings as soon as an admin saves them
+    (app/core/cache_bus.py) instead of waiting for the 10 s TTL."""
+    from app.core import cache_bus
+    cache_bus.start_thread_listener()
 
 celery_app.conf.update(
     task_serializer="json",
