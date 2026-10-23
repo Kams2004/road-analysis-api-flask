@@ -1010,6 +1010,15 @@ async def _finalize(db, ctx: _JobContext, key: str, track: static_check.Track, g
                                    min_y_ratio=ai.pothole_min_y_ratio if key == "pothole" else None)
     rule_reject, ai_details = (_pothole_rules(ai, best.box, frame) if key == "pothole" else (None, None))
     score = out.get("verifier_score")
+    if static_check.large_box_to_review(rule_reject, score, ai.pothole_large_box_review_score):
+        # Large box but the crop classifier is sure it is a pothole (a big damaged area right in front):
+        # a human decides — never auto-accepted, never auto-rejected.
+        blockers = [*blockers, (static_check.AI_BOX_TOO_LARGE,
+                                f"{rule_reject[1]} — classifier {score:.0%} ≥ "
+                                f"{ai.pothole_large_box_review_score:.0%}: sent to review")]
+        if ai_details is not None:
+            ai_details = {**ai_details, "verdict": "review", "overridden_by_classifier": score}
+        rule_reject = None
     annotated = frame.copy()
     cv2.rectangle(annotated, (x1, y1), (x2, y2), colour, 2)
     name = {"pothole": "Pothole", "speedbump": "SpeedBump"}.get(key) or str(out["subtype"])

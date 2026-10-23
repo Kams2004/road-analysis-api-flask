@@ -99,3 +99,14 @@ def test_rule_reject_audit_sample_stays_pending():
     policy = av.build_policy(AiValidationSettings(audit_sample_rate=0.5), ValidationSettings(), {})
     d = av.rule_reject(policy, "ai_off_road", "ai_off_road: …", None, 0.1)
     assert (d.status, d.ai_decision, d.audit_sample) == ("location_pending", "auto_reject", True)
+
+
+def test_large_box_goes_to_review_when_the_classifier_is_sure():
+    from app.modules.m05_ai_detection.static_check import AI_BOX_TOO_LARGE, AI_OFF_ROAD, large_box_to_review
+    big = (AI_BOX_TOO_LARGE, "width 67% of the frame > 40%")
+    assert large_box_to_review(big, 0.90, 0.8)                 # the LTTR case: classifier 90 %
+    assert not large_box_to_review(big, 0.44, 0.8)             # roadside earth: classifier unsure → rejected
+    assert not large_box_to_review(big, None, 0.8)             # no classifier → rule unchanged
+    assert not large_box_to_review(big, 0.99, 1.0)             # 1 = always reject
+    assert not large_box_to_review((AI_OFF_ROAD, "above the road line"), 0.99, 0.8)
+    assert not large_box_to_review(None, 0.99, 0.8)

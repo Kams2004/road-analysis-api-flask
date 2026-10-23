@@ -374,3 +374,12 @@ def pothole_rule_kwargs(ai) -> dict[str, Any]:
     return {"min_y_ratio": ai.pothole_min_y_ratio, "off_road_action": ai.pothole_off_road_action,
             "max_width_ratio": ai.pothole_max_width_ratio, "max_area_ratio": ai.pothole_max_area_ratio,
             "reject_edge_touching": ai.pothole_reject_edge_touching}
+
+
+def large_box_to_review(rule_reject: Optional[tuple[str, str]], classifier_score: Optional[float],
+                        review_score: float) -> bool:
+    """A pothole box rejected only as too large / roadside goes to human review instead when the crop
+    classifier is at least `review_score` sure it is a pothole (ai_validation.pothole_large_box_review_score;
+    1 = never). The road-area rule (ai_off_road) is not overridden."""
+    return (rule_reject is not None and rule_reject[0] == AI_BOX_TOO_LARGE and classifier_score is not None
+            and review_score < 1 and classifier_score >= review_score)

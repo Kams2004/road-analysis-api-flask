@@ -35112,6 +35112,13 @@
             "title": "Pothole Reject Edge Touching",
             "default": true
           },
+          "pothole_large_box_review_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Pothole Large Box Review Score",
+            "default": 0.8
+          },
           "ignore_osd_text_boxes": {
             "type": "boolean",
             "title": "Ignore Osd Text Boxes",

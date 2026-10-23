@@ -191,6 +191,10 @@ class AiValidationSettings(BaseModel):
     pothole_max_width_ratio:      float = Field(0.40, gt=0, le=1)    # 1 = rule off
     pothole_max_area_ratio:       float = Field(0.12, gt=0, le=1)    # 1 = rule off
     pothole_reject_edge_touching: bool  = True
+    # A box rejected as too large / roadside goes to human review instead when the pothole crop
+    # classifier is at least this sure it is a pothole (large damaged areas close to the camera);
+    # 1 = the size rules always reject.
+    pothole_large_box_review_score: float = Field(0.8, ge=0, le=1)
     # Dashcam text overlay: pothole / sign / speed-bump boxes whose centre lies in a text field of
     # the job's OSD layout (date, GPS, plate, company …) are ignored — the overlay is not a road object.
     ignore_osd_text_boxes:        bool  = True
