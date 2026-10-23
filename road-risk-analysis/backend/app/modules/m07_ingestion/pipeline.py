@@ -598,6 +598,8 @@ class _JobContext:
         """Remember the frame's OSD time (recorded_at) and ego fix / speed (parked vehicles)."""
         t = self.video_time(frame_num)
         t = float(frame_num) if t is None else t
+        if osd.reused:          # copy of the last read: no new time or fix (would fake a standstill)
+            return
         if osd.timestamp is not None and (not self.osd_times or self.osd_times[-1][1] != osd.timestamp):
             self.osd_times.append((t, osd.timestamp))
         self.ego.add(t, osd.latitude, osd.longitude, osd.speed_kmh, osd.gps_interpolated)
@@ -836,7 +838,7 @@ async def process_source(
     ctx.osd_reader = OsdReader(
         osd_cfg.available(), forced=layout, method=layout_method, by_vehicle=osd_cfg.by_vehicle,
         box=osd_cfg.gps_box, voter=voter, probe_frames=osd_cfg.probe_frames,
-        full_frame_fallback=osd_cfg.full_frame_fallback,
+        full_frame_fallback=osd_cfg.full_frame_fallback, min_interval_s=osd_cfg.read_interval_s,
         neighbour_offsets=(-1.0, 1.0, -2.0, 2.0) if osd_cfg.neighbour_retry else ())
     if osd_cfg.neighbour_retry and total > 1 and fps:
         ctx.neighbours = _NeighbourFrames(source_path, fps, total)
@@ -1234,7 +1236,7 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
             f"lat={osd.latitude} lon={osd.longitude}"
         )
         ctx.observe_osd(frame_num, osd)
-        if osd.latitude is not None and osd.longitude is not None and not osd.gps_interpolated:
+        if osd.latitude is not None and osd.longitude is not None and not osd.gps_interpolated and not osd.reused:
             track.append({"job_id": job.id, "frame_number": frame_num, "video_time_s": ctx.video_time(frame_num),
                           "latitude": osd.latitude, "longitude": osd.longitude,
                           "speed_kmh": osd.speed_kmh, "source": osd.gps_source or "ocr",

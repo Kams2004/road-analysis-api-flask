@@ -13,6 +13,10 @@ class Settings(BaseSettings):
 
     # Per-client-IP limit of the sensitive public endpoints (login, sign-up, password reset,
     # MFA, Label Studio images): requests per minute, 0 = off. Counted in Redis (fail-open).
+    # CPU threads of the PaddleOCR engine (dashcam overlay text) per worker process; its default (10)
+    # competes with the detectors when several jobs run at once.
+    OCR_CPU_THREADS:           int = 2
+
     RATE_LIMIT_AUTH_PER_MIN:   int = 30
     RATE_LIMIT_PUBLIC_PER_MIN: int = 600
 

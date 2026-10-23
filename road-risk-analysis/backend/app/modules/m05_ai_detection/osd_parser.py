@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time as dtime, timedelta
 from typing import Callable, Optional
 
@@ -58,7 +58,9 @@ def _init_ocr() -> bool:
         os.environ.setdefault("PPOCR_LOGGING_LEVEL", "ERROR")
         logging.getLogger("ppocr").setLevel(logging.WARNING)
         from paddleocr import PaddleOCR
-        _ocr_engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+        from app.core.config import settings
+        _ocr_engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False,
+                                cpu_threads=max(1, settings.OCR_CPU_THREADS))
         logger.info("OCR backend: PaddleOCR ready")
         return True
     except Exception as e:
@@ -86,6 +88,7 @@ class OSDData:
     gps_source:    Optional[str]      = None   # ocr | ocr_neighbour | interpolated
     time_source:   Optional[str]      = None   # ocr | ocr_neighbour
     channel:       Optional[str]      = None   # camera channel shown by some equipment ('CH2')
+    reused:        bool               = False  # copy of the last read (osd.read_interval_s): no new fix
 
 
 def reset_last() -> None:
@@ -217,6 +220,11 @@ LOW_CONFIDENCE = 0.6
 TIME_TOLERANCE_S = 3.0
 
 
+# Fields only stored for information (rpm on the detection): read every SLOW_INTERVAL_S of video.
+SLOW_KINDS = frozenset({"rpm"})
+SLOW_INTERVAL_S = 10.0
+
+
 class OsdReader:
     """Per-job OSD reading (see module docstring). `ocr(frame, box, variant)` can be
     replaced (tests); `read(frame, t, neighbours)` with `neighbours(offset_s)` → frame."""
@@ -225,8 +233,14 @@ class OsdReader:
                  method: str = "auto", by_vehicle: Optional[dict[str, str]] = None, box=CAMEROON_BOX,
                  voter: Optional[GpsVoter] = None, probe_frames: int = 5, full_frame_fallback: bool = True,
                  ocr: Optional[OcrFn] = None, neighbour_offsets=(-1.0, 1.0, -2.0, 2.0),
-                 neighbour_min_interval_s: float = 2.0, max_probe_reads: int = 40):
+                 neighbour_min_interval_s: float = 2.0, max_probe_reads: int = 40,
+                 min_interval_s: float = 0.0):
         self.profiles = profiles if profiles is not None else L.effective_profiles()
+        # The overlay text changes once per second: frames closer than this (video time) to the
+        # last read reuse it instead of running the OCR again (the costliest step per frame).
+        self.min_interval_s = max(0.0, float(min_interval_s))
+        self._last_read: Optional[tuple[float, OSDData]] = None
+        self._slow: dict[int, tuple[float, FrameRead]] = {}   # roi index → (t, last read) of SLOW_KINDS
         self.box = tuple(box) if box else None
         self.voter = voter if voter is not None else GpsVoter()
         self.ocr = ocr or ocr_region
@@ -306,13 +320,20 @@ class OsdReader:
             return self._finalise(FrameRead(), t)
         if self.layout is None:
             return self._probe(frame, t)
+        if self._last_read is not None and 0 <= t - self._last_read[0] < self.min_interval_s:
+            self.stats["reused"] += 1
+            t0, last = self._last_read
+            ts = last.timestamp + timedelta(seconds=t - t0) if last.timestamp is not None else None
+            return replace(last, timestamp=ts, reused=True)
         read = self._read_profile(frame, t, neighbours)
         if self.layout == L.FULL_FRAME:
             self._fallback_frames += 1
             self._fallback_hits += read.score > 0
             if self._fallback_frames >= 2 * self.probe_frames and not self._fallback_hits:
                 self._resolve(L.NO_OSD, "fallback")
-        return self._finalise(read, t)
+        out = self._finalise(read, t)
+        self._last_read = (t, out)
+        return out
 
     def _probe(self, frame: np.ndarray, t: float) -> OSDData:
         self._probe_reads += 1
@@ -410,7 +431,12 @@ class OsdReader:
         for i, roi in enumerate(self.profile.rois):
             if roi.static and self.statics.stable(i):
                 continue
+            if roi.field in SLOW_KINDS and i in self._slow and t - self._slow[i][0] < SLOW_INTERVAL_S:
+                _merge(read, self._slow[i][1])          # informative only (rpm): not re-read every second
+                continue
             sub, conf = self._read_roi(frame, i, roi)
+            if roi.field in SLOW_KINDS:
+                self._slow[i] = (t, sub)
             if roi.field in ("gps", "any") and sub.raw_gps_text and not read.raw_gps_text:
                 read.raw_gps_text = sub.raw_gps_text
             if roi.field == "gps":

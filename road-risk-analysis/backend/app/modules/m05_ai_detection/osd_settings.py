@@ -112,6 +112,9 @@ class OsdSettings(BaseModel):
     probe_frames:        int = Field(5, ge=1, le=50)
     full_frame_fallback: bool = True
     neighbour_retry:     bool = True             # re-read GPS / time on frames ±1–2 s when unreadable
+    # The overlay text changes once per second: read it at most every N seconds of video and reuse
+    # the last read in between (OCR is the costliest step of a frame). 0 = every analysed frame.
+    read_interval_s:     float = Field(1.0, ge=0, le=10)
 
     @field_validator("gps_box")
     @classmethod

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from app.modules.m05_ai_detection import osd_layouts as L
+from app.modules.m05_ai_detection import osd_parser
 from app.modules.m05_ai_detection.osd_parser import GpsVoter, OsdReader, parse_gps_text
 from app.modules.m05_ai_detection.osd_settings import OsdSettings, layout_for_job, validate_layout_option
 from app.modules.m06_hazards import detection_workflow as wf
@@ -193,8 +194,25 @@ def test_static_fields_stop_being_read():
         r.read(ocr.frame("total"), t=i)
     before = ocr.calls
     osd = r.read(ocr.frame("total"), t=7)
-    assert ocr.calls - before == 3                                  # date, gps, rpm (plate/company/driver stable)
-    assert osd.vehicle_id == "LTTR458AV" and osd.company == "CAMTRAD"
+    assert ocr.calls - before == 2                                  # date, gps (plate/company/driver stable,
+    assert osd.vehicle_id == "LTTR458AV" and osd.company == "CAMTRAD"   # rpm read every SLOW_INTERVAL_S)
+    before = ocr.calls
+    r.read(ocr.frame("total"), t=7 + osd_parser.SLOW_INTERVAL_S)
+    assert ocr.calls - before >= 3                                  # + rpm again (statics may be re-checked)
+
+
+def test_overlay_read_at_most_once_per_interval():
+    ocr = FakeOcr()
+    r = OsdReader(ocr=ocr, forced="total", min_interval_s=1.0)
+    first = r.read(ocr.frame("total"), t=10.0)
+    before = ocr.calls
+    again = r.read(ocr.frame("total"), t=10.5)                     # same second: no OCR
+    assert ocr.calls == before and again.reused and not first.reused
+    assert again.latitude == first.latitude
+    if first.timestamp is not None:
+        assert (again.timestamp - first.timestamp).total_seconds() == 0.5
+    r.read(ocr.frame("total"), t=11.0)                              # one second later: read again
+    assert ocr.calls > before
 
 
 def test_forced_and_by_vehicle():
