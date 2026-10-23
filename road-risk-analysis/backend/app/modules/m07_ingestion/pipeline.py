@@ -109,6 +109,7 @@ Job lifecycle (Module 7, app.modules.m07_ingestion.job_service):
 """
 import cv2
 import random
+import time
 import uuid
 import logging
 import numpy as np
@@ -1188,6 +1189,7 @@ def _observe_vehicles(ctx: _JobContext, tracker: static_check.Tracker, results, 
 
 
 PROGRESS_EVERY = 50   # frames read between two progress commits
+HEARTBEAT_EVERY_S = 30.0   # worker heartbeat (job_slots) at least this often while the job runs
 
 
 async def _commit_progress(db, job: Job, track: list, stats: "_Stats", frame_num: int, total: int,
@@ -1210,12 +1212,18 @@ async def _frame_loop(db, job: Job, cap, ctx: _JobContext, voter, enabled: list,
     trackers[pv.MODEL_KEY] = _vehicle_tracker(ctx.pv)
     video = total != 1
     frame_num, cancelled = 0, False
+    last_beat = time.monotonic()
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
         frame_num += 1
+        # Heartbeat by wall time too (not only every PROGRESS_EVERY frames): on a busy machine 50
+        # frames can take minutes, and the watchdog must not take a slow job for a dead one.
+        if heartbeat is not None and time.monotonic() - last_beat >= HEARTBEAT_EVERY_S:
+            heartbeat()
+            last_beat = time.monotonic()
         if frame_num % CANCEL_CHECK_EVERY == 0 and await _cancel_requested(db, job.id):
             cancelled = True
             break

@@ -27,7 +27,7 @@ from app.modules.m07_ingestion.schemas.jobs import (
     JobCapacityOut, JobDetailOut, JobEventOut, JobListOut, JobOut, JobSummaryOut,
 )
 from app.core import audit
-from app.modules.m07_ingestion import chunked_upload, fingerprint, job_service
+from app.modules.m07_ingestion import chunked_upload, fingerprint, job_service, job_slots
 from app.core.settings_service import get_section
 from app.modules.m05_ai_detection.osd_settings import validate_layout_option
 from app.modules.m05_ai_detection import osd_layouts
@@ -416,6 +416,16 @@ async def get_job(job_id: JobId, db: AsyncSession = Depends(get_db)):
                         events=[JobEventOut.model_validate(e) for e in events])
 
 
+def _worker_gone(job: Job) -> bool:
+    """No worker heartbeat for ORPHAN_JOB_SECONDS (or none at all since it started that long ago)."""
+    from app.modules.m07_ingestion.watchdog import heartbeat_age_s
+    age = heartbeat_age_s(job.id)
+    if age is not None:
+        return age > settings.ORPHAN_JOB_SECONDS
+    started = job.started_at or job.created_at
+    return (datetime.utcnow() - started).total_seconds() > settings.ORPHAN_JOB_SECONDS
+
+
 @router.post("/{job_id}/cancel", response_model=JobOut, summary="Cancel a job",
              responses=errors(E_NOT_FOUND, err(
                  409, "invalid_transition", "Cannot cancel a job in status 'done'.", job_status="done")))
@@ -424,17 +434,21 @@ async def cancel_job(job_id: JobId, request: Request, db: AsyncSession = Depends
     """
     * `pending` → `cancelled` immediately (the queued task is revoked);
     * `processing` → `cancel_requested` is set and the worker stops at its next check, keeping the
-      detections found so far (the job then becomes `cancelled`).
+      detections found so far (the job then becomes `cancelled`);
+    * `processing` whose worker is gone (no heartbeat for `ORPHAN_JOB_SECONDS`, e.g. after a redeploy)
+      → `cancelled` at once and its processing slot is freed — also when a cancel was already requested.
 
     Refused with `409 invalid_transition` for `done`/`failed`/`cancelled` jobs or when a cancel was
     already requested. Audited as `job.cancel` (refusals too, as failures).
     """
     job = await _get(db, job_id)
     plan = job_service.cancel_plan(job.status)
-    if plan is None or job.cancel_requested:
+    orphan = plan is not None and plan != "revoke" and _worker_gone(job)
+    if plan is None or (job.cancel_requested and not orphan):
         await _refuse(request, principal, "cancel", job, "invalid_transition",
                       f"Cannot cancel a job in status '{job.status.value}'"
-                      + (" (cancel already requested)." if job.cancel_requested else "."))
+                      + (f" (cancel already requested — the worker stops at its next check; if it was stopped, "
+                         f"try again after {settings.ORPHAN_JOB_SECONDS // 60} minutes)." if job.cancel_requested else "."))
     actor = _actor(principal)
     if plan == "revoke":
         if job.celery_task_id:
@@ -446,9 +460,19 @@ async def cancel_job(job_id: JobId, request: Request, db: AsyncSession = Depends
         job.cancelled_by = actor
         job_service.mark_cancelled(db, job, actor)
     else:
-        job.cancel_requested = True
-        job.cancelled_by = actor
-        job_service.record_event(db, job.id, "cancel_requested", actor)
+        if not job.cancel_requested:
+            job.cancel_requested = True
+            job.cancelled_by = actor
+            job_service.record_event(db, job.id, "cancel_requested", actor)
+        if orphan:
+            # No worker heartbeat for a while (worker killed / redeployed): nobody would ever read
+            # the request — end the job now and free its processing slot.
+            job_service.mark_cancelled(db, job, actor, {"reason": "worker_gone"})
+            plan = "orphan"
+            try:
+                job_slots.release(job_slots.client(), job.id)
+            except Exception:
+                pass
     audit.record(db, request, "job.cancel", principal=principal, object_type="job", object_id=job.id,
                  details={"from": "pending" if plan == "revoke" else "processing", "mode": plan})
     await db.commit()

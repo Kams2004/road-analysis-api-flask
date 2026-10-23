@@ -7237,7 +7237,7 @@
           "Jobs"
         ],
         "summary": "Cancel a job",
-        "description": "* `pending` → `cancelled` immediately (the queued task is revoked);\n* `processing` → `cancel_requested` is set and the worker stops at its next check, keeping the\n  detections found so far (the job then becomes `cancelled`).\n\nRefused with `409 invalid_transition` for `done`/`failed`/`cancelled` jobs or when a cancel was\nalready requested. Audited as `job.cancel` (refusals too, as failures).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
+        "description": "* `pending` → `cancelled` immediately (the queued task is revoked);\n* `processing` → `cancel_requested` is set and the worker stops at its next check, keeping the\n  detections found so far (the job then becomes `cancelled`);\n* `processing` whose worker is gone (no heartbeat for `ORPHAN_JOB_SECONDS`, e.g. after a redeploy)\n  → `cancelled` at once and its processing slot is freed — also when a cancel was already requested.\n\nRefused with `409 invalid_transition` for `done`/`failed`/`cancelled` jobs or when a cancel was\nalready requested. Audited as `job.cancel` (refusals too, as failures).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
         "operationId": "cancel_job",
         "parameters": [
           {

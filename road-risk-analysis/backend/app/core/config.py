@@ -99,8 +99,13 @@ class Settings(BaseSettings):
     # at API start-up, at most this many lookups in the background (0 = off).
     GEOCODING_BACKFILL_ON_STARTUP: int = 300
 
-    # Watchdog — beat runs it every 5 min (app.workers.job_tasks.watchdog_stale_jobs)
-    STALE_JOB_MINUTES: int = 60
+    # Watchdog — beat runs it every 5 min (app.workers.job_tasks.watchdog_stale_jobs): a processing
+    # job whose worker heartbeat (Redis, at least every 30 s while it works) is older than this is
+    # stale (worker killed / container recreated). A long job that keeps beating is never touched.
+    STALE_JOB_MINUTES: int = 10
+    # Cancelling a processing job whose worker has not beaten for this long ends it at once
+    # (nobody would ever read the cancel request).
+    ORPHAN_JOB_SECONDS: int = 180
 
     # Module 7 — hard upper bound of parallel jobs: the worker's --concurrency
     # (docker-compose.yml reads the same variable). The runtime limit is

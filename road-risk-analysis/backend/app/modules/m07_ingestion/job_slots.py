@@ -72,6 +72,12 @@ def heartbeat(r, job_id: str, now: Optional[float] = None, key: str = SLOTS_KEY)
     r.zadd(key, {job_id: time.time() if now is None else now}, xx=True)
 
 
+def last_beat(r, job_id: str, key: str = SLOTS_KEY) -> Optional[float]:
+    """Epoch of the job's last heartbeat (None: holds no slot)."""
+    score = r.zscore(key, job_id)
+    return float(score) if score is not None else None
+
+
 def release(r, job_id: str, key: str = SLOTS_KEY) -> None:
     r.zrem(key, job_id)
 
