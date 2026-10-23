@@ -5877,6 +5877,806 @@
         "x-api-key": false
       }
     },
+    "/jobs/uploads/": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Start a chunked upload",
+        "description": "Large videos are sent in chunks (each a short request, retried on its own) instead of one\n`POST /jobs/` that a slow link or a proxy timeout would cut: start here, send every chunk to\n`POST /jobs/uploads/{upload_id}/chunks/{index}`, then `POST /jobs/uploads/{upload_id}/complete`.\nUnfinished uploads are removed after 24 hours.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "operationId": "start_upload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadInitIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadStateOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Unsupported file type: .txt",
+                    "value": {
+                      "detail": "Unsupported file type: .txt"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "add"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Error — `file_too_large`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "file_too_large": {
+                    "summary": "file_too_large",
+                    "value": {
+                      "detail": {
+                        "code": "file_too_large",
+                        "message": "Files are limited to 20 GB."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:add",
+        "x-api-key": false
+      }
+    },
+    "/jobs/uploads/{upload_id}/": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get a chunked upload",
+        "description": "The chunks already received — to resume an interrupted upload.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "operationId": "get_upload",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadStateOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found — `upload_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "upload_not_found": {
+                    "summary": "upload_not_found",
+                    "value": {
+                      "detail": {
+                        "code": "upload_not_found",
+                        "message": "Unknown or expired upload."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:view",
+        "x-api-key": false
+      }
+    },
+    "/jobs/uploads/{upload_id}/chunks/{index}/": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Send one chunk",
+        "description": "Raw bytes of chunk `index` (`application/octet-stream`, exactly `chunk_size` bytes except the\nlast one). Sending a chunk again overwrites it (safe retries).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "operationId": "put_chunk",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadStateOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "add"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found — `upload_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "upload_not_found": {
+                    "summary": "upload_not_found",
+                    "value": {
+                      "detail": {
+                        "code": "upload_not_found",
+                        "message": "Unknown or expired upload."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity — `invalid_chunk`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalid_chunk": {
+                    "summary": "invalid_chunk",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_chunk",
+                        "message": "Chunk 3 must be 8388608 bytes (got 1200)."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:add",
+        "x-api-key": false
+      }
+    },
+    "/jobs/uploads/{upload_id}/complete/": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Finish a chunked upload and create the job",
+        "description": "Creates the job from the received file — same options, duplicate check and answer as `POST /jobs/`.\nA `409 duplicate_video` keeps the upload: call again with `force=true` to process it anyway\nwithout sending the file again.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "operationId": "complete_upload",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "As `POST /jobs/`.",
+              "title": "Models"
+            },
+            "description": "As `POST /jobs/`."
+          },
+          {
+            "name": "frame_skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 60,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "As `POST /jobs/`.",
+              "title": "Frame Skip"
+            },
+            "description": "As `POST /jobs/`."
+          },
+          {
+            "name": "osd_layout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "As `POST /jobs/`.",
+              "title": "Osd Layout"
+            },
+            "description": "As `POST /jobs/`."
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "As `POST /jobs/`.",
+              "default": false,
+              "title": "Force"
+            },
+            "description": "As `POST /jobs/`."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "add"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found — `upload_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "upload_not_found": {
+                    "summary": "upload_not_found",
+                    "value": {
+                      "detail": {
+                        "code": "upload_not_found",
+                        "message": "Unknown or expired upload."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `duplicate_video`, `upload_incomplete`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "upload_incomplete": {
+                    "summary": "upload_incomplete",
+                    "value": {
+                      "detail": {
+                        "code": "upload_incomplete",
+                        "message": "2 chunk(s) missing, first: 7."
+                      }
+                    }
+                  },
+                  "duplicate_video": {
+                    "summary": "duplicate_video",
+                    "value": {
+                      "detail": {
+                        "code": "duplicate_video",
+                        "message": "This video was already processed (job 7d0c5b9e…)."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:add",
+        "x-api-key": false
+      }
+    },
+    "/jobs/uploads/{upload_id}/abort/": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Abandon a chunked upload",
+        "description": "Deletes the chunks received so far.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "operationId": "abort_upload",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "add"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found — `upload_not_found`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "upload_not_found": {
+                    "summary": "upload_not_found",
+                    "value": {
+                      "detail": {
+                        "code": "upload_not_found",
+                        "message": "Unknown or expired upload."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:add",
+        "x-api-key": false
+      }
+    },
     "/jobs/osd-layouts": {
       "get": {
         "tags": [
@@ -34311,6 +35111,11 @@
             "type": "boolean",
             "title": "Pothole Reject Edge Touching",
             "default": true
+          },
+          "ignore_osd_text_boxes": {
+            "type": "boolean",
+            "title": "Ignore Osd Text Boxes",
+            "default": true
           }
         },
         "type": "object",
@@ -54074,6 +54879,73 @@
         ],
         "title": "UpcomingSegment",
         "description": "A road segment ahead of the vehicle on its matched route window."
+      },
+      "UploadInitIn": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "description": "Original file name (its extension decides video / image)."
+          },
+          "size": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Size",
+            "description": "File size in bytes."
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "size"
+        ],
+        "title": "UploadInitIn"
+      },
+      "UploadStateOut": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "title": "Upload Id",
+            "description": "Upload id (32 hex characters)."
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "chunk_size": {
+            "type": "integer",
+            "title": "Chunk Size",
+            "description": "Bytes per chunk (the last one is shorter)."
+          },
+          "total_chunks": {
+            "type": "integer",
+            "title": "Total Chunks"
+          },
+          "received": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Received",
+            "description": "Chunk indexes already stored."
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "filename",
+          "size",
+          "chunk_size",
+          "total_chunks",
+          "received"
+        ],
+        "title": "UploadStateOut"
       },
       "UserCreateIn": {
         "properties": {

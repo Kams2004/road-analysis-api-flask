@@ -4,6 +4,7 @@ with filters, detail with lifecycle events, cancel, retry, delete, queue
 capacity and status summary. Lifecycle rules: app.modules.m07_ingestion.job_service.
 Every user action is audited here (the router is self-audited in main.py).
 """
+import asyncio
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, Request
 from fastapi import Path as PathParam
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +27,7 @@ from app.modules.m07_ingestion.schemas.jobs import (
     JobCapacityOut, JobDetailOut, JobEventOut, JobListOut, JobOut, JobSummaryOut,
 )
 from app.core import audit
-from app.modules.m07_ingestion import fingerprint, job_service
+from app.modules.m07_ingestion import chunked_upload, fingerprint, job_service
 from app.core.settings_service import get_section
 from app.modules.m05_ai_detection.osd_settings import validate_layout_option
 from app.modules.m05_ai_detection import osd_layouts
@@ -131,29 +133,184 @@ async def submit_job(
             hasher.update(chunk)
     fp = hasher.fingerprint()
 
-    actor = _actor(principal)
+    previous = await _refuse_duplicate(db, request, principal, fp, file.filename, force,
+                                       discard=lambda: tmp_path.unlink(missing_ok=True))
+    return await _create_upload_job(db, request, principal, tmp_path=tmp_path, filename=file.filename, fp=fp,
+                                    enabled=enabled, frame_skip=frame_skip, layout=layout, previous=previous)
+
+
+async def _refuse_duplicate(db: AsyncSession, request: Request, principal: Principal, fp: str,
+                            filename: Optional[str], force: bool, discard=None):
+    """409 duplicate_video when the same content is done / queued / processing (unless `force`);
+    returns the previous job (or None)."""
     previous = await fingerprint.find_duplicate(db, fp)
     if previous is not None and not force:
-        tmp_path.unlink(missing_ok=True)
+        if discard is not None:
+            discard()
         details = fingerprint.duplicate_details(previous)
         await audit.record_now(request, "job.create", principal=principal, outcome="failure", object_type="job",
-                               details={"code": "duplicate_video", "filename": file.filename, **details})
+                               details={"code": "duplicate_video", "filename": filename, **details})
         raise api_error(409, "duplicate_video",
                         f"This video was already processed (job {previous.id}).", fingerprint=fp, **details)
+    return previous
+
+
+async def _create_upload_job(db: AsyncSession, request: Request, principal: Principal, *, tmp_path: Path,
+                             filename: Optional[str], fp: str, enabled, frame_skip: Optional[int],
+                             layout: Optional[str], previous) -> Job:
+    actor = _actor(principal)
     job = await job_service.new_job(
-        db, filename=file.filename, source_type=SourceType.upload.value, enabled=enabled,
+        db, filename=filename, source_type=SourceType.upload.value, enabled=enabled,
         source_path=str(tmp_path), submitted_by=actor, frame_skip_override=frame_skip,
-        source_name=file.filename,
+        source_name=filename,
     )
     job.content_fingerprint = fp
     job.osd_layout_requested = layout
     audit.record(db, request, "job.create", principal=principal, object_type="job", object_id=job.id,
-                 details={"filename": file.filename, "models": enabled, "frame_skip": job.frame_skip,
+                 details={"filename": filename, "models": enabled, "frame_skip": job.frame_skip,
                           **({"osd_layout": layout} if layout else {}),
                           **({"forced_duplicate_of": previous.id} if previous is not None else {})})
     await job_service.enqueue_and_commit(db, job, actor)
     await db.refresh(job)
     return job
+
+
+# ── chunked (resumable) upload — app.modules.m07_ingestion.chunked_upload ──────
+
+class UploadInitIn(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255, description="Original file name (its extension "
+                                                                         "decides video / image).")
+    size: int = Field(..., gt=0, description="File size in bytes.")
+
+
+class UploadStateOut(BaseModel):
+    upload_id: str = Field(description="Upload id (32 hex characters).")
+    filename: str
+    size: int
+    chunk_size: int = Field(description="Bytes per chunk (the last one is shorter).")
+    total_chunks: int
+    received: list[int] = Field(description="Chunk indexes already stored.")
+
+
+def _upload_error(exc: chunked_upload.UploadError):
+    return api_error(exc.status, exc.code, exc.message)
+
+
+def _state(up: chunked_upload.Upload) -> dict:
+    return {"upload_id": up.id, "filename": up.filename, "size": up.size, "chunk_size": up.chunk_size,
+            "total_chunks": up.total_chunks, "received": up.received()}
+
+
+def _owned(upload_id: str, principal: Principal) -> chunked_upload.Upload:
+    try:
+        return chunked_upload.load(TEMP_DIR, upload_id, _actor(principal))
+    except chunked_upload.UploadError as exc:
+        raise _upload_error(exc)
+
+
+@router.post("/uploads/", response_model=UploadStateOut, status_code=201, summary="Start a chunked upload",
+             responses=errors(legacy(400, "Unsupported file type: .txt"),
+                              err(413, "file_too_large", "Files are limited to 20 GB.")))
+async def start_upload(body: UploadInitIn, principal: Principal = Depends(get_principal)):
+    """
+    Large videos are sent in chunks (each a short request, retried on its own) instead of one
+    `POST /jobs/` that a slow link or a proxy timeout would cut: start here, send every chunk to
+    `POST /jobs/uploads/{upload_id}/chunks/{index}`, then `POST /jobs/uploads/{upload_id}/complete`.
+    Unfinished uploads are removed after 24 hours.
+    """
+    ext = Path(body.filename).suffix.lower()
+    if ext not in IMAGE_EXTS | VIDEO_EXTS:
+        raise HTTPException(400, f"Unsupported file type: {ext}")
+    chunked_upload.sweep(TEMP_DIR)
+    try:
+        up = chunked_upload.create(TEMP_DIR, uuid.uuid4().hex, Path(body.filename).name, body.size, _actor(principal))
+    except chunked_upload.UploadError as exc:
+        raise _upload_error(exc)
+    return _state(up)
+
+
+@router.get("/uploads/{upload_id}/", response_model=UploadStateOut, summary="Get a chunked upload",
+            responses=errors(err(404, "upload_not_found", "Unknown or expired upload.")))
+async def get_upload(upload_id: str, principal: Principal = Depends(get_principal)):
+    """The chunks already received — to resume an interrupted upload."""
+    return _state(_owned(upload_id, principal))
+
+
+@router.post("/uploads/{upload_id}/chunks/{index}/", response_model=UploadStateOut, summary="Send one chunk",
+             responses=errors(err(404, "upload_not_found", "Unknown or expired upload."),
+                              err(422, "invalid_chunk", "Chunk 3 must be 8388608 bytes (got 1200).")))
+async def put_chunk(upload_id: str, index: int, request: Request, principal: Principal = Depends(get_principal)):
+    """Raw bytes of chunk `index` (`application/octet-stream`, exactly `chunk_size` bytes except the
+    last one). Sending a chunk again overwrites it (safe retries)."""
+    up = _owned(upload_id, principal)
+    if index < 0 or index >= up.total_chunks:
+        raise api_error(422, "invalid_chunk", f"Chunk index must be 0–{up.total_chunks - 1}.")
+    expected = up.chunk_len(index)
+    body = bytearray()
+    async for part in request.stream():
+        body.extend(part)
+        if len(body) > expected:
+            raise api_error(422, "invalid_chunk", f"Chunk {index} must be {expected} bytes.")
+    try:
+        await asyncio.to_thread(chunked_upload.write_chunk, up, index, bytes(body))
+    except chunked_upload.UploadError as exc:
+        raise _upload_error(exc)
+    return _state(up)
+
+
+@router.post("/uploads/{upload_id}/complete/", response_model=JobOut, status_code=202,
+             summary="Finish a chunked upload and create the job",
+             responses=errors(err(404, "upload_not_found", "Unknown or expired upload."),
+                              err(409, "upload_incomplete", "2 chunk(s) missing, first: 7."),
+                              err(409, "duplicate_video", "This video was already processed (job 7d0c5b9e…).")))
+async def complete_upload(
+    upload_id: str, request: Request,
+    models: Optional[str] = Query(None, description="As `POST /jobs/`."),
+    frame_skip: Optional[int] = Query(None, ge=1, le=60, description="As `POST /jobs/`."),
+    osd_layout: Optional[str] = Query(None, description="As `POST /jobs/`."),
+    force: bool = Query(False, description="As `POST /jobs/`."),
+    db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """
+    Creates the job from the received file — same options, duplicate check and answer as `POST /jobs/`.
+    A `409 duplicate_video` keeps the upload: call again with `force=true` to process it anyway
+    without sending the file again.
+    """
+    up = _owned(upload_id, principal)
+    missing = up.missing()
+    if missing:
+        raise api_error(409, "upload_incomplete", f"{len(missing)} chunk(s) missing, first: {missing[0]}.",
+                        missing=missing[:50])
+    try:
+        enabled = job_service.parse_models(models)
+        osd_cfg = await get_section(db, "osd")
+        layout = validate_layout_option(osd_cfg, osd_layout)  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    def digest() -> str:
+        h = fingerprint.Hasher()
+        with open(up.data, "rb") as fh:
+            while chunk := fh.read(1 << 20):
+                h.update(chunk)
+        return h.fingerprint()
+    fp = await asyncio.to_thread(digest)
+    previous = await _refuse_duplicate(db, request, principal, fp, up.filename, force)
+    ext = Path(up.filename).suffix.lower()
+    try:
+        tmp_path = await asyncio.to_thread(chunked_upload.take_file, up, TEMP_DIR / f"{uuid.uuid4().hex}{ext}")
+    except chunked_upload.UploadError as exc:
+        raise _upload_error(exc)
+    return await _create_upload_job(db, request, principal, tmp_path=tmp_path, filename=up.filename, fp=fp,
+                                    enabled=enabled, frame_skip=frame_skip, layout=layout, previous=previous)
+
+
+@router.post("/uploads/{upload_id}/abort/", status_code=204, summary="Abandon a chunked upload",
+             responses=errors(err(404, "upload_not_found", "Unknown or expired upload.")))
+async def abort_upload(upload_id: str, principal: Principal = Depends(get_principal)):
+    """Deletes the chunks received so far."""
+    chunked_upload.remove(_owned(upload_id, principal))
 
 
 @router.get("/osd-layouts", summary="Dashcam overlay layouts")
