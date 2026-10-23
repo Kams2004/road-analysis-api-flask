@@ -102,6 +102,7 @@ services:
       - ../../../ai/models:/models:ro
       - ../../secrets:/app/secrets:ro     # SFTP passwords: ~/viasafe-v2/infra/secrets/sftp.env (chmod 600)
       - uploads:/tmp/road_analysis
+      - ocr_models:/root/.paddleocr       # PaddleOCR models: downloaded once, kept across redeploys
     ports:
       - "${API_PORT:-18080}:8080"
     depends_on:
@@ -117,6 +118,7 @@ services:
       - ../../../ai/models:/models:ro
       - ../../secrets:/app/secrets:ro
       - uploads:/tmp/road_analysis
+      - ocr_models:/root/.paddleocr
     depends_on: [api]
     restart: unless-stopped
 
@@ -176,6 +178,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  ocr_models:
   ls_data:
   db_data:
   osrm_data:

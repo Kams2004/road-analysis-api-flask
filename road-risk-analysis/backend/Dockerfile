@@ -37,11 +37,9 @@ RUN pip install --no-cache-dir --timeout=600 --retries=10 "reportlab==4.4.4"
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# PaddleOCR (dashcam overlay text) downloads its detection / recognition models on first use:
-# fetch them at build time so a new worker container never waits on the network for them.
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=False, lang='en', show_log=False)" \
-    && ls -R /root/.paddleocr | head -20
-
+# PaddleOCR downloads its models on first use into /root/.paddleocr: the server stack keeps that
+# folder in a volume (ocr_models), so they are fetched once, not at every redeploy. (Initialising
+# PaddleOCR during `docker build` segfaults — zlib clash inside the build environment.)
 COPY . .
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
