@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # CPU threads of the PaddleOCR engine (dashcam overlay text) per worker process; its default (10)
     # competes with the detectors when several jobs run at once.
     OCR_CPU_THREADS:           int = 2
+    # Per worker process (one video job): PyTorch threads when OMP_NUM_THREADS is not set, and
+    # OpenCV (video decoding) threads. Keep WORKER_CONCURRENCY × (torch + OCR + cv2) ≈ the cores.
+    WORKER_TORCH_THREADS:      int = 4
+    WORKER_CV2_THREADS:        int = 2
 
     RATE_LIMIT_AUTH_PER_MIN:   int = 30
     RATE_LIMIT_PUBLIC_PER_MIN: int = 600

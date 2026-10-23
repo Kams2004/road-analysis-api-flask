@@ -14,6 +14,26 @@ celery_app = Celery(
 
 
 @worker_process_init.connect
+def _cap_threads(**_):
+    """One video job per worker process: cap its thread pools so `WORKER_CONCURRENCY` jobs do not
+    run far more threads than the machine has cores (PyTorch, OpenCV decoding and PaddleOCR each
+    start one pool per core by default — on a shared server they then mostly wait for each other)."""
+    import os
+    n = max(1, int(os.getenv("OMP_NUM_THREADS") or settings.WORKER_TORCH_THREADS))
+    try:
+        import torch
+        torch.set_num_threads(n)
+        torch.set_num_interop_threads(1)
+    except Exception:            # torch not installed (light test env) or already started
+        pass
+    try:
+        import cv2
+        cv2.setNumThreads(settings.WORKER_CV2_THREADS)
+    except Exception:
+        pass
+
+
+@worker_process_init.connect
 def _start_cache_bus(**_):
     """Each worker process drops its cached settings as soon as an admin saves them
     (app/core/cache_bus.py) instead of waiting for the 10 s TTL."""

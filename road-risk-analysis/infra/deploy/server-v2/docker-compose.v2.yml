@@ -36,7 +36,7 @@ x-api-env: &api-env
   BOOTSTRAP_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
   HISTORICAL_YMANE_SYNC_ENABLED: "false"
   TEMP_DIR: /tmp/road_analysis
-  OMP_NUM_THREADS: "2"
+  OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}     # AI threads per video job (one job per worker process)
 
 services:
   db:
@@ -111,7 +111,7 @@ services:
 
   worker:
     image: viasafe-v2-api:latest
-    command: celery -A app.workers.celery_app worker -Q processing --concurrency=${WORKER_CONCURRENCY:-2} --loglevel=info
+    command: celery -A app.workers.celery_app worker -Q processing --concurrency=${WORKER_CONCURRENCY:-1} --loglevel=info
     environment: *api-env
     volumes:
       - ../../../ai/models:/models:ro
