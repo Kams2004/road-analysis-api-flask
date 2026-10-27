@@ -96,7 +96,10 @@ fi
 # Google / Microsoft accept a plain-http sign-in return address only on localhost: without HTTPS the
 # drives are connected once through an SSH tunnel (ssh -L 3000:localhost:<WEB_PORT>) — docs/HTTPS.md
 if [ -n "${HTTPS_DOMAIN:-}" ]; then CLOUD_OAUTH_BASE_URL="$WEB_URL"; else CLOUD_OAUTH_BASE_URL="http://localhost:3000"; fi
-export WEB_URL PUBLIC_API_URL MEDIA_URL LS_PUBLIC_URL COOKIE_SECURE CLOUD_OAUTH_BASE_URL
+# With HTTPS the plain-http ports only listen on the server itself (health checks, SSH tunnels):
+# from outside everything goes through Caddy (80/443). HTTPS_PLAIN_PORTS=public in .env keeps them open.
+if [ -n "${HTTPS_DOMAIN:-}" ] && [ "${HTTPS_PLAIN_PORTS:-local}" != "public" ]; then PUBLISH_ADDR=127.0.0.1; else PUBLISH_ADDR=0.0.0.0; fi
+export WEB_URL PUBLIC_API_URL MEDIA_URL LS_PUBLIC_URL COOKIE_SECURE CLOUD_OAUTH_BASE_URL PUBLISH_ADDR
 
 # ── Label Studio settings (box review of the training data), generated once ─
 LS_ENV=../../secrets/labelstudio.env

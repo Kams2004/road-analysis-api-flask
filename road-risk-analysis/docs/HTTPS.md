@@ -35,9 +35,11 @@ rebuilt with the HTTPS API address, Label Studio's public address and the image 
 Then add the line to `.env` and run `./deploy.sh`. The first certificate takes a few seconds;
 `./deploy.sh --logs caddy` shows the issuance.
 
-The plain-HTTP ports stay open meanwhile; once everything works over HTTPS (and the mobile app is built
-with `EXPO_PUBLIC_API_URL=https://api.<domain>`, `EXPO_PUBLIC_MINIO_URL=https://media.<domain>`), they can
-be closed by binding them to 127.0.0.1 in `docker-compose.v2.yml`.
+With HTTPS on, the plain-HTTP ports (13000, 18080, 19200, 18085) only listen on the server itself
+(127.0.0.1: health checks, SSH tunnels); from outside everything goes through Caddy on 80/443. Set
+`HTTPS_PLAIN_PORTS=public` in `.env` to keep them reachable (e.g. while an old mobile build still uses
+them). The mobile app must be built with the HTTPS addresses (`EXPO_PUBLIC_API_URL`,
+`EXPO_PUBLIC_MINIO_URL`).
 
 ## Google / Microsoft drive sign-in
 

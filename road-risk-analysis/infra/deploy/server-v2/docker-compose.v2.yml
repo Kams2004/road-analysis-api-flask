@@ -89,7 +89,7 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "${MEDIA_PORT:-19200}:9000"     # read-only demo images for the mobile app
+      - "${PUBLISH_ADDR:-0.0.0.0}:${MEDIA_PORT:-19200}:9000"     # images for the mobile app (127.0.0.1 with HTTPS)
     restart: unless-stopped
 
   api:
@@ -106,7 +106,7 @@ services:
       - uploads:/tmp/road_analysis
       - ocr_models:/root/.paddleocr       # PaddleOCR models: downloaded once, kept across redeploys
     ports:
-      - "${API_PORT:-18080}:8080"
+      - "${PUBLISH_ADDR:-0.0.0.0}:${API_PORT:-18080}:8080"
     depends_on:
       db: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -162,7 +162,7 @@ services:
     volumes:
       - ls_data:/label-studio/data
     ports:
-      - "${LS_PORT:-18085}:8080"
+      - "${PUBLISH_ADDR:-0.0.0.0}:${LS_PORT:-18085}:8080"
     mem_limit: 2g
     cpus: 2
     restart: unless-stopped
@@ -178,7 +178,7 @@ services:
       MINIO_URL: http://minio:9000
       COOKIE_SECURE: ${COOKIE_SECURE:-false}     # true with HTTPS (deploy.sh)
     ports:
-      - "${WEB_PORT:-13000}:3001"
+      - "${PUBLISH_ADDR:-0.0.0.0}:${WEB_PORT:-13000}:3001"
     depends_on: [api]
     restart: unless-stopped
 
