@@ -84,8 +84,11 @@ LS_PORT="${LS_PORT:-18085}"
 
 # ── public addresses: HTTPS through Caddy when HTTPS_DOMAIN is set, else http://<ip>:<port> ──
 if [ -n "${HTTPS_DOMAIN:-}" ]; then
-  WEB_URL="https://${HTTPS_DOMAIN}"; PUBLIC_API_URL="https://api.${HTTPS_DOMAIN}"
-  MEDIA_URL="https://media.${HTTPS_DOMAIN}"; LS_PUBLIC_URL="https://labels.${HTTPS_DOMAIN}"; COOKIE_SECURE=true
+  # host names of the API / media / Label Studio: api.<domain> … unless set in .env (API_HOST=…)
+  API_HOST="${API_HOST:-api.${HTTPS_DOMAIN}}"; MEDIA_HOST="${MEDIA_HOST:-media.${HTTPS_DOMAIN}}"
+  LABELS_HOST="${LABELS_HOST:-labels.${HTTPS_DOMAIN}}"; export API_HOST MEDIA_HOST LABELS_HOST
+  WEB_URL="https://${HTTPS_DOMAIN}"; PUBLIC_API_URL="https://${API_HOST}"
+  MEDIA_URL="https://${MEDIA_HOST}"; LS_PUBLIC_URL="https://${LABELS_HOST}"; COOKIE_SECURE=true
 else
   WEB_URL="http://${PUBLIC_HOST}:${WEB_PORT}"; PUBLIC_API_URL="http://${PUBLIC_HOST}:${API_PORT}"
   MEDIA_URL="http://${PUBLIC_HOST}:${MEDIA_PORT}"; LS_PUBLIC_URL="http://${PUBLIC_HOST}:${LS_PORT}"; COOKIE_SECURE=false

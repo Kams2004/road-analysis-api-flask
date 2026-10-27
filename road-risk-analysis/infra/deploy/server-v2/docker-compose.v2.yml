@@ -189,6 +189,9 @@ services:
     image: caddy:2.10.2-alpine
     environment:
       HTTPS_DOMAIN: ${HTTPS_DOMAIN:-}
+      API_HOST: ${API_HOST:-}
+      MEDIA_HOST: ${MEDIA_HOST:-}
+      LABELS_HOST: ${LABELS_HOST:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

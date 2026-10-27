@@ -18,7 +18,9 @@ renews the Let's Encrypt certificates by itself and redirects HTTP to HTTPS:
 | `https://media.<HTTPS_DOMAIN>` | public images of the mobile app (MinIO) |
 | `https://labels.<HTTPS_DOMAIN>` | Label Studio |
 
-and switches the rest to these addresses: the console's session cookie becomes `Secure`, the web image is
+The three other host names can be set in `.env` when the DNS uses another pattern, e.g.
+`API_HOST=api-roadrisk.camtrack.net`, `MEDIA_HOST=media-roadrisk.camtrack.net`,
+`LABELS_HOST=labels-roadrisk.camtrack.net`. deploy.sh also and switches the rest to these addresses: the console's session cookie becomes `Secure`, the web image is
 rebuilt with the HTTPS API address, Label Studio's public address and the image links it loads
 (`infra/secrets/labelstudio.env`) follow.
 

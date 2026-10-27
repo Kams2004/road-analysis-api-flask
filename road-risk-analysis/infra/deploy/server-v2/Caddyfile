@@ -2,10 +2,11 @@
 # when HTTPS_DOMAIN is set in .env). Caddy obtains and renews the Let's Encrypt certificates by
 # itself and redirects HTTP to HTTPS. Each name needs a DNS A record pointing to this server.
 #
-#   <HTTPS_DOMAIN>          web console
-#   api.<HTTPS_DOMAIN>      API (mobile app, Label Studio images, /docs)
-#   media.<HTTPS_DOMAIN>    public images of the mobile app (MinIO, read-only buckets)
-#   labels.<HTTPS_DOMAIN>   Label Studio (box review)
+#   <HTTPS_DOMAIN>   web console
+#   <API_HOST>       API (mobile app, Label Studio images, /docs)        default api.<HTTPS_DOMAIN>
+#   <MEDIA_HOST>     public images of the mobile app (MinIO, read-only)   default media.<HTTPS_DOMAIN>
+#   <LABELS_HOST>    Label Studio (box review)                            default labels.<HTTPS_DOMAIN>
+# (deploy.sh sets the three host names; override them in .env, e.g. API_HOST=api-roadrisk.camtrack.net)
 # No ACME e-mail: Let's Encrypt no longer sends expiry mails and Caddy renews by itself.
 
 {$HTTPS_DOMAIN} {
@@ -13,15 +14,15 @@
 	reverse_proxy web:3001
 }
 
-api.{$HTTPS_DOMAIN} {
+{$API_HOST} {
 	encode zstd gzip
 	reverse_proxy api:8080
 }
 
-media.{$HTTPS_DOMAIN} {
+{$MEDIA_HOST} {
 	reverse_proxy minio:9000
 }
 
-labels.{$HTTPS_DOMAIN} {
+{$LABELS_HOST} {
 	reverse_proxy labelstudio:8080
 }
