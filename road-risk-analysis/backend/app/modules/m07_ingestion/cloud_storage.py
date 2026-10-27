@@ -33,7 +33,9 @@ GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder"
 
 MS_AUTH_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 MS_TOKEN_URL = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-MS_SCOPE = "offline_access Files.Read User.Read"
+# Files.Read.All: also the folders other people shared with the account (OneDrive for Business /
+# SharePoint) — accounts connected with the former Files.Read must reconnect to see them.
+MS_SCOPE = "offline_access Files.Read.All User.Read"
 GRAPH_URL = "https://graph.microsoft.com/v1.0"
 
 STATE_TTL_S = 15 * 60

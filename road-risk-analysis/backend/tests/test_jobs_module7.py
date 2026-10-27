@@ -371,7 +371,7 @@ def test_authorize_urls():
     assert gq["scope"] == ["https://www.googleapis.com/auth/drive.readonly openid email"] and gq["state"] == ["S"]
     m = urlparse(cs.authorize_url("onedrive", CFG, "S"))
     assert m.path == "/contoso/oauth2/v2.0/authorize"
-    assert parse_qs(m.query)["scope"] == ["offline_access Files.Read User.Read"]
+    assert parse_qs(m.query)["scope"] == ["offline_access Files.Read.All User.Read"]
     with pytest.raises(cs.CloudError):
         cs.authorize_url("google_drive", CloudSettings(), "S")   # client not configured
 

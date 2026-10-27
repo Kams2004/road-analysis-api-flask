@@ -88,6 +88,7 @@ class DriveEntry:
     web_url: Optional[str] = None
     path: Optional[str] = None                 # folder path when found by a recursive walk
     media_hint: Optional[str] = None           # set by the provider: "video" / "image" / "" (not importable)
+    virtual: bool = False                      # navigation-only folder ("Shared with me"): never walked
 
     @property
     def media(self) -> Optional[str]:
@@ -214,7 +215,7 @@ class DriveProvider(ABC):
                         return
             if recursive and depth < max_depth:
                 for e in entries:
-                    if e.kind == "folder":
+                    if e.kind == "folder" and not e.virtual:
                         await walk(e.id, f"{path}/{e.name}" if path else e.name, depth + 1, c)
 
         async with _client(client) as c:
@@ -389,12 +390,41 @@ class GoogleDriveProvider(DriveProvider):
 
 # ── Microsoft OneDrive ───────────────────────────────────────────────────────
 
+# Items of another person's drive (a folder shared with the connected account, OneDrive for
+# Business / SharePoint) are addressed "<driveId>~<itemId>" — Graph ids never contain "~". Items
+# of the account's own drive keep their plain id (connections and imports made before stay valid).
+# "shared" is the virtual folder listing what was shared with the account.
+SHARED_FOLDER = "shared"
+_REMOTE_SEP = "~"
+
+
+def _split_item(item_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """(driveId or None for the own drive, itemId)."""
+    if item_id and _REMOTE_SEP in item_id:
+        drive, _, item = item_id.partition(_REMOTE_SEP)
+        return drive, item
+    return None, item_id
+
+
+def _remote_id(drive_id: Optional[str], item_id: str) -> str:
+    return f"{drive_id}{_REMOTE_SEP}{item_id}" if drive_id else item_id
+
+
 def _graph_item_url(item_id: Optional[str]) -> str:
     check_id(item_id)
-    return f"{GRAPH_URL}/me/drive/items/{item_id}" if item_id and item_id != "root" else f"{GRAPH_URL}/me/drive/root"
+    drive, item = _split_item(item_id)
+    if drive:
+        return f"{GRAPH_URL}/drives/{drive}/items/{item}"
+    return f"{GRAPH_URL}/me/drive/items/{item}" if item and item != "root" else f"{GRAPH_URL}/me/drive/root"
 
 
-def _onedrive_entry(i: dict) -> DriveEntry:
+def _onedrive_entry(i: dict, drive_id: Optional[str] = None) -> DriveEntry:
+    """`drive_id`: the item lives in another person's drive (ids become "<driveId>~<itemId>").
+    A "Shared with me" entry carries the real item in `remoteItem`."""
+    remote = i.get("remoteItem")
+    if remote:
+        drive_id = (remote.get("parentReference") or {}).get("driveId") or drive_id
+        i = {**remote, "name": i.get("name") or remote.get("name")}
     file = i.get("file") or {}
     video = i.get("video") or {}
     image = i.get("image") or i.get("photo") or {}
@@ -407,7 +437,7 @@ def _onedrive_entry(i: dict) -> DriveEntry:
     hashes = file.get("hashes") or {}
     dur = video.get("duration")
     return DriveEntry(
-        id=i["id"], name=i.get("name") or i["id"], kind="folder" if folder else "file",
+        id=_remote_id(drive_id, i["id"]), name=i.get("name") or i["id"], kind="folder" if folder else "file",
         mime_type=file.get("mimeType"), size=i.get("size") if not folder else None,
         modified=i.get("lastModifiedDateTime"),
         version=None if folder else (i.get("cTag") or i.get("eTag") or i.get("lastModifiedDateTime")),
@@ -424,6 +454,9 @@ class OneDriveProvider(DriveProvider):
     search_recursive = True                    # Graph search(q=…) covers the whole sub-tree
 
     async def browse(self, token, folder_id, *, page_token=None, query=None, client=None) -> BrowsePage:
+        if folder_id == SHARED_FOLDER:
+            return await self._shared_with_me(token, page_token, query, client)
+        drive, _ = _split_item(folder_id)
         if page_token:
             # nextLink is an absolute Graph URL — never follow anything else with our token.
             if not page_token.startswith(GRAPH_URL + "/"):
@@ -440,7 +473,29 @@ class OneDriveProvider(DriveProvider):
             resp = await _call(lambda: c.get(url, params=params, headers=_auth(token)), "OneDrive listing")
         _status_error(resp, "OneDrive listing")
         body = resp.json()
-        entries = [_onedrive_entry(i) for i in body.get("value", []) if "folder" in i or "file" in i]
+        entries = [_onedrive_entry(i, drive) for i in body.get("value", []) if "folder" in i or "file" in i]
+        if (folder_id in (None, "root")) and not page_token and not (query and query.strip()):
+            # the own drive's root also offers what other people shared with this account
+            entries.insert(0, DriveEntry(id=SHARED_FOLDER, name="Shared with me", kind="folder", virtual=True))
+        return BrowsePage(entries, body.get("@odata.nextLink"))
+
+    async def _shared_with_me(self, token, page_token, query, client) -> BrowsePage:
+        """Files and folders shared with the account (another person's OneDrive / SharePoint)."""
+        if page_token:
+            if not page_token.startswith(GRAPH_URL + "/"):
+                raise CloudError("Invalid page token.")
+            url, params = page_token, None
+        else:
+            url, params = f"{GRAPH_URL}/me/drive/sharedWithMe", {"$top": PAGE_SIZE}
+        async with _client(client) as c:
+            resp = await _call(lambda: c.get(url, params=params, headers=_auth(token)), "OneDrive shared items")
+        _status_error(resp, "OneDrive shared items")
+        body = resp.json()
+        entries = [_onedrive_entry(i) for i in body.get("value", [])
+                   if "folder" in (i.get("remoteItem") or i) or "file" in (i.get("remoteItem") or i)]
+        if query and query.strip():
+            q = query.strip().lower()
+            entries = [e for e in entries if q in e.name.lower()]
         return BrowsePage(entries, body.get("@odata.nextLink"))
 
     async def _item(self, c, token: str, item_id: Optional[str]) -> dict:
@@ -451,17 +506,28 @@ class OneDriveProvider(DriveProvider):
     async def path(self, token, folder_id, client=None) -> list[Crumb]:
         if not folder_id or folder_id == "root":
             return []
+        if folder_id == SHARED_FOLDER:
+            return [Crumb(SHARED_FOLDER, "Shared with me")]
+        drive, _ = _split_item(folder_id)
         crumbs: list[Crumb] = []
         async with _client(client) as c:
             iid: Optional[str] = folder_id
             for _ in range(MAX_PATH_DEPTH):
                 if not iid:
                     break
-                i = await self._item(c, token, iid)
+                try:
+                    i = await self._item(c, token, iid)
+                except CloudError:
+                    if drive and crumbs:       # above the shared folder: not visible to this account
+                        break
+                    raise
                 if "root" in i:
                     break
-                crumbs.append(Crumb(i["id"], i.get("name") or i["id"]))
-                iid = (i.get("parentReference") or {}).get("id")
+                crumbs.append(Crumb(_remote_id(drive, i["id"]), i.get("name") or i["id"]))
+                parent = (i.get("parentReference") or {}).get("id")
+                iid = _remote_id(drive, parent) if parent else None
+        if drive:
+            crumbs.append(Crumb(SHARED_FOLDER, "Shared with me"))
         return list(reversed(crumbs))
 
     async def metadata(self, token, file_id, client=None) -> DriveEntry:
@@ -469,10 +535,10 @@ class OneDriveProvider(DriveProvider):
             resp = await _call(lambda: c.get(_graph_item_url(file_id), params={"$expand": "thumbnails"},
                                              headers=_auth(token)), "OneDrive lookup")
         _status_error(resp, "OneDrive lookup")
-        return _onedrive_entry(resp.json())
+        return _onedrive_entry(resp.json(), _split_item(file_id)[0])
 
     def _download_request(self, file_id):
-        return f"{GRAPH_URL}/me/drive/items/{check_id(file_id)}/content", None
+        return f"{_graph_item_url(file_id)}/content", None
 
     def thumbnail_host_ok(self, url):
         # Graph thumbnail URLs are pre-authenticated: fetched without our token.

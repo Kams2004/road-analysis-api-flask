@@ -562,3 +562,50 @@ async def test_watched_folder_sync_creates_a_batch_of_new_files(tmp_path, monkey
     batch = next(o for o in db.added if isinstance(o, CloudImportBatch))
     assert (batch.origin, batch.models, batch.frame_skip) == ("sync", "pothole", 4)
     assert conn.last_sync_status == "ok" and conn.last_sync_files == 1
+
+
+async def test_onedrive_shared_with_me_and_remote_drive():
+    """A folder shared by another person (OneDrive for Business / SharePoint): listed under the
+    virtual 'Shared with me', browsed / downloaded through /drives/<driveId>/items/<itemId>."""
+    DRIVE = "b!AbC-dEf_123"
+    seen = []
+
+    def handler(req: httpx.Request):
+        seen.append(req.url.path)
+        if req.url.path == "/v1.0/me/drive/root/children":
+            return httpx.Response(200, json={"value": [{"id": "own", "name": "Mine", "folder": {}}]})
+        if req.url.path == "/v1.0/me/drive/items/own/children":
+            return httpx.Response(200, json={"value": []})
+        if req.url.path == "/v1.0/me/drive/sharedWithMe":
+            return httpx.Response(200, json={"value": [{"id": "x", "name": "Road Analysis IA", "remoteItem": {
+                "id": "01RAI", "name": "Road Analysis IA", "folder": {"childCount": 2},
+                "parentReference": {"driveId": DRIVE}}}]})
+        if req.url.path == f"/v1.0/drives/{DRIVE}/items/01RAI/children":
+            return httpx.Response(200, json={"value": [
+                {"id": "01VID", "name": "LTTR.mp4", "size": 5, "file": {"mimeType": "video/mp4"},
+                 "parentReference": {"driveId": DRIVE, "id": "01RAI"}}]})
+        if req.url.path == f"/v1.0/drives/{DRIVE}/items/01RAI":
+            return httpx.Response(200, json={"id": "01RAI", "name": "Road Analysis IA",
+                                             "parentReference": {"driveId": DRIVE, "id": "01PARENT"}})
+        if req.url.path == f"/v1.0/drives/{DRIVE}/items/01PARENT":
+            return httpx.Response(403, json={"error": {"code": "accessDenied"}})
+        return httpx.Response(404)
+
+    p = cp.PROVIDERS["onedrive"]
+    async with _mock(handler) as c:
+        root = await p.browse("t", None, client=c)
+        assert [e.id for e in root.entries] == ["shared", "own"] and root.entries[0].virtual
+        shared = await p.browse("t", "shared", client=c)
+        folder = shared.entries[0]
+        assert (folder.id, folder.name, folder.kind) == (f"{DRIVE}~01RAI", "Road Analysis IA", "folder")
+        inside = await p.browse("t", folder.id, client=c)
+        assert inside.entries[0].id == f"{DRIVE}~01VID"
+        crumbs = await p.path("t", folder.id, c)              # parent not visible: stops at the share
+        assert [x.id for x in crumbs] == ["shared", f"{DRIVE}~01RAI"]
+        # a recursive walk from the own root never enters "Shared with me"
+        seen.clear()
+        await p.walk_media("t", None, client=c)
+        assert seen == ["/v1.0/me/drive/root/children", "/v1.0/me/drive/items/own/children"]
+    url, _ = p._download_request(f"{DRIVE}~01VID")
+    assert url == f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/items/01VID/content"
+    assert p._download_request("01OWN")[0].endswith("/me/drive/items/01OWN/content")   # own drive unchanged
