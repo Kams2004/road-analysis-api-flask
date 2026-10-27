@@ -1,5 +1,8 @@
 import logging
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.api.deps import route_template
@@ -7,7 +10,7 @@ from app.api.router import register_routes
 from app.api import openapi as doc
 from app.core.config import settings
 from app.core import audit as audit_service
-from app.core import rate_limit
+from app.core import rate_limit, redact
 from app.core.db.session import init_db, AsyncSessionLocal
 from app.modules.m01_security.auth_service import seed_roles, bootstrap_admin
 from app.modules.m06_hazards import hazard_service
@@ -143,6 +146,13 @@ async def audit_mutations(request: Request, call_next):
         except Exception:  # auditing must never break the request itself
             logging.getLogger(__name__).exception("audit write failed")
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_errors(request: Request, exc: RequestValidationError):
+    """FastAPI's 422 answer, minus any secret it would echo back ("input" of a password field, or
+    a whole body that contains one) — app/core/redact.py."""
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(redact.validation_errors(exc.errors()))})
 
 
 # Per-IP limits of the sensitive public endpoints (sign-in, sign-up, password reset,

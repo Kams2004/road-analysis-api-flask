@@ -163,8 +163,9 @@ def _tags() -> list[dict[str, Any]]:
             "Platform settings → `cloud`.\n\n"
             "**SFTP servers** (provider `sftp`) use the same browse / import endpoints (file and folder ids "
             "are absolute remote paths, confined to the server's base path). Create one with "
-            "`POST /cloud-connections/sftp`; the password is never sent to the API — it is read from "
-            "`infra/secrets/sftp.env` (`SFTP_PASSWORD_<KEY>=…`) at each connection. `…/sftp/connect`, "
+            "`POST /cloud-connections/sftp`; its `password` is write-only — stored encrypted, decrypted only "
+            "to authenticate, never returned or logged (legacy servers may read `SFTP_PASSWORD_<KEY>` from "
+            "`infra/secrets/sftp.env` instead). `…/sftp/connect`, "
             "`/disconnect`, `/forget-host-key` (host key trusted on first use) and `/log` (FileZilla-style "
             "connection log + live link state) complete it. See docs/SFTP-SOURCE.md.")},
         {"name": TAG_CLOUD_IMPORTS, "description": (

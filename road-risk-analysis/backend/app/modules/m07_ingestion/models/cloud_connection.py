@@ -55,12 +55,15 @@ class CloudConnection(Base):
     auto_import:            Mapped[bool]             = mapped_column(Boolean, default=False)
     auto_import_models:     Mapped[list | None]      = mapped_column(JSON, nullable=True)   # None = defaults
     auto_import_frame_skip: Mapped[int | None]       = mapped_column(Integer, nullable=True)
-    # SFTP server profile (provider "sftp"); no secret is stored in the database.
+    # SFTP server profile (provider "sftp"). The password typed in the web console is stored
+    # encrypted (Fernet keyed from SECRET_KEY) and never returned; servers set up before it may
+    # still read theirs from infra/secrets/sftp.env through `sftp_password_key`.
     sftp_host:         Mapped[str | None]      = mapped_column(String, nullable=True)
     sftp_port:         Mapped[int | None]      = mapped_column(Integer, nullable=True)
     sftp_username:     Mapped[str | None]      = mapped_column(String, nullable=True)
     sftp_base_path:    Mapped[str | None]      = mapped_column(String, nullable=True)   # None = the user's home
     sftp_password_key: Mapped[str | None]      = mapped_column(String, nullable=True)   # SFTP_PASSWORD_<key>
+    sftp_password_enc: Mapped[str | None]      = mapped_column(String, nullable=True)   # encrypt_secret(password)
     sftp_host_key:     Mapped[str | None]      = mapped_column(String, nullable=True)   # "<type> <base64>"
     sftp_host_key_fp:  Mapped[str | None]      = mapped_column(String, nullable=True)   # "<type> SHA256:…"
     sftp_host_key_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

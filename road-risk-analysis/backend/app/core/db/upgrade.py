@@ -252,6 +252,7 @@ SFTP_COLUMNS = [
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS sftp_host_key VARCHAR",
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS sftp_host_key_fp VARCHAR",
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS sftp_host_key_at TIMESTAMP",
+    "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS sftp_password_enc VARCHAR",
 ]
 
 # ── Training data (migrations/add_training_data.sql) ────────────────────────

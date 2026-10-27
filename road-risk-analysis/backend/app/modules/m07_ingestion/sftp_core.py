@@ -7,10 +7,12 @@ classification and the FileZilla-style connection log lines.
 The network side (paramiko sessions, the provider, the log store) lives in
 app.modules.m07_ingestion.sftp_source.
 
-Secrets: a connection never stores its password. It names a *password key*
-(e.g. CAMTRACK); the password is read at connect time from the secrets file
-`<secrets dir>/sftp.env` (infra/secrets/sftp.env, mounted read-only at
-/app/secrets in the containers):
+Secrets: the password typed in the web console is stored encrypted on the
+connection (`sftp_password_enc`, app.core.security.encrypt_secret — Fernet keyed
+from SECRET_KEY) and decrypted only at connect time (`saved_credentials`).
+A connection may instead name a *password key* (e.g. CAMTRACK): the password is
+then read at connect time from the secrets file `<secrets dir>/sftp.env`
+(infra/secrets/sftp.env, mounted read-only at /app/secrets in the containers):
 
     SFTP_PASSWORD_CAMTRACK=…
     # or key-based auth (file inside the same directory):
@@ -183,6 +185,16 @@ def load_credentials(key: str, directory: Optional[Path] = None,
     return Credentials("password", password=password)
 
 
+def saved_credentials(password_enc: str) -> Credentials:
+    """Decrypt the password saved from the web console (at connect time)."""
+    from app.core.security import decrypt_secret
+    password = decrypt_secret(password_enc)
+    if not password:
+        raise SftpError("The saved password can no longer be read (the server's SECRET_KEY changed): "
+                        "edit the server and enter the password again.")
+    return Credentials("password", password=password)
+
+
 def credentials_status(key: Optional[str], directory: Optional[Path] = None,
                        environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """"password" / "key" when the secret is present, else None (never the value)."""
@@ -343,7 +355,7 @@ def classify(exc: BaseException, host: str = "", connect_timeout: int = CONNECT_
     name = type(exc).__name__
     text = str(exc) or name
     if name in ("AuthenticationException", "BadAuthenticationType", "PartialAuthentication"):
-        return "auth", "Authentication failed. Check the username and the password in infra/secrets/sftp.env.", False
+        return "auth", "Authentication failed. Check the username and the password.", False
     if isinstance(exc, socket.gaierror):
         return "dns", f"Could not resolve host \"{host}\": {exc.strerror or text}", True
     if isinstance(exc, (socket.timeout, TimeoutError)):

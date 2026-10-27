@@ -9734,7 +9734,7 @@
           "Cloud connections"
         ],
         "summary": "Add an SFTP server",
-        "description": "Add an SFTP server as a video source (status `active`). **No password in the request**: put it\nin the secrets file `infra/secrets/sftp.env` as `SFTP_PASSWORD_<password_key>=…` (server:\n`~/viasafe-v2/infra/secrets/sftp.env`, chmod 600) — it is read at each connection and never\nstored, logged or returned (`sftp.credentials` tells whether it was found). Then\n`POST …/{id}/sftp/connect` to test (the host key is trusted on first use), browse with\n`GET …/{id}/browse` and import with `POST …/{id}/imports` like a drive. Audited as\n`cloud_connection.create`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "description": "Add an SFTP server as a video source (status `active`). The `password` is stored encrypted\n(Fernet keyed from the server's SECRET_KEY), decrypted only to authenticate, and never\nreturned, logged or audited (`sftp.password_saved` tells it is there). Legacy alternative:\n`password_key`, read from `infra/secrets/sftp.env` (`SFTP_PASSWORD_<KEY>=…`). Then\n`POST …/{id}/sftp/connect` to test (the host key is trusted on first use), browse with\n`GET …/{id}/browse` and import with `POST …/{id}/imports` like a drive. Audited as\n`cloud_connection.create`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
         "operationId": "create_sftp",
         "requestBody": {
           "content": {
@@ -9820,13 +9820,13 @@
             }
           },
           "422": {
-            "description": "Unprocessable entity",
+            "description": "Unprocessable entity — `password_required`",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
+                      "$ref": "#/components/schemas/ErrorResponse"
                     },
                     {
                       "$ref": "#/components/schemas/HTTPValidationError"
@@ -9834,10 +9834,13 @@
                   ]
                 },
                 "examples": {
-                  "legacy": {
-                    "summary": "The password key may only contain letters, digits and _ (max 64), e.g. CAMTRACK.",
+                  "password_required": {
+                    "summary": "password_required",
                     "value": {
-                      "detail": "The password key may only contain letters, digits and _ (max 64), e.g. CAMTRACK."
+                      "detail": {
+                        "code": "password_required",
+                        "message": "Enter the server's password."
+                      }
                     }
                   }
                 }
@@ -9860,7 +9863,7 @@
           "Cloud connections"
         ],
         "summary": "Edit an SFTP server",
-        "description": "Change the name, host, port, username, base path or password key (see `SftpPatch`). The open\nbrowse session is closed; a new host or port forgets the trusted host key. Audited as\n`cloud_connection.update`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
+        "description": "Change the name, host, port, username, base path, password or password key (see `SftpPatch`).\nThe open browse session is closed; a new host or port forgets the trusted host key. Audited as\n`cloud_connection.update` (a new password appears as `sftp_password: \"changed\"`, never its value).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
         "operationId": "update_sftp",
         "parameters": [
           {
@@ -9998,11 +10001,29 @@
             }
           },
           "422": {
-            "description": "Validation Error",
+            "description": "Unprocessable entity — `password_required`",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "password_required": {
+                    "summary": "password_required",
+                    "value": {
+                      "detail": {
+                        "code": "password_required",
+                        "message": "Enter the server's password."
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -10182,7 +10203,7 @@
                     "value": {
                       "detail": {
                         "code": "sftp_failed",
-                        "message": "Authentication failed. Check the username and the password in infra/secrets/sftp.env."
+                        "message": "Authentication failed. Check the username and the password."
                       }
                     }
                   }
@@ -51139,11 +51160,34 @@
               "/home/Ymane-New/ft_violations"
             ]
           },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "format": "password",
+            "title": "Password",
+            "description": "SSH password (write-only: stored encrypted, never returned, logged or audited).",
+            "writeOnly": true
+          },
           "password_key": {
-            "type": "string",
-            "maxLength": 64,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Password Key",
-            "description": "Key of the password in the secrets file: the API reads `SFTP_PASSWORD_<KEY>` (letters, digits, _).",
+            "description": "Legacy, instead of `password`: the API reads `SFTP_PASSWORD_<KEY>` from the secrets file (letters, digits, _).",
             "examples": [
               "CAMTRACK"
             ]
@@ -51152,11 +51196,10 @@
         "type": "object",
         "required": [
           "host",
-          "username",
-          "password_key"
+          "username"
         ],
         "title": "SftpIn",
-        "description": "A new SFTP server. No password here: it is read from `infra/secrets/sftp.env`\n(`SFTP_PASSWORD_<password_key>=…`) when connecting."
+        "description": "A new SFTP server. Give its `password` (stored encrypted, never returned) — or, legacy,\na `password_key` read from `infra/secrets/sftp.env` (`SFTP_PASSWORD_<KEY>=…`)."
       },
       "SftpInfoOut": {
         "properties": {
@@ -51199,18 +51242,38 @@
               "/home/Ymane-New/ft_violations"
             ]
           },
+          "password_saved": {
+            "type": "boolean",
+            "title": "Password Saved",
+            "description": "A password entered in the web console is stored (encrypted; never returned).",
+            "default": false
+          },
           "password_key": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Password Key",
-            "description": "Key of the password in the secrets file.",
+            "description": "Legacy: key of the password in the secrets file (used only when no password is saved).",
             "examples": [
               "CAMTRACK"
             ]
           },
           "password_var": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Password Var",
-            "description": "Line to set in `infra/secrets/sftp.env` (value never shown).",
+            "description": "Legacy: line read from `infra/secrets/sftp.env`.",
             "examples": [
               "SFTP_PASSWORD_CAMTRACK"
             ]
@@ -51229,7 +51292,7 @@
               }
             ],
             "title": "Credentials",
-            "description": "Credentials found in the secrets file for this key (`null` = none yet — set `SFTP_PASSWORD_<KEY>`)."
+            "description": "Credentials available at connect time: the saved password, else the secrets file (`null` = none — enter the password)."
           },
           "host_key_fingerprint": {
             "anyOf": [
@@ -51306,9 +51369,7 @@
         "required": [
           "host",
           "port",
-          "username",
-          "password_key",
-          "password_var"
+          "username"
         ],
         "title": "SftpInfoOut",
         "description": "SFTP server profile of a connection (provider `sftp`). The password is never returned."
@@ -51502,11 +51563,33 @@
               }
             ],
             "title": "Password Key"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "format": "password",
+            "title": "Password",
+            "description": "SSH password (write-only: stored encrypted, never returned, logged or audited).",
+            "writeOnly": true
+          },
+          "clear_password": {
+            "type": "boolean",
+            "title": "Clear Password",
+            "description": "Forget the saved password (the secrets-file key, if any, is used again).",
+            "default": false
           }
         },
         "type": "object",
         "title": "SftpPatch",
-        "description": "Edit an SFTP server: only the fields sent change. Changing the host or the port forgets\nthe trusted host key (trusted again at the next connection)."
+        "description": "Edit an SFTP server: only the fields sent change (`password` empty / absent = keep the saved\none). Changing the host or the port forgets the trusted host key (trusted again at the next\nconnection)."
       },
       "SignalementDetailOut": {
         "properties": {
@@ -58018,7 +58101,7 @@
     },
     {
       "name": "Cloud connections",
-      "description": "**Module 7 — input sources.** Google Drive / OneDrive accounts connected with OAuth: browse folders and files (`/browse`, `/thumbnail`), import a selection (`POST /{id}/imports`), and optionally auto-import a watched folder (`auto_import`). The OAuth *client* credentials stay in Platform settings → `cloud`.\n\n**SFTP servers** (provider `sftp`) use the same browse / import endpoints (file and folder ids are absolute remote paths, confined to the server's base path). Create one with `POST /cloud-connections/sftp`; the password is never sent to the API — it is read from `infra/secrets/sftp.env` (`SFTP_PASSWORD_<KEY>=…`) at each connection. `…/sftp/connect`, `/disconnect`, `/forget-host-key` (host key trusted on first use) and `/log` (FileZilla-style connection log + live link state) complete it. See docs/SFTP-SOURCE.md."
+      "description": "**Module 7 — input sources.** Google Drive / OneDrive accounts connected with OAuth: browse folders and files (`/browse`, `/thumbnail`), import a selection (`POST /{id}/imports`), and optionally auto-import a watched folder (`auto_import`). The OAuth *client* credentials stay in Platform settings → `cloud`.\n\n**SFTP servers** (provider `sftp`) use the same browse / import endpoints (file and folder ids are absolute remote paths, confined to the server's base path). Create one with `POST /cloud-connections/sftp`; its `password` is write-only — stored encrypted, decrypted only to authenticate, never returned or logged (legacy servers may read `SFTP_PASSWORD_<KEY>` from `infra/secrets/sftp.env` instead). `…/sftp/connect`, `/disconnect`, `/forget-host-key` (host key trusted on first use) and `/log` (FileZilla-style connection log + live link state) complete it. See docs/SFTP-SOURCE.md."
     },
     {
       "name": "Cloud imports",

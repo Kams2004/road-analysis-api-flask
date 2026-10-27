@@ -18,9 +18,10 @@ file at its size (SFTP seek).
 Host key: trusted on first use (stored on the connection by the caller via
 `persist_credentials`), a different key afterwards is refused.
 
-The password is read from infra/secrets/sftp.env at connect time
-(app.modules.m07_ingestion.sftp_core.load_credentials) and dropped after authentication;
-it is never logged.
+The password saved from the web console travels encrypted in the target and is
+decrypted at connect time (sftp_core.saved_credentials); legacy servers read theirs
+from infra/secrets/sftp.env (sftp_core.load_credentials). Either way it is dropped
+after authentication and never logged.
 """
 from __future__ import annotations
 
@@ -32,7 +33,8 @@ import socket
 import stat as stat_mod
 import threading
 import time
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -76,28 +78,35 @@ def host_slots_key(host: str, port: int) -> str:
 
 @dataclass
 class SftpTarget:
-    """Server profile of a connection — no secret in here."""
+    """Server profile of a connection — the saved password only in its encrypted form."""
     connection_id: str
     host: str
     port: int
     username: str
     base_path: Optional[str]
-    password_key: str
+    password_key: Optional[str]
+    password_enc: Optional[str] = field(default=None, repr=False)
     host_key: Optional[str] = None
     learned_host_key: Optional[str] = None      # set when trusted on first use (the caller persists it)
     source: str = "api"                         # api | worker (log attribution)
 
     @classmethod
     def from_connection(cls, conn, source: str = "api") -> "SftpTarget":
-        if not conn.sftp_host or not conn.sftp_username or not conn.sftp_password_key:
-            raise SftpError("This SFTP server is missing its host, username or password key — edit it.")
+        enc = getattr(conn, "sftp_password_enc", None)
+        if not conn.sftp_host or not conn.sftp_username:
+            raise SftpError("This SFTP server is missing its host or username — edit it.")
+        if not enc and not conn.sftp_password_key:
+            raise SftpError("No password saved for this SFTP server — edit it and enter the password.")
         return cls(connection_id=conn.id, host=conn.sftp_host, port=int(conn.sftp_port or 22),
                    username=conn.sftp_username, base_path=conn.sftp_base_path or None,
-                   password_key=conn.sftp_password_key, host_key=conn.sftp_host_key, source=source)
+                   password_key=conn.sftp_password_key, password_enc=enc, host_key=conn.sftp_host_key,
+                   source=source)
 
     @property
     def signature(self) -> tuple:
-        return (self.host, self.port, self.username, self.base_path, self.password_key)
+        # A new saved password changes the signature (pooled session reopened) without exposing it.
+        pw = hashlib.sha256(self.password_enc.encode()).hexdigest()[:16] if self.password_enc else None
+        return (self.host, self.port, self.username, self.base_path, self.password_key, pw)
 
     @property
     def label(self) -> str:
@@ -301,7 +310,8 @@ class SftpSession:
         sock = None
         creds = None
         try:
-            creds = core.load_credentials(t.password_key)       # read now (file may change), dropped after auth
+            # Decrypted / read now (the file may change), dropped after auth.
+            creds = core.saved_credentials(t.password_enc) if t.password_enc else core.load_credentials(t.password_key or "")
             try:
                 sock = socket.create_connection((t.host, t.port), timeout=core.CONNECT_TIMEOUT_S)
             except Exception as exc:

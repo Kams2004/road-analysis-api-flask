@@ -10,12 +10,31 @@ Everything you know from the Drive imports applies (*Cloud sources* page, *Impor
 already-imported badges, cancel / retry, watched folder + auto-import). What is specific to
 SFTP is below.
 
-## 1. The password: a secrets file, never the UI
+## 1. The password: typed in the web console, stored encrypted
 
-The connection stores the host, port, username, base path and a **password key** (e.g.
-`CAMTRACK`). The password itself is only in a secrets file that the API and the worker read at
-each connection. It is never stored in the database, shown in the web console, returned by the
-API, written to a log, sent to git or baked into a Docker image.
+Type the server's password in *Add a source → SFTP server* (or *Edit server…*). How it is kept
+from leaking:
+
+- **Write-only.** The API stores it and never sends it back: the card and `GET` answers only say
+  *Password saved* (`sftp.password_saved`). The edit form never shows it; leave the field empty
+  to keep it, type a new one to replace it.
+- **Encrypted at rest** in `cloud_connections.sftp_password_enc` (Fernet: AES-128-CBC +
+  HMAC-SHA256, key derived from the server's `SECRET_KEY` in `.env`, same as the OAuth refresh
+  tokens). A database dump alone does not reveal it. If `SECRET_KEY` changes, the saved password
+  can no longer be read: the connection says so — enter it again.
+- **Decrypted only to authenticate**, inside the API / worker process, then dropped. It is
+  never written to the connection log, the application logs, the audit trail (a change shows as
+  `sftp_password: "changed"`), Redis, git or a Docker image.
+- **Never echoed by an error**: a `422` validation answer drops the value of any password /
+  secret / token field (`app/core/redact.py`).
+- **Only over HTTPS** between the browser and the server (`docs/HTTPS.md`), with the console's
+  same-origin proxy; only users allowed to edit connections (module *jobs*) can set it.
+
+### Legacy / SSH key: the secrets file
+
+Servers set up before this, or that use an SSH key, can still read their credentials from a
+secrets file at each connection, through a **password key** (e.g. `CAMTRACK`, API field
+`password_key`). A password saved from the console takes precedence over it.
 
 File format (`infra/secrets/sftp.env`, template `infra/secrets/sftp.env.example`):
 
@@ -75,21 +94,22 @@ the file has no entry for the key — handy for a throwaway test, not for produc
 | Port | `22` |
 | Username | `roadusertoread` |
 | Base path | `/home/Ymane-New/ft_violations` (empty = the user's home) |
-| Password key | `CAMTRACK` → the API reads `SFTP_PASSWORD_CAMTRACK` |
+| Password | the server's password (stored encrypted, §1) |
 
 The card then shows the live state (**Disconnected / Connecting… / Connected / Error**), the base
-folder, whether the password was found in the secrets file (never its value) and the trusted
+folder, whether a password is saved (never its value) and the trusted
 host-key fingerprint, with:
 
 - **Connect / Test** — opens a session and lists the base folder; **Reconnect** once connected.
 - **Disconnect** — closes the browse session (downloads in progress keep their own session).
-- **Edit server…** — host, port, username, base path, password key, name. A new host or port
-  forgets the trusted host key.
+- **Edit server…** — host, port, username, base path, name, a new password (empty = keep the
+  saved one). A new host or port forgets the trusted host key.
 - **Forget host key** — see §5.
 - **Remove** (menu, with confirmation) — removes the profile, its host key and its log. Jobs
-  already imported stay. The password line stays in `sftp.env`: delete it there if unused.
+  already imported stay, the saved password is deleted with it (a legacy line in `sftp.env`
+  stays: delete it there if unused).
 
-Add as many servers as needed (one password key each). API: `POST /cloud-connections/sftp`,
+Add as many servers as needed. API: `POST /cloud-connections/sftp`,
 `PATCH /cloud-connections/{id}/sftp`, `DELETE /cloud-connections/{id}`, see `docs/openapi.json`
 (tag *Cloud connections*). Permissions: same as the other connections (module *jobs*: view to
 browse / connect / disconnect, add to create servers and imports, edit to change a server, forget
@@ -145,11 +165,9 @@ API: `GET /cloud-connections/{id}/sftp/log?after=<last_seq>` (lines + link state
 
 ## 5. Troubleshooting
 
-**Authentication failed** — check the username on the card and the line
-`SFTP_PASSWORD_<KEY>=…` in the secrets file of *that* machine (server:
-`~/viasafe-v2/infra/secrets/sftp.env`). The card says *Password: Missing* when the key has no line.
-On the local stack, copy the file into the container again after editing it (§1). Then
-**Connect / Test**.
+**Authentication failed** — check the username on the card, then *Edit server…* and type the
+password again (legacy servers: the line `SFTP_PASSWORD_<KEY>=…` in the secrets file of *that*
+machine). The card says *Password: Missing* when nothing is saved. Then **Connect / Test**.
 
 **Host key changed** (`Host key mismatch … Refusing to connect`) — the server presents a
 different key than the one trusted at the first connection. If the change is expected

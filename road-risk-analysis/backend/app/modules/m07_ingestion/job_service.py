@@ -122,7 +122,8 @@ def connection_usable(conn) -> bool:
     if conn is not None and getattr(conn, "provider", None) == "sftp":
         # No OAuth: usable while enabled; a failed listing / sync does not block imports
         # (the server may simply be back) — the download reports its own error.
-        return bool(conn.enabled and conn.status != "disabled" and conn.sftp_host and conn.sftp_password_key)
+        return bool(conn.enabled and conn.status != "disabled" and conn.sftp_host
+                    and (conn.sftp_password_key or getattr(conn, "sftp_password_enc", None)))
     return bool(conn is not None and conn.enabled and conn.status == "active" and conn.refresh_token_enc)
 
 

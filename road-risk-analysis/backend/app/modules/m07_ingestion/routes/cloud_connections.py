@@ -13,8 +13,9 @@ Optional watched folder: `auto_import` imports its new files every
 cloud.sync_interval_minutes (or POST /{id}/sync).
 
 SFTP servers are one more provider of the same pipeline: POST /sftp creates
-the server profile (no OAuth; the password is read from infra/secrets/sftp.env
-at connect time and never stored, logged or returned), then the same browse /
+the server profile (no OAuth; the password typed in the web console is stored
+encrypted, decrypted only at connect time and never logged or returned — legacy
+servers read theirs from infra/secrets/sftp.env), then the same browse /
 imports endpoints apply; /{id}/sftp/* adds connect / disconnect / host key /
 connection log (see the "SFTP servers" section below and docs/SFTP-SOURCE.md).
 """
@@ -24,7 +25,7 @@ from datetime import datetime
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,12 +101,16 @@ class SftpInfoOut(BaseModel):
     base_path:            Optional[str] = Field(None, description="Folder browsing starts at and cannot leave "
                                                                   "(`null` = the user's home).",
                                             examples=["/home/Ymane-New/ft_violations"])
-    password_key:         str = Field(description="Key of the password in the secrets file.", examples=["CAMTRACK"])
-    password_var:         str = Field(description="Line to set in `infra/secrets/sftp.env` (value never shown).",
-                                      examples=["SFTP_PASSWORD_CAMTRACK"])
+    password_saved:       bool = Field(False, description="A password entered in the web console is stored "
+                                                          "(encrypted; never returned).")
+    password_key:         Optional[str] = Field(None, description="Legacy: key of the password in the secrets file "
+                                                                  "(used only when no password is saved).",
+                                                examples=["CAMTRACK"])
+    password_var:         Optional[str] = Field(None, description="Legacy: line read from `infra/secrets/sftp.env`.",
+                                                examples=["SFTP_PASSWORD_CAMTRACK"])
     credentials:          Optional[Literal["password", "key"]] = Field(
-        None, description="Credentials found in the secrets file for this key (`null` = none yet — set "
-                          "`SFTP_PASSWORD_<KEY>`).")
+        None, description="Credentials available at connect time: the saved password, else the secrets file "
+                          "(`null` = none — enter the password).")
     host_key_fingerprint: Optional[str] = Field(None, description="Host key trusted on first use.",
                                                 examples=["ssh-ed25519 SHA256:3cX1…"])
     host_key_trusted_at:  Optional[datetime] = Field(None, description="When the host key was first trusted (UTC).")
@@ -171,10 +176,12 @@ def _sftp_out(c: CloudConnection, link: Optional[dict] = None) -> Optional[SftpI
     if c.provider != "sftp":
         return None
     link = link or {}
-    key = c.sftp_password_key or ""
+    key = c.sftp_password_key or None
+    saved = bool(c.sftp_password_enc)
     return SftpInfoOut(
         host=c.sftp_host or "", port=c.sftp_port or 22, username=c.sftp_username or "", base_path=c.sftp_base_path,
-        password_key=key, password_var=sftp_core.password_var(key), credentials=sftp_core.credentials_status(key),
+        password_saved=saved, password_key=key, password_var=sftp_core.password_var(key) if key else None,
+        credentials="password" if saved else (sftp_core.credentials_status(key) if key else None),
         host_key_fingerprint=c.sftp_host_key_fp, host_key_trusted_at=c.sftp_host_key_at,
         link_state=link.get("state") or "disconnected", link_message=link.get("message"), link_at=link.get("at"),
         link_held=bool(link.get("held")))
@@ -204,6 +211,7 @@ def _snapshot(c: CloudConnection) -> dict:
     if c.provider == "sftp":
         snap.update({"sftp_host": c.sftp_host, "sftp_port": c.sftp_port, "sftp_username": c.sftp_username,
                      "sftp_base_path": c.sftp_base_path, "sftp_password_key": c.sftp_password_key,
+                     "sftp_password_saved": bool(c.sftp_password_enc),       # never the value
                      "sftp_host_key_fp": c.sftp_host_key_fp})
     return snap
 
@@ -688,9 +696,27 @@ def _check_key(v: str) -> str:
     return sftp_core.normalize_key(v)
 
 
+# Write-only: SecretStr keeps it out of reprs / logs, the API stores it encrypted and never
+# returns it. Length is checked in the handlers (a pydantic constraint error would echo it).
+PASSWORD_MAX = 1024
+PasswordField = Field(None, description="SSH password (write-only: stored encrypted, never returned, "
+                                        "logged or audited).", json_schema_extra={"writeOnly": True,
+                                                                                  "format": "password"})
+
+
+def _password(v: Optional[SecretStr]) -> Optional[str]:
+    """The submitted password, or None when absent / empty (422 when too long, without echoing it)."""
+    pw = v.get_secret_value() if v is not None else ""
+    if len(pw) > PASSWORD_MAX:
+        raise api_error(422, "invalid_password", f"The password is limited to {PASSWORD_MAX} characters.")
+    if "\x00" in pw:
+        raise api_error(422, "invalid_password", "The password contains an invalid character.")
+    return pw or None
+
+
 class SftpIn(BaseModel):
-    """A new SFTP server. No password here: it is read from `infra/secrets/sftp.env`
-    (`SFTP_PASSWORD_<password_key>=…`) when connecting."""
+    """A new SFTP server. Give its `password` (stored encrypted, never returned) — or, legacy,
+    a `password_key` read from `infra/secrets/sftp.env` (`SFTP_PASSWORD_<KEY>=…`)."""
     name:         Optional[str] = Field(None, max_length=120, description="Display name (default: the host).",
                                         examples=["CAMTRACK violations"])
     host:         str = Field(max_length=253, description="Host name (DNS) or IP.", examples=["bi.camtrack.mg"])
@@ -700,25 +726,31 @@ class SftpIn(BaseModel):
                                         description="Absolute folder browsing starts at and cannot leave "
                                                     "(empty = the user's home).",
                                         examples=["/home/Ymane-New/ft_violations"])
-    password_key: str = Field(max_length=64, description="Key of the password in the secrets file: the API reads "
-                                                         "`SFTP_PASSWORD_<KEY>` (letters, digits, _).",
-                              examples=["CAMTRACK"])
+    password:     Optional[SecretStr] = PasswordField
+    password_key: Optional[str] = Field(None, max_length=64,
+                                        description="Legacy, instead of `password`: the API reads "
+                                                    "`SFTP_PASSWORD_<KEY>` from the secrets file (letters, digits, _).",
+                                        examples=["CAMTRACK"])
 
     _h = field_validator("host")(classmethod(lambda cls, v: _check_host(v)))
     _u = field_validator("username")(classmethod(lambda cls, v: _check_user(v)))
     _b = field_validator("base_path")(classmethod(lambda cls, v: _check_base(v)))
-    _k = field_validator("password_key")(classmethod(lambda cls, v: _check_key(v)))
+    _k = field_validator("password_key")(classmethod(lambda cls, v: _check_key(v) if v else None))
 
 
 class SftpPatch(BaseModel):
-    """Edit an SFTP server: only the fields sent change. Changing the host or the port forgets
-    the trusted host key (trusted again at the next connection)."""
+    """Edit an SFTP server: only the fields sent change (`password` empty / absent = keep the saved
+    one). Changing the host or the port forgets the trusted host key (trusted again at the next
+    connection)."""
     name:         Optional[str] = Field(None, min_length=1, max_length=120)
     host:         Optional[str] = Field(None, max_length=253)
     port:         Optional[int] = Field(None, ge=1, le=65535)
     username:     Optional[str] = Field(None, max_length=64)
     base_path:    Optional[str] = Field(None, max_length=1024, description="Empty string = the user's home.")
     password_key: Optional[str] = Field(None, max_length=64)
+    password:     Optional[SecretStr] = PasswordField
+    clear_password: bool = Field(False, description="Forget the saved password (the secrets-file key, if any, "
+                                                    "is used again).")
 
     _h = field_validator("host")(classmethod(lambda cls, v: v if v is None else _check_host(v)))
     _u = field_validator("username")(classmethod(lambda cls, v: v if v is None else _check_user(v)))
@@ -753,7 +785,8 @@ class SftpLogOut(BaseModel):
 
 
 E_NOT_SFTP = err(409, "not_sftp", "This connection is not an SFTP server.")
-E_SFTP = err(502, "sftp_failed", "Authentication failed. Check the username and the password in infra/secrets/sftp.env.")
+E_SFTP = err(502, "sftp_failed", "Authentication failed. Check the username and the password.")
+E_NO_PASSWORD = err(422, "password_required", "Enter the server's password.")
 
 
 async def _sftp(db: AsyncSession, connection_id: str) -> CloudConnection:
@@ -768,41 +801,47 @@ async def _link(conn: CloudConnection) -> dict:
 
 
 @router.post("/sftp", response_model=ConnectionOut, status_code=201, summary="Add an SFTP server",
-             responses=errors(legacy(422, "The password key may only contain letters, digits and _ (max 64), e.g. "
-                                          "CAMTRACK.")))
+             responses=errors(E_NO_PASSWORD))
 async def create_sftp(body: SftpIn, request: Request, db: AsyncSession = Depends(get_db),
                       principal: Principal = Depends(get_principal)):
     """
-    Add an SFTP server as a video source (status `active`). **No password in the request**: put it
-    in the secrets file `infra/secrets/sftp.env` as `SFTP_PASSWORD_<password_key>=…` (server:
-    `~/viasafe-v2/infra/secrets/sftp.env`, chmod 600) — it is read at each connection and never
-    stored, logged or returned (`sftp.credentials` tells whether it was found). Then
+    Add an SFTP server as a video source (status `active`). The `password` is stored encrypted
+    (Fernet keyed from the server's SECRET_KEY), decrypted only to authenticate, and never
+    returned, logged or audited (`sftp.password_saved` tells it is there). Legacy alternative:
+    `password_key`, read from `infra/secrets/sftp.env` (`SFTP_PASSWORD_<KEY>=…`). Then
     `POST …/{id}/sftp/connect` to test (the host key is trusted on first use), browse with
     `GET …/{id}/browse` and import with `POST …/{id}/imports` like a drive. Audited as
     `cloud_connection.create`.
     """
+    password = _password(body.password)
+    if not password and not body.password_key:
+        raise api_error(422, "password_required", "Enter the server's password.")
     conn = CloudConnection(
         provider="sftp", name=(body.name or "").strip() or body.host, status=ConnectionStatus.active.value,
         created_by=actor_name(principal, principal.label), enabled=True, auto_import=False, last_sync_files=0,
         files_imported_total=0, sftp_host=body.host, sftp_port=body.port, sftp_username=body.username,
-        sftp_base_path=body.base_path, sftp_password_key=body.password_key)
+        sftp_base_path=body.base_path, sftp_password_key=None if password else body.password_key,
+        sftp_password_enc=encrypt_secret(password) if password else None)
+    del password
     db.add(conn)
     await db.flush()
     audit.record(db, request, "cloud_connection.create", principal=principal, object_type="cloud_connection",
                  object_id=conn.id, details=_snapshot(conn))
     await db.commit()
     sftp_source.make_log(conn.id).status(
-        f"Server added: {body.username}@{body.host}:{body.port}, password key {body.password_key}")
+        f"Server added: {body.username}@{body.host}:{body.port}, "
+        + ("password saved (encrypted)" if conn.sftp_password_enc else f"password key {body.password_key}"))
     return _out(conn, await _link(conn))
 
 
 @router.patch("/{connection_id}/sftp", response_model=ConnectionOut, summary="Edit an SFTP server",
-              responses=errors(E_NOT_FOUND, E_NOT_SFTP))
+              responses=errors(E_NOT_FOUND, E_NOT_SFTP, E_NO_PASSWORD))
 async def update_sftp(connection_id: ConnectionId, body: SftpPatch, request: Request,
                       db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-    """Change the name, host, port, username, base path or password key (see `SftpPatch`). The open
-    browse session is closed; a new host or port forgets the trusted host key. Audited as
-    `cloud_connection.update`."""
+    """Change the name, host, port, username, base path, password or password key (see `SftpPatch`).
+    The open browse session is closed; a new host or port forgets the trusted host key. Audited as
+    `cloud_connection.update` (a new password appears as `sftp_password: "changed"`, never its value)."""
+    password = _password(body.password)
     conn = await _sftp(db, connection_id)
     before = _snapshot(conn)
     data = body.model_dump(exclude_unset=True)
@@ -818,11 +857,20 @@ async def update_sftp(connection_id: ConnectionId, body: SftpPatch, request: Req
         conn.sftp_base_path = data["base_path"] or None
     if data.get("password_key"):
         conn.sftp_password_key = data["password_key"]
+    if body.clear_password and not password:
+        conn.sftp_password_enc = None
+    if password:
+        conn.sftp_password_enc = encrypt_secret(password)
+    del password
+    if not conn.sftp_password_enc and not conn.sftp_password_key:
+        raise api_error(422, "password_required", "Enter the server's password.")
     log = sftp_source.make_log(conn.id)
     if (conn.sftp_host, conn.sftp_port) != (before.get("sftp_host"), before.get("sftp_port")) and conn.sftp_host_key:
         conn.sftp_host_key = conn.sftp_host_key_fp = conn.sftp_host_key_at = None
         log.status("Server address changed: the trusted host key was forgotten")
     changes = audit.diff(before, _snapshot(conn))
+    if body.password is not None and body.password.get_secret_value():
+        changes["sftp_password"] = "changed"
     await asyncio.to_thread(sftp_source.POOL.close, conn.id, log)
     audit.record(db, request, "cloud_connection.update", principal=principal, object_type="cloud_connection",
                  object_id=conn.id, details=changes)
