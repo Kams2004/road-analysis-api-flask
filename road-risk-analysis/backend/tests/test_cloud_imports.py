@@ -243,7 +243,7 @@ def test_import_state_by_version():
     legacy = ci.Prior(None, "done", "jobL", at=T0, legacy=True)                         # folder sync before imports
     assert ci.import_state("v9", [legacy]).state == "imported"
     newest = ci.import_state("v1", [done_v1, ci.Prior("v1", "processing", "job2", at=T0 + timedelta(hours=1))])
-    assert (newest.state, newest.job_id) == ("importing", "job2")
+    assert (newest.state, newest.job_id) == ("processing", "job2")   # downloaded, job running
 
 
 def test_plan_items_skips_duplicates_unless_reimport():

@@ -252,9 +252,11 @@ def import_state(version: Optional[str], priors: list[Prior]) -> ImportState:
     same = [p for p in live if p.legacy or version is None or p.version is None or p.version == version]
     if same:
         p = same[0]
-        importing = p.status in TRANSFER or p.status == S.queued_for_processing.value \
-            or p.status == S.processing.value
-        return ImportState("importing" if importing else "imported", p.job_id, p.item_id, p.batch_id)
+        # importing = still downloading; processing = downloaded, its job is queued / running
+        state = ("importing" if p.status in TRANSFER
+                 else "processing" if p.status in (S.queued_for_processing.value, S.processing.value)
+                 else "imported")
+        return ImportState(state, p.job_id, p.item_id, p.batch_id)
     if live:
         p = live[0]
         return ImportState("changed", p.job_id, p.item_id, p.batch_id)
@@ -278,7 +280,7 @@ def plan_items(entries: Iterable[Any], priors: dict[str, list[Prior]], reimport:
             continue
         seen.add(e.id)
         st = import_state(e.version, priors.get(e.id, []))
-        if st.state in ("imported", "importing") and not reimport:
+        if st.state in ("imported", "importing", "processing") and not reimport:
             out.append(PlannedItem(e, S.skipped_duplicate.value, st.job_id))
         else:
             out.append(PlannedItem(e, S.queued.value))

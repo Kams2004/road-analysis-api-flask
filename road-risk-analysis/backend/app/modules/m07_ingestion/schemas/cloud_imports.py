@@ -32,8 +32,9 @@ class CrumbOut(BaseModel):
 
 class ImportInfoOut(BaseModel):
     """Whether this file (in its current version) was imported before."""
-    state:    Literal["none", "importing", "imported", "changed"] = Field(
-        description="`importing` (an import or its job is in progress), `imported` (this version is done), "
+    state:    Literal["none", "importing", "processing", "imported", "changed"] = Field(
+        description="`importing` (being downloaded), `processing` (downloaded, its job is queued or "
+                    "running), `imported` (this version is done), "
                     "`changed` (an older version was imported), `none`.")
     job_id:   Optional[str] = Field(None, description="Job of the latest import of the file.")
     item_id:  Optional[str] = Field(None, description="Import item of the latest import.")

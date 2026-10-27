@@ -43766,11 +43766,12 @@
             "enum": [
               "none",
               "importing",
+              "processing",
               "imported",
               "changed"
             ],
             "title": "State",
-            "description": "`importing` (an import or its job is in progress), `imported` (this version is done), `changed` (an older version was imported), `none`."
+            "description": "`importing` (being downloaded), `processing` (downloaded, its job is queued or running), `imported` (this version is done), `changed` (an older version was imported), `none`."
           },
           "job_id": {
             "anyOf": [
