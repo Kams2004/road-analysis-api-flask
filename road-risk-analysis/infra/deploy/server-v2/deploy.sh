@@ -84,7 +84,6 @@ LS_PORT="${LS_PORT:-18085}"
 
 # ── public addresses: HTTPS through Caddy when HTTPS_DOMAIN is set, else http://<ip>:<port> ──
 if [ -n "${HTTPS_DOMAIN:-}" ]; then
-  [ -n "${ACME_EMAIL:-}" ] || { echo "✖ HTTPS_DOMAIN is set: also set ACME_EMAIL (Let's Encrypt contact) in .env"; exit 1; }
   WEB_URL="https://${HTTPS_DOMAIN}"; PUBLIC_API_URL="https://api.${HTTPS_DOMAIN}"
   MEDIA_URL="https://media.${HTTPS_DOMAIN}"; LS_PUBLIC_URL="https://labels.${HTTPS_DOMAIN}"; COOKIE_SECURE=true
 else

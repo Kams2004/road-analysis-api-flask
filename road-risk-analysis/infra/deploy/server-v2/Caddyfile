@@ -6,9 +6,7 @@
 #   api.<HTTPS_DOMAIN>      API (mobile app, Label Studio images, /docs)
 #   media.<HTTPS_DOMAIN>    public images of the mobile app (MinIO, read-only buckets)
 #   labels.<HTTPS_DOMAIN>   Label Studio (box review)
-{
-	email {$ACME_EMAIL}
-}
+# No ACME e-mail: Let's Encrypt no longer sends expiry mails and Caddy renews by itself.
 
 {$HTTPS_DOMAIN} {
 	encode zstd gzip

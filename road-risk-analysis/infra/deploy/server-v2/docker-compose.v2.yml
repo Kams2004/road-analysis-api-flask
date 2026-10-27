@@ -189,7 +189,6 @@ services:
     image: caddy:2.10.2-alpine
     environment:
       HTTPS_DOMAIN: ${HTTPS_DOMAIN:-}
-      ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

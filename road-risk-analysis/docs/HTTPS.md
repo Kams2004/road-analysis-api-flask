@@ -1,11 +1,11 @@
 # HTTPS for the server stack (infra/deploy/server-v2)
 
-Optional, driven by two lines of the server's `.env`. Without them the stack is served over plain HTTP
+Optional, driven by one line of the server's `.env`. Without them the stack is served over plain HTTP
 on its ports (13000 web, 18080 API, 19200 media, 18085 Label Studio), as before.
 
 ```
 HTTPS_DOMAIN=viasafe.example.com
-ACME_EMAIL=ops@example.com          # Let's Encrypt contact (expiry warnings)
+
 ```
 
 `./deploy.sh` then also starts the `caddy` service (profile `https`, ports 80 + 443), which obtains and
@@ -30,7 +30,7 @@ rebuilt with the HTTPS API address, Label Studio's public address and the image 
    itself; a provider-side firewall (control panel) must allow them.
 3. Nothing else listening on 80 / 443 on the server (`deploy.sh` checks).
 
-Then add the two lines to `.env` and run `./deploy.sh`. The first certificate takes a few seconds;
+Then add the line to `.env` and run `./deploy.sh`. The first certificate takes a few seconds;
 `./deploy.sh --logs caddy` shows the issuance.
 
 The plain-HTTP ports stay open meanwhile; once everything works over HTTPS (and the mobile app is built
