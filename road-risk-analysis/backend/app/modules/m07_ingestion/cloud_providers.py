@@ -19,6 +19,7 @@ httpx.MockTransport.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -390,6 +391,25 @@ class GoogleDriveProvider(DriveProvider):
 
 # ── Microsoft OneDrive ───────────────────────────────────────────────────────
 
+_SHARE_HOSTS = (".sharepoint.com", "onedrive.live.com", "1drv.ms")
+
+
+def onedrive_share_url(url: str) -> str:
+    """The address to hand to Graph /shares: share links as they are; the browser's address of a
+    shared view (…/shared?id=/personal/<user>/Documents/<folder>&…, …/my?id=…) becomes the item's
+    own address (https://<host>/personal/<user>/Documents/<folder>)."""
+    from urllib.parse import parse_qs, quote, urlsplit
+    raw = (url or "").strip()
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not any(host == h.lstrip(".") or host.endswith(h) for h in _SHARE_HOSTS):
+        raise CloudError("Paste the https address of a OneDrive or SharePoint folder.")
+    item_path = (parse_qs(parts.query).get("id") or [""])[0]
+    if item_path.startswith(("/personal/", "/sites/", "/teams/")):
+        return f"https://{parts.netloc}{quote(item_path)}"
+    return raw
+
+
 # Items of another person's drive (a folder shared with the connected account, OneDrive for
 # Business / SharePoint) are addressed "<driveId>~<itemId>" — Graph ids never contain "~". Items
 # of the account's own drive keep their plain id (connections and imports made before stay valid).
@@ -542,6 +562,21 @@ class OneDriveProvider(DriveProvider):
 
     def _download_request(self, file_id):
         return f"{_graph_item_url(file_id)}/content", None
+
+    async def resolve_link(self, token: str, url: str, client=None) -> DriveEntry:
+        """A folder / file from its OneDrive or SharePoint address (share link or the browser's
+        address bar) — the way to reach a folder shared through a link, which Microsoft lists
+        neither in "Shared with me" nor under shortcuts."""
+        target = onedrive_share_url(url)
+        share_id = "u!" + base64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
+        async with _client(client) as c:
+            resp = await _call(lambda: c.get(f"{GRAPH_URL}/shares/{share_id}/driveItem", headers=_auth(token)),
+                               "OneDrive link")
+        if resp.status_code in (400, 404):
+            raise CloudError("This address does not lead to a OneDrive / SharePoint folder this account can open.")
+        _status_error(resp, "OneDrive link")
+        item = resp.json()
+        return _onedrive_entry(item, (item.get("parentReference") or {}).get("driveId"))
 
     def thumbnail_host_ok(self, url):
         # Graph thumbnail URLs are pre-authenticated: fetched without our token.

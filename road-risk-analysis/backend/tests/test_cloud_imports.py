@@ -626,3 +626,29 @@ async def test_onedrive_shortcut_to_a_shared_folder_is_listed():
         page = await cp.PROVIDERS["onedrive"].browse("t", None, client=c)
     shortcut = page.entries[1]
     assert (shortcut.id, shortcut.name, shortcut.kind) == (f"{DRIVE}~01RAI", "Road Analysis IA", "folder")
+
+
+def test_onedrive_share_url_from_the_browser_address():
+    url = ("https://camtracknet-my.sharepoint.com/shared?id=%2Fpersonal%2Falex%5Ffotso%5Fcamtrack%5Fnet%2F"
+           "Documents%2FRoad%20Analysis%20IA&listurl=%2Fpersonal%2Falex%5Ffotso%5Fcamtrack%5Fnet%2FDocuments&ga=1")
+    assert cp.onedrive_share_url(url) == \
+        "https://camtracknet-my.sharepoint.com/personal/alex_fotso_camtrack_net/Documents/Road%20Analysis%20IA"
+    link = "https://camtracknet-my.sharepoint.com/:f:/g/personal/alex_fotso_camtrack_net/EabcXYZ?e=1"
+    assert cp.onedrive_share_url(link) == link                     # share links are used as they are
+    for bad in ("http://camtracknet-my.sharepoint.com/x", "https://evil.example/x", "not a url"):
+        with pytest.raises(CloudError):
+            cp.onedrive_share_url(bad)
+
+
+async def test_onedrive_resolve_link_opens_the_folder_in_the_owner_drive():
+    DRIVE = "b!Owner-Drive_1"
+
+    def handler(req: httpx.Request):
+        assert req.url.path.startswith("/v1.0/shares/u!")
+        return httpx.Response(200, json={"id": "01RAI", "name": "Road Analysis IA", "folder": {"childCount": 1},
+                                         "parentReference": {"driveId": DRIVE, "id": "01ROOT"}})
+
+    async with _mock(handler) as c:
+        e = await cp.PROVIDERS["onedrive"].resolve_link(
+            "t", "https://camtracknet-my.sharepoint.com/personal/alex/Documents/Road%20Analysis%20IA", client=c)
+    assert (e.id, e.name, e.kind) == (f"{DRIVE}~01RAI", "Road Analysis IA", "folder")

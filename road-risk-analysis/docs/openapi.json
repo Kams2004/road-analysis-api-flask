@@ -8777,6 +8777,171 @@
         "x-api-key": false
       }
     },
+    "/cloud-connections/{connection_id}/resolve": {
+      "get": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "Open a folder from its address",
+        "description": "OneDrive only: a folder shared with the account through a link appears neither in \"Shared with\nme\" nor under shortcuts in Microsoft's API — paste its address to open it (browse, import, watch).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "operationId": "resolve_link",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          },
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 4000,
+              "description": "OneDrive / SharePoint address: a share link or the browser's address bar.",
+              "title": "Url"
+            },
+            "description": "OneDrive / SharePoint address: a share link or the browser's address bar."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedLinkOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service failed — `cloud_failed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "cloud_failed": {
+                    "summary": "cloud_failed",
+                    "value": {
+                      "detail": {
+                        "code": "cloud_failed",
+                        "message": "This address does not lead to a OneDrive / SharePoint folder this account can open."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:view",
+        "x-api-key": false
+      }
+    },
     "/cloud-connections/providers": {
       "get": {
         "tags": [
@@ -49667,6 +49832,41 @@
         ],
         "title": "ResolveClusterIn",
         "description": "Sent when a vehicle passes through a cluster zone.\n`new_detection_count` is the number of detections the new job found\nin the same zone (0 = no detections at all).\nThe cluster is resolved when new_detection_count < original cluster count."
+      },
+      "ResolvedLinkOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Item id to browse / watch (another person's drive: `<driveId>~<itemId>`)."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "`folder` or `file`."
+          },
+          "breadcrumbs": {
+            "items": {
+              "$ref": "#/components/schemas/CrumbOut"
+            },
+            "type": "array",
+            "title": "Breadcrumbs",
+            "description": "Path to show (stops where this account's access starts)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "breadcrumbs"
+        ],
+        "title": "ResolvedLinkOut",
+        "description": "A drive item opened from its address."
       },
       "ReviewBoxIn": {
         "properties": {

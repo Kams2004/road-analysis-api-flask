@@ -436,13 +436,44 @@ async def list_folders(connection_id: ConnectionId,
                 if e.kind == "folder"]
     if not conn.refresh_token_enc:
         raise api_error(409, "not_authorized", "Connect the account first.")
-    try:
-        token = await cloud_storage.connection_token(db, conn)
-        folders = await cloud_storage.list_folders(conn.provider, token, parent or None)
-    except cloud_storage.CloudError as exc:
-        raise api_error(502, "cloud_failed", str(exc))
+    # same listing as /browse (OneDrive: "Shared with me" and folders of other people's drives)
+    provider = cloud_providers.get_provider(conn.provider)
+    entries = await _with_token(db, conn, lambda token: provider.list_all(token, parent or None))
     await db.commit()   # a rotated refresh token
-    return folders
+    return [CloudFolderOut(id=e.id, name=e.name) for e in entries if e.kind == "folder"]
+
+
+class ResolvedLinkOut(BaseModel):
+    """A drive item opened from its address."""
+    id: str = Field(description="Item id to browse / watch (another person's drive: `<driveId>~<itemId>`).")
+    name: str
+    kind: str = Field(description="`folder` or `file`.")
+    breadcrumbs: list[CrumbOut] = Field(description="Path to show (stops where this account's access starts).")
+
+
+@router.get("/{connection_id}/resolve", response_model=ResolvedLinkOut, summary="Open a folder from its address",
+            responses=errors(E_NOT_FOUND, err(502, "cloud_failed", "This address does not lead to a OneDrive / "
+                                                                     "SharePoint folder this account can open.")))
+async def resolve_link(connection_id: ConnectionId,
+                       url: str = Query(..., max_length=4000, description="OneDrive / SharePoint address: a share "
+                                                                           "link or the browser's address bar."),
+                       db: AsyncSession = Depends(get_db)):
+    """OneDrive only: a folder shared with the account through a link appears neither in "Shared with
+    me" nor under shortcuts in Microsoft's API — paste its address to open it (browse, import, watch)."""
+    conn = await _usable(db, connection_id)
+    provider = cloud_providers.get_provider(conn.provider)
+    if not hasattr(provider, "resolve_link"):
+        raise api_error(422, "not_supported", "Opening an address is available for OneDrive only.")
+
+    async def run(token: str):
+        entry = await provider.resolve_link(token, url)
+        crumbs = await provider.path(token, entry.id) if entry.kind == "folder" else []
+        return entry, crumbs
+
+    entry, crumbs = await _with_token(db, conn, run)
+    await db.commit()
+    return ResolvedLinkOut(id=entry.id, name=entry.name, kind=entry.kind,
+                           breadcrumbs=[CrumbOut(id=c.id, name=c.name) for c in crumbs])
 
 
 # ── Browsing & imports (input source) ───────────────────────────────────────
