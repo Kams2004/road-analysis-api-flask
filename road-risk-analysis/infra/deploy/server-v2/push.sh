@@ -42,6 +42,5 @@ echo "▶ docs/"
 "${RSYNC[@]}" docs/ "$SERVER:~/viasafe-v2/docs/"
 
 echo "✔ copied. On the server:  cd ~/viasafe-v2/infra/deploy/server-v2 && ./deploy.sh"
-echo "  SFTP passwords are NOT copied: create ~/viasafe-v2/infra/secrets/sftp.env on the server"
-echo "  (cp sftp.env.example sftp.env && chmod 600 sftp.env) — see docs/SFTP-SOURCE.md"
+echo "  SFTP passwords: typed in the web console (stored encrypted); secrets/*.env are never copied"
 echo "  First push after the folder restructure: see docs/MIGRATION-LAYOUT.md"
