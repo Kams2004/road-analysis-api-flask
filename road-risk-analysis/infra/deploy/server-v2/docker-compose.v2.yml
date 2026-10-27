@@ -39,6 +39,7 @@ x-api-env: &api-env
   WEB_BASE_URL: ${WEB_URL}                       # e-mail / report links (deploy.sh)
   CLOUD_OAUTH_BASE_URL: ${CLOUD_OAUTH_BASE_URL}  # Google / Microsoft sign-in return address (deploy.sh)
   OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}     # AI threads per video job (one job per worker process)
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}  # shown by GET /jobs/capacity ("Worker slots")
 
 services:
   db:
