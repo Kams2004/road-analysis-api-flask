@@ -1,4 +1,6 @@
 import io
+import json
+import logging
 from minio import Minio
 from minio.error import S3Error
 from app.core.config import settings
@@ -18,7 +20,26 @@ def get_minio() -> Minio:
         for bucket in [settings.MINIO_BUCKET_DETECTIONS, settings.MINIO_BUCKET_SIGNALEMENTS]:
             if not _client.bucket_exists(bucket):
                 _client.make_bucket(bucket)
+            _allow_public_read(_client, bucket)
     return _client
+
+
+def public_read_policy(bucket: str) -> str:
+    """Anyone may GET an object by its exact name (the console's /api/media route, the mobile
+    app's media host) — no listing, no writes. Datasets and reports buckets stay private."""
+    return json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Principal": {"AWS": ["*"]},
+                       "Action": ["s3:GetObject"], "Resource": [f"arn:aws:s3:::{bucket}/*"]}],
+    })
+
+
+def _allow_public_read(client: Minio, bucket: str) -> None:
+    # A fresh MinIO has private buckets: without this every detection / report image is a 403.
+    try:
+        client.set_bucket_policy(bucket, public_read_policy(bucket))
+    except Exception:
+        logging.getLogger(__name__).exception("MinIO: could not set the read policy of bucket %s", bucket)
 
 
 def upload_image(data: bytes, object_name: str, content_type: str = "image/jpeg") -> str:

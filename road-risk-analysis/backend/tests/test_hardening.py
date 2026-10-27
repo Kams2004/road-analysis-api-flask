@@ -47,3 +47,11 @@ def test_list_endpoints_cap_the_page_size():
                     assert prm["schema"].get("maximum", 0) <= 1000, path
                 if prm["name"] == "skip":
                     assert prm["schema"].get("minimum") == 0, path
+
+
+def test_media_buckets_get_a_read_only_public_policy():
+    import json
+    from app.core.storage.minio_service import public_read_policy
+    st = json.loads(public_read_policy("detections"))["Statement"]
+    assert st == [{"Effect": "Allow", "Principal": {"AWS": ["*"]}, "Action": ["s3:GetObject"],
+                   "Resource": ["arn:aws:s3:::detections/*"]}]          # no ListBucket, no Put
