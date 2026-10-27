@@ -83,6 +83,13 @@ async def _startup() -> None:
     if settings.GEOCODING_ENABLED and settings.GEOCODING_BACKFILL_ON_STARTUP > 0 and await _claim("geocoding_backfill", 900):
         from app.modules.m03_maps import geocoding_backfill
         geocoding_backfill.start_background(settings.GEOCODING_BACKFILL_ON_STARTUP)
+    # Media buckets + their read policy (images of detections / reports), without waiting for an upload.
+    try:
+        import asyncio as _asyncio
+        from app.core.storage.minio_service import get_minio
+        await _asyncio.to_thread(get_minio)
+    except Exception:  # MinIO down must not keep the API down
+        logging.getLogger(__name__).exception("MinIO not reachable at start-up")
     # Training-data objects left unwritten before a restart (docs/TRAINING-DATA.md; SKIP LOCKED)
     from app.modules.m06_hazards.training_data import sync as training_sync
     training_sync.kick(delay_s=15)
