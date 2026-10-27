@@ -154,6 +154,9 @@ services:
   labelstudio:
     image: heartexlabs/label-studio:1.23.2
     env_file: ../../secrets/labelstudio.env
+    environment:                      # its public address (links, CSRF) — set by deploy.sh
+      LABEL_STUDIO_HOST: ${LS_PUBLIC_URL}
+      CSRF_TRUSTED_ORIGINS: ${LS_PUBLIC_URL}
     volumes:
       - ls_data:/label-studio/data
     ports:
@@ -166,18 +169,39 @@ services:
     build:
       context: ../../../web
       args:
-        NEXT_PUBLIC_API_URL: http://${PUBLIC_HOST}:${API_PORT:-18080}
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL}       # set by deploy.sh (https://api.<domain> with HTTPS)
     image: viasafe-v2-web:latest
     environment:
       API_URL: http://api:8080
       MINIO_URL: http://minio:9000
-      COOKIE_SECURE: "false"
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}     # true with HTTPS (deploy.sh)
     ports:
       - "${WEB_PORT:-13000}:3001"
     depends_on: [api]
     restart: unless-stopped
 
+  # HTTPS (profile "https", started by deploy.sh when HTTPS_DOMAIN is set): Let's Encrypt
+  # certificates obtained and renewed automatically, see Caddyfile. Ports 80 + 443.
+  caddy:
+    profiles: ["https"]
+    image: caddy:2.10.2-alpine
+    environment:
+      HTTPS_DOMAIN: ${HTTPS_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    depends_on: [web, api]
+    restart: unless-stopped
+
 volumes:
+  caddy_data:
+  caddy_config:
   ocr_models:
   ls_data:
   db_data:

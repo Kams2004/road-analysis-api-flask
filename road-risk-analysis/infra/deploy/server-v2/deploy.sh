@@ -20,6 +20,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 P="viasafe-v2"
 DC=(docker compose -p "$P" -f docker-compose.v2.yml --env-file .env)
+# HTTPS_DOMAIN in .env → the caddy service (profile "https") runs in front of the stack
+if [ -f .env ] && grep -Eq '^HTTPS_DOMAIN=.+' .env; then DC+=(--profile https); fi
 
 WITH_DEMO=0
 case "${1:-}" in
@@ -80,6 +82,17 @@ fi
 set -a; . ./.env; set +a
 LS_PORT="${LS_PORT:-18085}"
 
+# ── public addresses: HTTPS through Caddy when HTTPS_DOMAIN is set, else http://<ip>:<port> ──
+if [ -n "${HTTPS_DOMAIN:-}" ]; then
+  [ -n "${ACME_EMAIL:-}" ] || { echo "✖ HTTPS_DOMAIN is set: also set ACME_EMAIL (Let's Encrypt contact) in .env"; exit 1; }
+  WEB_URL="https://${HTTPS_DOMAIN}"; PUBLIC_API_URL="https://api.${HTTPS_DOMAIN}"
+  MEDIA_URL="https://media.${HTTPS_DOMAIN}"; LS_PUBLIC_URL="https://labels.${HTTPS_DOMAIN}"; COOKIE_SECURE=true
+else
+  WEB_URL="http://${PUBLIC_HOST}:${WEB_PORT}"; PUBLIC_API_URL="http://${PUBLIC_HOST}:${API_PORT}"
+  MEDIA_URL="http://${PUBLIC_HOST}:${MEDIA_PORT}"; LS_PUBLIC_URL="http://${PUBLIC_HOST}:${LS_PORT}"; COOKIE_SECURE=false
+fi
+export WEB_URL PUBLIC_API_URL MEDIA_URL LS_PUBLIC_URL COOKIE_SECURE
+
 # ── Label Studio settings (box review of the training data), generated once ─
 LS_ENV=../../secrets/labelstudio.env
 if [ ! -f "$LS_ENV" ]; then
@@ -99,10 +112,13 @@ EOF
   )
   echo "▶ Label Studio settings created: $(cd ../../secrets && pwd)/labelstudio.env"
 fi
+# keep its public addresses in step with HTTP / HTTPS (the API builds the image links from them)
+sed -i -e "s|^VIASAFE_LS_PUBLIC_URL=.*|VIASAFE_LS_PUBLIC_URL=${LS_PUBLIC_URL}|" \
+       -e "s|^VIASAFE_PUBLIC_API_URL=.*|VIASAFE_PUBLIC_API_URL=${PUBLIC_API_URL}|" "$LS_ENV"
 
 # ── safety checks ──────────────────────────────────────────────────────────
 running_here="$(docker ps --filter "label=com.docker.compose.project=$P" -q | wc -l)"
-for port in "$API_PORT" "$WEB_PORT" "$MEDIA_PORT" "$LS_PORT"; do
+for port in "$API_PORT" "$WEB_PORT" "$MEDIA_PORT" "$LS_PORT" ${HTTPS_DOMAIN:+80 443}; do
   if ss -ltn | awk '{print $4}' | grep -Eq "[:.]${port}$"; then
     if [ "$running_here" -gt 0 ] && docker ps --filter "label=com.docker.compose.project=$P" --format '{{.Ports}}' | grep -q ":${port}->"; then
       continue   # it is our own stack (update)
@@ -158,10 +174,11 @@ fi
 cat <<EOF
 
 ✔ VIASafe v2 is running (production untouched) — mode: ${MODE}
-  Web console : http://${PUBLIC_HOST}:${WEB_PORT}
-  API         : http://${PUBLIC_HOST}:${API_PORT}   (docs: /docs)
+  Web console : ${WEB_URL}
+  API         : ${PUBLIC_API_URL}   (docs: /docs)
+  Media       : ${MEDIA_URL}   (mobile app images)
   Admin       : ${ADMIN_EMAIL}    password: grep ADMIN_PASSWORD .env
-  Label Studio: http://${PUBLIC_HOST}:${LS_PORT}   login: grep LABEL_STUDIO_ ../../secrets/labelstudio.env  (Training data page → Send to Label Studio)
+  Label Studio: ${LS_PUBLIC_URL}   login: grep LABEL_STUDIO_ ../../secrets/labelstudio.env  (Training data page → Send to Label Studio)
   Status/logs : ./deploy.sh --status | --logs [api|web|worker|beat]
   Help        : ./deploy.sh --help
 EOF
