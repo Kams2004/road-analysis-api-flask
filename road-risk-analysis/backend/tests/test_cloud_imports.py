@@ -609,3 +609,20 @@ async def test_onedrive_shared_with_me_and_remote_drive():
     url, _ = p._download_request(f"{DRIVE}~01VID")
     assert url == f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/items/01VID/content"
     assert p._download_request("01OWN")[0].endswith("/me/drive/items/01OWN/content")   # own drive unchanged
+
+
+async def test_onedrive_shortcut_to_a_shared_folder_is_listed():
+    """'Add shortcut to My files' on a folder shared by someone else: listed in My files and
+    browsed in the owner's drive."""
+    DRIVE = "b!Owner-Drive_1"
+
+    def handler(req: httpx.Request):
+        if req.url.path == "/v1.0/me/drive/root/children":
+            return httpx.Response(200, json={"value": [{"id": "SC1", "name": "Road Analysis IA", "remoteItem": {
+                "id": "01RAI", "folder": {"childCount": 1}, "parentReference": {"driveId": DRIVE}}}]})
+        return httpx.Response(404)
+
+    async with _mock(handler) as c:
+        page = await cp.PROVIDERS["onedrive"].browse("t", None, client=c)
+    shortcut = page.entries[1]
+    assert (shortcut.id, shortcut.name, shortcut.kind) == (f"{DRIVE}~01RAI", "Road Analysis IA", "folder")

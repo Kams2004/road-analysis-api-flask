@@ -473,7 +473,10 @@ class OneDriveProvider(DriveProvider):
             resp = await _call(lambda: c.get(url, params=params, headers=_auth(token)), "OneDrive listing")
         _status_error(resp, "OneDrive listing")
         body = resp.json()
-        entries = [_onedrive_entry(i, drive) for i in body.get("value", []) if "folder" in i or "file" in i]
+        # "Add shortcut to My files" items carry the shared folder in `remoteItem` (no folder / file facet)
+        entries = [_onedrive_entry(i, drive) for i in body.get("value", [])
+                   if "folder" in i or "file" in i or "folder" in (i.get("remoteItem") or {})
+                   or "file" in (i.get("remoteItem") or {})]
         if (folder_id in (None, "root")) and not page_token and not (query and query.strip()):
             # the own drive's root also offers what other people shared with this account
             entries.insert(0, DriveEntry(id=SHARED_FOLDER, name="Shared with me", kind="folder", virtual=True))
