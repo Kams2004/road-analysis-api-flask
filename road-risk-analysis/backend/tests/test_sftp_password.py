@@ -23,7 +23,7 @@ PW = "s3cr#t pass=word"
 def _conn(**kw):
     base = dict(id="c1", provider="sftp", name="srv", enabled=True, status="active", sftp_host="h", sftp_port=22,
                 sftp_username="u", sftp_base_path=None, sftp_password_key=None, sftp_password_enc=None,
-                sftp_host_key=None, sftp_host_key_fp=None, sftp_host_key_at=None)
+                sftp_host_key=None, sftp_host_key_fp=None, sftp_host_key_at=None, saved_folders=None)
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -166,3 +166,25 @@ async def test_create_and_edit_store_it_encrypted_and_never_log_it(quiet):
 
 def test_model_has_the_encrypted_column():
     assert "sftp_password_enc" in CloudConnection.__table__.columns
+
+
+async def test_saved_folders_replace_dedupe_and_clear(quiet):
+    audits, _ = quiet
+    conn = CloudConnection(id="od", provider="onedrive", name="Fleet", status="active", enabled=True,
+                           created_at=datetime(2026, 10, 27), refresh_token_enc="x")
+    db = _Db(conn)
+    folder = {"id": "D~I", "name": " Road Analysis IA ", "link": "https://x.sharepoint.com/personal/a",
+              "breadcrumbs": [{"id": "shared", "name": "Shared with me"}, {"id": "D~I", "name": "Road Analysis IA"}]}
+    out = await routes.update_connection("od", routes.ConnectionPatch(saved_folders=[folder, {**folder, "name": "dup"}]),
+                                         None, db, SimpleNamespace(label="admin"))
+    assert [f.name for f in out.saved_folders] == ["Road Analysis IA"]
+    assert out.saved_folders[0].breadcrumbs[-1].id == "D~I"
+    assert audits[-1]["saved_folders"] == [[], ["Road Analysis IA"]]
+
+    out = await routes.update_connection("od", routes.ConnectionPatch(saved_folders=[]), None, db,
+                                         SimpleNamespace(label="admin"))
+    assert out.saved_folders == [] and conn.saved_folders == []
+    with pytest.raises(ValueError):
+        routes.SavedFolder(id="x", name="n", link="http://evil")
+    conn.saved_folders = [{"bad": 1}, folder]                  # malformed entry dropped, not a 500
+    assert len(routes._out(conn).saved_folders) == 1

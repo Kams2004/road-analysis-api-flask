@@ -67,4 +67,6 @@ UPDATE cloud_connections SET auto_import = enabled WHERE auto_import IS NULL;
 ALTER TABLE cloud_connections ALTER COLUMN auto_import SET DEFAULT FALSE;
 ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS auto_import_models JSON;
 ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS auto_import_frame_skip INTEGER;
+-- Folders bookmarked in the browser (e.g. opened from a OneDrive link): [{id, name, breadcrumbs, link}]
+ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS saved_folders JSON;
 CREATE INDEX IF NOT EXISTS ix_cloud_import_items_conn_file ON cloud_import_items (connection_id, file_id);

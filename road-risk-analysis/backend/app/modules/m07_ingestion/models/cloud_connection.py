@@ -55,6 +55,8 @@ class CloudConnection(Base):
     auto_import:            Mapped[bool]             = mapped_column(Boolean, default=False)
     auto_import_models:     Mapped[list | None]      = mapped_column(JSON, nullable=True)   # None = defaults
     auto_import_frame_skip: Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    # Folders bookmarked in the browser ("Saved folders"): [{id, name, breadcrumbs, link}]
+    saved_folders:          Mapped[list | None]      = mapped_column(JSON, nullable=True)
     # SFTP server profile (provider "sftp"). The password typed in the web console is stored
     # encrypted (Fernet keyed from SECRET_KEY) and never returned; servers set up before it may
     # still read theirs from infra/secrets/sftp.env through `sftp_password_key`.

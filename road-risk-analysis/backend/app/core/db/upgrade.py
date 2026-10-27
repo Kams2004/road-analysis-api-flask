@@ -239,6 +239,7 @@ CLOUD_IMPORT_COLUMNS = [
     "ALTER TABLE cloud_connections ALTER COLUMN auto_import SET DEFAULT FALSE",
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS auto_import_models JSON",
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS auto_import_frame_skip INTEGER",
+    "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS saved_folders JSON",
     "CREATE INDEX IF NOT EXISTS ix_cloud_import_items_conn_file ON cloud_import_items (connection_id, file_id)",
 ]
 

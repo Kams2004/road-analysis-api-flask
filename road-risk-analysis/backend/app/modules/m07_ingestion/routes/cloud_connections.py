@@ -56,6 +56,41 @@ class ConnectionIn(BaseModel):
     folder_name: Optional[str] = Field(None, description="Display name of the watched folder.", examples=["Dashcam uploads"])
 
 
+SAVED_FOLDERS_MAX = 50
+
+
+class SavedCrumb(BaseModel):
+    id:   str = Field(min_length=1, max_length=1024)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class SavedFolder(BaseModel):
+    """A folder bookmarked in the browser — reopened in one click (e.g. a OneDrive folder shared
+    by someone else, first opened from its link)."""
+    id:          str = Field(min_length=1, max_length=1024, description="Folder id to browse "
+                                                                         "(`<driveId>~<itemId>` when shared).")
+    name:        str = Field(min_length=1, max_length=120, description="Label shown in the list.",
+                             examples=["Road Analysis IA – VIDEOS"])
+    breadcrumbs: list[SavedCrumb] = Field(default_factory=list, max_length=30,
+                                          description="Path shown when it is opened.")
+    link:        Optional[str] = Field(None, max_length=2048, description="Address it was opened from, if any.")
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("The name is empty.")
+        return v
+
+    @field_validator("link")
+    @classmethod
+    def _link(cls, v):
+        if v and not v.startswith("https://"):
+            raise ValueError("The link must start with https://")
+        return v or None
+
+
 class ConnectionPatch(BaseModel):
     """Partial update: only the fields sent are changed."""
     name:        Optional[str] = Field(None, min_length=1, max_length=120, description="Display name.")
@@ -73,6 +108,9 @@ class ConnectionPatch(BaseModel):
     auto_import_frame_skip: Optional[int] = Field(None, ge=1, le=60,
                                                   description="Frame sampling of auto-imported videos (`null` = "
                                                               "processing.frame_skip_by_source).")
+    saved_folders: Optional[list[SavedFolder]] = Field(
+        None, max_length=SAVED_FOLDERS_MAX, description="The whole list of saved folders (replaces it; `[]` "
+                                                        "clears it). Same folder id twice is kept once.")
 
     @field_validator("auto_import_models")
     @classmethod
@@ -146,6 +184,8 @@ class ConnectionOut(BaseModel):
     last_sync_files:      int = Field(0, description="Files imported by the last sync.")
     files_imported_total: int = Field(0, description="Files imported since creation.")
     sftp:                 Optional[SftpInfoOut] = Field(None, description="SFTP server profile (provider `sftp`).")
+    saved_folders:        list[SavedFolder] = Field(default_factory=list, description="Folders bookmarked in "
+                                                                                     "the browser.")
 
 
 class ConnectionAuthorizeOut(BaseModel):
@@ -201,13 +241,25 @@ def _out(c: CloudConnection, link: Optional[dict] = None) -> ConnectionOut:
         last_sync_files=c.last_sync_files or 0, files_imported_total=c.files_imported_total or 0,
         auto_import=bool(c.auto_import), auto_import_models=c.auto_import_models,
         auto_import_frame_skip=c.auto_import_frame_skip, sftp=sftp,
+        saved_folders=_saved(c.saved_folders),
     )
+
+
+def _saved(raw) -> list[SavedFolder]:
+    out = []
+    for f in raw or []:
+        try:
+            out.append(SavedFolder.model_validate(f))
+        except Exception:          # a malformed entry is dropped, not a 500
+            continue
+    return out
 
 
 def _snapshot(c: CloudConnection) -> dict:
     snap = {"provider": c.provider, "name": c.name, "folder_id": c.folder_id, "folder_name": c.folder_name,
             "enabled": c.enabled, "status": c.status, "auto_import": bool(c.auto_import),
-            "auto_import_models": c.auto_import_models, "auto_import_frame_skip": c.auto_import_frame_skip}
+            "auto_import_models": c.auto_import_models, "auto_import_frame_skip": c.auto_import_frame_skip,
+            "saved_folders": [f.get("name") for f in (c.saved_folders or []) if isinstance(f, dict)]}
     if c.provider == "sftp":
         snap.update({"sftp_host": c.sftp_host, "sftp_port": c.sftp_port, "sftp_username": c.sftp_username,
                      "sftp_base_path": c.sftp_base_path, "sftp_password_key": c.sftp_password_key,
@@ -344,8 +396,8 @@ async def reauthorize(connection_id: ConnectionId, db: AsyncSession = Depends(ge
               responses=errors(E_NOT_FOUND))
 async def update_connection(connection_id: ConnectionId, body: ConnectionPatch, request: Request,
                             db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
-    """Rename, change the watched folder and its automatic import, or enable/disable the connection
-    (see `ConnectionPatch`). Audited as `cloud_connection.update`."""
+    """Rename, change the watched folder and its automatic import, the saved folders, or
+    enable/disable the connection (see `ConnectionPatch`). Audited as `cloud_connection.update`."""
     conn = await _get(db, connection_id)
     before = _snapshot(conn)
     data = body.model_dump(exclude_unset=True)
@@ -362,6 +414,10 @@ async def update_connection(connection_id: ConnectionId, body: ConnectionPatch, 
         conn.auto_import_models = data["auto_import_models"]
     if "auto_import_frame_skip" in data:
         conn.auto_import_frame_skip = data["auto_import_frame_skip"]
+    if body.saved_folders is not None:
+        seen: set[str] = set()
+        conn.saved_folders = [f.model_dump() for f in body.saved_folders
+                              if not (f.id in seen or seen.add(f.id))]
     if data.get("enabled") is not None:
         conn.enabled = data["enabled"]
         if not conn.enabled:
@@ -382,7 +438,7 @@ async def update_connection(connection_id: ConnectionId, body: ConnectionPatch, 
 async def delete_connection(connection_id: ConnectionId, request: Request, db: AsyncSession = Depends(get_db),
                             principal: Principal = Depends(get_principal)):
     """Remove the connection and its stored tokens (SFTP: its profile, trusted host key and connection
-    log; the password stays in the secrets file). Jobs already imported stay (their `connection_id`
+    log and saved password). Jobs already imported stay (their `connection_id`
     is cleared); imports still downloading fail with a readable error. Audited as
     `cloud_connection.delete`."""
     conn = await _get(db, connection_id)

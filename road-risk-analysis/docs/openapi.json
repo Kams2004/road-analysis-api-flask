@@ -8139,7 +8139,7 @@
           "Cloud connections"
         ],
         "summary": "Update a cloud connection",
-        "description": "Rename, change the watched folder and its automatic import, or enable/disable the connection\n(see `ConnectionPatch`). Audited as `cloud_connection.update`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
+        "description": "Rename, change the watched folder and its automatic import, the saved folders, or\nenable/disable the connection (see `ConnectionPatch`). Audited as `cloud_connection.update`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
         "operationId": "update_connection",
         "parameters": [
           {
@@ -8279,7 +8279,7 @@
           "Cloud connections"
         ],
         "summary": "Delete a cloud connection",
-        "description": "Remove the connection and its stored tokens (SFTP: its profile, trusted host key and connection\nlog; the password stays in the secrets file). Jobs already imported stay (their `connection_id`\nis cleared); imports still downloading fail with a readable error. Audited as\n`cloud_connection.delete`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:delete`",
+        "description": "Remove the connection and its stored tokens (SFTP: its profile, trusted host key and connection\nlog and saved password). Jobs already imported stay (their `connection_id`\nis cleared); imports still downloading fail with a readable error. Audited as\n`cloud_connection.delete`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:delete`",
         "operationId": "delete_connection",
         "parameters": [
           {
@@ -38192,6 +38192,14 @@
               }
             ],
             "description": "SFTP server profile (provider `sftp`)."
+          },
+          "saved_folders": {
+            "items": {
+              "$ref": "#/components/schemas/SavedFolder"
+            },
+            "type": "array",
+            "title": "Saved Folders",
+            "description": "Folders bookmarked in the browser."
           }
         },
         "type": "object",
@@ -38311,6 +38319,22 @@
             ],
             "title": "Auto Import Frame Skip",
             "description": "Frame sampling of auto-imported videos (`null` = processing.frame_skip_by_source)."
+          },
+          "saved_folders": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SavedFolder"
+                },
+                "type": "array",
+                "maxItems": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Folders",
+            "description": "The whole list of saved folders (replaces it; `[]` clears it). Same folder id twice is kept once."
           }
         },
         "type": "object",
@@ -51053,6 +51077,78 @@
         ],
         "title": "RouteWaypoint",
         "description": "A point of the route polyline."
+      },
+      "SavedCrumb": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "SavedCrumb"
+      },
+      "SavedFolder": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Id",
+            "description": "Folder id to browse (`<driveId>~<itemId>` when shared)."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "description": "Label shown in the list.",
+            "examples": [
+              "Road Analysis IA – VIDEOS"
+            ]
+          },
+          "breadcrumbs": {
+            "items": {
+              "$ref": "#/components/schemas/SavedCrumb"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Breadcrumbs",
+            "description": "Path shown when it is opened."
+          },
+          "link": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Link",
+            "description": "Address it was opened from, if any."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "SavedFolder",
+        "description": "A folder bookmarked in the browser — reopened in one click (e.g. a OneDrive folder shared\nby someone else, first opened from its link)."
       },
       "SectionOut": {
         "properties": {
