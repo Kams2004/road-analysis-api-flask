@@ -484,7 +484,8 @@ def redact(section: str, value: BaseModel) -> dict:
 def cloud_redirect_uri() -> str:
     """OAuth redirect URI to register with Google / Microsoft (shown in Settings)."""
     from app.core.config import settings
-    return f"{settings.WEB_BASE_URL.rstrip('/')}/settings/cloud/callback"
+    base = settings.CLOUD_OAUTH_BASE_URL or settings.WEB_BASE_URL
+    return f"{base.rstrip('/')}/settings/cloud/callback"
 
 
 def smtp_configured(s: SmtpSettings) -> bool:

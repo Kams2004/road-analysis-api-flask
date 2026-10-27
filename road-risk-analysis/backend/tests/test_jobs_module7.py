@@ -413,3 +413,15 @@ async def test_connection_token_stores_rotated_refresh_token():
     async with _mock(handler) as c:
         assert await cs.connection_token(None, conn, CFG, c) == "AT2"
     assert decrypt_secret(conn.refresh_token_enc) == "NEW"
+
+
+def test_oauth_redirect_can_differ_from_the_public_console_address(monkeypatch):
+    """E-mail / report links use the public address; the drive sign-in may return to localhost
+    (SSH tunnel) because Microsoft accepts plain http only there."""
+    from app.core.config import settings
+    from app.core.settings_service import cloud_redirect_uri
+    monkeypatch.setattr(settings, "WEB_BASE_URL", "http://62.72.41.52:13000")
+    monkeypatch.setattr(settings, "CLOUD_OAUTH_BASE_URL", "http://localhost:3000")
+    assert cloud_redirect_uri() == "http://localhost:3000/settings/cloud/callback"
+    monkeypatch.setattr(settings, "CLOUD_OAUTH_BASE_URL", "")
+    assert cloud_redirect_uri() == "http://62.72.41.52:13000/settings/cloud/callback"

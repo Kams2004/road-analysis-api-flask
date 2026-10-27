@@ -337,7 +337,11 @@ class Settings(BaseSettings):
     # production — changing it later makes stored secrets unreadable.
     SECRET_KEY: str = "dev-insecure-secret-change-me"
     # Base URL of the web console, used to build password-reset links.
-    WEB_BASE_URL: str = "http://localhost:3000"
+    WEB_BASE_URL: str = "http://localhost:3000"      # public console address: e-mail and report links
+    # Base of the Google / Microsoft OAuth redirect URI when it must differ from WEB_BASE_URL:
+    # Microsoft accepts plain http only for localhost, so a server without HTTPS connects its
+    # drives once through an SSH tunnel (http://localhost:3000). Empty = WEB_BASE_URL.
+    CLOUD_OAUTH_BASE_URL: str = ""
     # Comma-separated browser origins allowed by CORS. The web console goes
     # through its server-side proxy and the native app is not subject to
     # CORS, so only dev origins are needed here by default.

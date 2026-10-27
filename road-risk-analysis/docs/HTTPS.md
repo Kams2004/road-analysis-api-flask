@@ -36,3 +36,17 @@ Then add the two lines to `.env` and run `./deploy.sh`. The first certificate ta
 The plain-HTTP ports stay open meanwhile; once everything works over HTTPS (and the mobile app is built
 with `EXPO_PUBLIC_API_URL=https://api.<domain>`, `EXPO_PUBLIC_MINIO_URL=https://media.<domain>`), they can
 be closed by binding them to 127.0.0.1 in `docker-compose.v2.yml`.
+
+## Google / Microsoft drive sign-in
+
+The OAuth return address (Settings → Integrations & data shows it) is `<console>/settings/cloud/callback`.
+Microsoft and Google accept plain `http` only for `localhost`, so:
+
+* **with HTTPS** — `https://<HTTPS_DOMAIN>/settings/cloud/callback`; register that address.
+* **without HTTPS** — `http://localhost:3000/settings/cloud/callback`; register that address and connect each
+  drive once through a tunnel from your PC: `ssh -N -L 3000:localhost:13000 <user>@<server>`, then open
+  http://localhost:3000 and add the source. The server keeps the access afterwards (no tunnel needed).
+
+E-mail links (password reset) and report links always use the public console address (`WEB_BASE_URL`,
+set by `deploy.sh`).
+

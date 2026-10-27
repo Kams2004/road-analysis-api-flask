@@ -91,7 +91,10 @@ else
   WEB_URL="http://${PUBLIC_HOST}:${WEB_PORT}"; PUBLIC_API_URL="http://${PUBLIC_HOST}:${API_PORT}"
   MEDIA_URL="http://${PUBLIC_HOST}:${MEDIA_PORT}"; LS_PUBLIC_URL="http://${PUBLIC_HOST}:${LS_PORT}"; COOKIE_SECURE=false
 fi
-export WEB_URL PUBLIC_API_URL MEDIA_URL LS_PUBLIC_URL COOKIE_SECURE
+# Google / Microsoft accept a plain-http sign-in return address only on localhost: without HTTPS the
+# drives are connected once through an SSH tunnel (ssh -L 3000:localhost:<WEB_PORT>) — docs/HTTPS.md
+if [ -n "${HTTPS_DOMAIN:-}" ]; then CLOUD_OAUTH_BASE_URL="$WEB_URL"; else CLOUD_OAUTH_BASE_URL="http://localhost:3000"; fi
+export WEB_URL PUBLIC_API_URL MEDIA_URL LS_PUBLIC_URL COOKIE_SECURE CLOUD_OAUTH_BASE_URL
 
 # ── Label Studio settings (box review of the training data), generated once ─
 LS_ENV=../../secrets/labelstudio.env
