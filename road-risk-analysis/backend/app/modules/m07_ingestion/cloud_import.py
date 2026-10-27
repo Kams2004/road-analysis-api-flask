@@ -386,7 +386,12 @@ async def prior_imports(db, connection_id: str, file_ids: list[str]) -> dict[str
         .where(CloudImportItem.connection_id == connection_id, CloudImportItem.file_id.in_(ids))
     )).all()
     with_item: set[str] = set()
+    handed_over = (S.queued_for_processing.value, S.processing.value, S.done.value)
     for it, job_status in rows:
+        if it.status in handed_over and it.job_id is None:
+            # Its job was deleted (job_id SET NULL): nothing of it is left — the file
+            # counts as not imported, so it can be imported again without "re-import".
+            continue
         jst = getattr(job_status, "value", job_status)
         st = effective_status(it.status, jst, has_job=it.job_id is not None)
         out.setdefault(it.file_id, []).append(Prior(it.version, st, it.job_id, it.id, it.batch_id, it.created_at))

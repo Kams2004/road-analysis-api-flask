@@ -652,3 +652,26 @@ async def test_onedrive_resolve_link_opens_the_folder_in_the_owner_drive():
         e = await cp.PROVIDERS["onedrive"].resolve_link(
             "t", "https://camtracknet-my.sharepoint.com/personal/alex/Documents/Road%20Analysis%20IA", client=c)
     assert (e.id, e.name, e.kind) == (f"{DRIVE}~01RAI", "Road Analysis IA", "folder")
+
+
+async def test_file_whose_job_was_deleted_can_be_imported_again():
+    from types import SimpleNamespace as NS
+
+    class Res:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def all(self):
+            return self.rows
+
+    gone = NS(file_id="a", status="done", job_id=None, version="v1", id="i1", batch_id="b", created_at=T0)
+    kept = NS(file_id="b", status="done", job_id="J", version="v1", id="i2", batch_id="b", created_at=T0)
+    results = iter([Res([(gone, None), (kept, "done")]), Res([])])
+
+    class Db:
+        async def execute(self, q):
+            return next(results)
+
+    priors = await ci.prior_imports(Db(), "c1", ["a", "b"])
+    entries = [NS(id="a", version="v1"), NS(id="b", version="v1")]
+    assert [p.status for p in ci.plan_items(entries, priors)] == ["queued", "skipped_duplicate"]
