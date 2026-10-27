@@ -6,7 +6,7 @@
 #   ./push.sh --minio               ship the MinIO image (not on Docker Hub any more)
 #
 # Server layout (same as road-risk-analysis/ on this PC, minus mobile/ and data):
-#   ~/viasafe-v2/{backend,web,infra,ai/models,docs}
+#   ~/viasafe-v2/{backend,web,infra,ai/models,ai/training,docs}
 # Never copied: secrets (infra/secrets/*.env, keys), .env files, OSRM data, wheels,
 # logs, node_modules / .next, __pycache__.
 set -euo pipefail
@@ -19,7 +19,7 @@ if [ "${1:-}" = "--minio" ]; then
   echo "✔ MinIO image loaded on the server"
   exit 0
 fi
-ssh "$SERVER" 'mkdir -p ~/viasafe-v2/backend ~/viasafe-v2/web ~/viasafe-v2/infra ~/viasafe-v2/ai/models ~/viasafe-v2/docs'
+ssh "$SERVER" 'mkdir -p ~/viasafe-v2/backend ~/viasafe-v2/web ~/viasafe-v2/infra ~/viasafe-v2/ai/models ~/viasafe-v2/ai/training ~/viasafe-v2/docs'
 RSYNC=(rsync -az --info=progress2
   --exclude '.git/' --exclude '__pycache__/' --exclude '*.pyc' --exclude '.pytest_cache/'
   --exclude '.env' --exclude '.env.*' --exclude '*.mp4')
@@ -38,6 +38,8 @@ echo "▶ infra/"
   infra/ "$SERVER:~/viasafe-v2/infra/"
 echo "▶ ai/models/"
 "${RSYNC[@]}" --exclude 'incoming/' ai/models/ "$SERVER:~/viasafe-v2/ai/models/"   # incoming/ = downloaded packages
+echo "▶ ai/training/ (code only: datasets / runs stay in each project's work/ on the server)"
+"${RSYNC[@]}" --exclude 'work/' --exclude '*.pt' --exclude 'runs/' ai/training/ "$SERVER:~/viasafe-v2/ai/training/"
 echo "▶ docs/"
 "${RSYNC[@]}" docs/ "$SERVER:~/viasafe-v2/docs/"
 
