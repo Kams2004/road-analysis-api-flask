@@ -67,11 +67,34 @@ See `docs/openapi.json` (tag *Cloud connections*).
 
 ## Scale
 
-About 1,800 events a day (~650,000 a year, ~250 MB a year in PostgreSQL). Indexes:
-`(event_type, occurred_at)`, `(country, occurred_at)`, driver, vehicle, file. Next steps:
+About 1,800 events a day (~650,000 a year, ~250 MB a year in PostgreSQL).
 
-- **Step 2:** daily summary tables (day × driver × type, day × zone × type) read by the
-  screens, cached results and a country filter. The Driver behaviour screens currently load
-  raw events (up to 200,000) for each request.
-- **Step 3:** missing-file alerts and a calendar of days received / missing.
-- **Retention:** raw events 3 years, daily summaries without limit.
+**What the screens read: daily summaries, not every event.** `app/modules/m08_historical/rollups.py`
+keeps three small tables, built from `historical_events` with plain SQL:
+
+| Table | Per | Serves |
+|-------|-----|--------|
+| `event_daily` | day × source × country × transporter × driver × vehicle × type × severity | totals, by type, speed / limit / excess, drivers & vehicles ranking, trends |
+| `event_daily_hour` | day × country × type × hour (UTC) | hour-of-day / weekday patterns, peak hour |
+| `event_daily_cell` | day × country × ~110 m square × type × severity × road | heatmaps, zones, top roads, historical risk cells |
+
+- **Refreshed only where needed.** After each import (daily file, manual / API import) only the
+  touched days are rebuilt. All of them are rebuilt when the severity rules change
+  (*Settings → Driver behaviour*) or on first start: worker task `rebuild_event_rollups`.
+- **Never stale.** Until the rebuild is done, the screens read the raw events.
+- **Raw events only for bounded sets.** The screens read raw events when a filter the
+  summaries don't carry is used: a map area, or a driver / vehicle for hour and map patterns.
+  It is still a grouped SQL query, never every event in memory. One driver's or vehicle's
+  profile reads its own events.
+- **Cache.** Answers are cached 10 minutes in Redis under a data version that every import or
+  settings change bumps (`agg_cache.py`). A new day of events invalidates everything at once.
+- **Country filter.** `country` on every `/driver-behaviour/*` and `/historical/*` read
+  (repeat or comma-separate), plus `GET /driver-behaviour/countries`. The web pages have a
+  *Country* select (every country by default).
+- **Retention.** The nightly task `purge_old_events` deletes raw events older than
+  `RAW_EVENT_RETENTION_DAYS` (3 years). Their daily summaries are kept without limit: a full
+  rebuild never touches days older than the oldest raw event.
+- **Indexes:** `(event_type, occurred_at)`, `(country, occurred_at)`, driver, vehicle, file.
+  Summaries: `(driver, day)`, `(vehicle, day)`, `(country, day)`, squares.
+
+Still to do (step 3): missing-file alerts and a calendar of the days received / missing.

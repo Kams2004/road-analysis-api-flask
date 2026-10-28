@@ -30791,6 +30791,27 @@
               "title": "Bbox"
             },
             "description": "Only inside `south,west,north,east` (WGS84 degrees)."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
           }
         ],
         "responses": {
@@ -30983,6 +31004,27 @@
               "title": "Bbox"
             },
             "description": "Only inside `south,west,north,east` (WGS84 degrees)."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
           }
         ],
         "responses": {
@@ -31207,6 +31249,27 @@
               "title": "Limit"
             },
             "description": "Maximum zones."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
           }
         ],
         "responses": {
@@ -31421,6 +31484,27 @@
               "title": "Unit"
             },
             "description": "`day`, `week` or `month` (default: from the period)."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
           }
         ],
         "responses": {
@@ -31543,7 +31627,7 @@
           "Historical risk"
         ],
         "summary": "List historical import batches",
-        "description": "Import history (driving event collection), newest first.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `historical:view`",
+        "description": "Import history (driving event collection), newest first: events grouped by source and import\nminute (one grouped read).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `historical:view`",
         "operationId": "historical_imports",
         "parameters": [
           {
@@ -31751,6 +31835,32 @@
               "title": "Types"
             },
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
           },
           {
             "name": "driver",
@@ -32087,6 +32197,32 @@
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
           },
           {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+          },
+          {
             "name": "driver",
             "in": "query",
             "required": false,
@@ -32351,6 +32487,32 @@
               "title": "Types"
             },
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
           },
           {
             "name": "driver",
@@ -32633,6 +32795,32 @@
               "title": "Types"
             },
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
           },
           {
             "name": "driver",
@@ -32928,6 +33116,32 @@
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
           },
           {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+          },
+          {
             "name": "driver",
             "in": "query",
             "required": false,
@@ -33201,6 +33415,32 @@
               "title": "Types"
             },
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
           },
           {
             "name": "driver",
@@ -33494,6 +33734,32 @@
               "title": "Types"
             },
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
           },
           {
             "name": "driver",
@@ -33800,6 +34066,32 @@
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
           },
           {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+          },
+          {
             "name": "driver",
             "in": "query",
             "required": false,
@@ -34084,6 +34376,32 @@
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
           },
           {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+          },
+          {
             "name": "driver",
             "in": "query",
             "required": false,
@@ -34364,6 +34682,32 @@
             "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
           },
           {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+          },
+          {
             "name": "driver",
             "in": "query",
             "required": false,
@@ -34519,6 +34863,101 @@
                     "summary": "malformed bbox",
                     "value": {
                       "detail": "'bbox' must be 'south,west,north,east'"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "driver_behaviour:view",
+        "x-api-key": false
+      }
+    },
+    "/driver-behaviour/countries": {
+      "get": {
+        "tags": [
+          "Driver behaviour"
+        ],
+        "summary": "List the countries of the events",
+        "description": "Countries found in the events, most events first — the values of the `country` filter.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "operationId": "countries",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CountryOut"
+                  },
+                  "type": "array",
+                  "title": "Response Countries"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks driver_behaviour:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "driver_behaviour",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
                     }
                   }
                 }
@@ -36460,6 +36899,30 @@
             "type": "number",
             "title": "Longitude",
             "description": "Longitude (degrees)."
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country",
+            "description": "Country (customer affiliate) from the source."
+          },
+          "transporter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transporter",
+            "description": "Transporter from the source."
           },
           "driver_external_id": {
             "anyOf": [
@@ -39019,6 +39482,29 @@
         ],
         "title": "CorrectIn",
         "description": "Body of `POST /detections/{id}/correct`: the right class."
+      },
+      "CountryOut": {
+        "properties": {
+          "country": {
+            "type": "string",
+            "title": "Country",
+            "examples": [
+              "CAMEROUN"
+            ]
+          },
+          "events": {
+            "type": "integer",
+            "title": "Events",
+            "description": "Events stored for it (every type, all time)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "country",
+          "events"
+        ],
+        "title": "CountryOut",
+        "description": "A country present in the events (customer affiliate sent by the source)."
       },
       "CrumbOut": {
         "properties": {
@@ -55835,7 +56321,7 @@
           "cells": {
             "type": "integer",
             "title": "Cells",
-            "description": "Distinct grid cells with events."
+            "description": "Distinct ~110 m squares with events (spread of the risk)."
           }
         },
         "type": "object",

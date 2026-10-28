@@ -16,7 +16,7 @@ model; this step only prepares the data it would train on.
 """
 import logging
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Tuple
 
 from sqlalchemy import select
@@ -26,7 +26,7 @@ from app.core.config import settings
 from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
 from app.modules.m08_historical import matcher
 from app.modules.m08_historical.grid import (
-    grid_cell_center, grid_cell_ids_along_route, grid_cell_ids_in_radius,
+    grid_cell_center, grid_cell_id, grid_cell_ids_along_route, grid_cell_ids_in_radius,
 )
 from app.modules.m08_historical.domain import (
     EventTypeCount, HistoricalEventType, ImportSummary, ZoneRiskProfile,
@@ -102,6 +102,9 @@ async def import_events(source: HistoricalEventSource, start: date, end: date, d
             errors.append(f"{event.source_event_id}: {e}")
 
     await db.commit()
+    if inserted:
+        from app.modules.m08_historical import rollups
+        await rollups.rebuild_safely(db, {e.occurred_at.date() for e in events})
 
     logger.info(
         "[HISTORICAL-IMPORT] source=%s range=%s..%s fetched=%d inserted=%d skipped=%d errors=%d",
@@ -301,3 +304,80 @@ def import_history(rows) -> List[dict]:
 
 def weights() -> Dict[str, float]:
     return {t.value: w for t, w in _EVENT_TYPE_WEIGHT.items()}
+
+
+# ── grouped reads (app/modules/m08_historical/aggregates.py) → Module 4 answers ──
+
+def profiles_from_squares(rows, cell_size_m: float) -> List[ZoneRiskProfile]:
+    """Cell risk profiles from ~110 m square rows (k_lat, k_lon, event_type, road_name, n,
+    lat_sum, lon_sum, first_at, last_at): each square goes to the grid cell of its mean position."""
+    from app.modules.m08_historical.aggregates import as_dt
+    cells: Dict[str, dict] = {}
+    for r in rows:
+        n = int(r.n)
+        cid = grid_cell_id(r.lat_sum / n, r.lon_sum / n, cell_size_m)
+        c = cells.setdefault(cid, {"counts": defaultdict(int), "roads": defaultdict(int), "first": None, "last": None})
+        c["counts"][r.event_type] += n
+        if r.road_name:
+            c["roads"][r.road_name] += n
+        f, l_ = as_dt(r.first_at), as_dt(r.last_at)
+        c["first"] = f if c["first"] is None or f < c["first"] else c["first"]
+        c["last"] = l_ if c["last"] is None or l_ > c["last"] else c["last"]
+    profiles = []
+    for cid, c in cells.items():
+        lat, lon = grid_cell_center(cid)
+        profiles.append(ZoneRiskProfile(
+            grid_cell_id=cid, center_latitude=lat, center_longitude=lon,
+            total_events=sum(c["counts"].values()),
+            events_by_type=[EventTypeCount(event_type=HistoricalEventType(t), count=k) for t, k in c["counts"].items()],
+            earliest_event_at=c["first"], latest_event_at=c["last"], historical_risk_score=_risk_score(c["counts"]),
+            road_name=max(c["roads"], key=c["roads"].get) if c["roads"] else None,
+        ))
+    profiles.sort(key=lambda p: -p.historical_risk_score)
+    return profiles
+
+
+def trend_from_days(day_rows, squares: Dict, start, end, unit: str) -> List[dict]:
+    """Per bucket: events, weighted risk points, accidents (from (day, event_type, n) rows) and
+    the distinct ~110 m squares with events (`squares`: {bucket: n})."""
+    from app.modules.m08_historical.aggregates import as_date
+    from app.modules.m09_driver_behaviour.analytics import bucket_floor, bucket_starts
+    w = weights()
+    buckets = {b: {"bucket": b, "events": 0, "risk_points": 0.0, "accidents": 0, "cells": 0}
+               for b in bucket_starts(start, end, unit)}
+    for r in day_rows:
+        b = buckets.get(bucket_floor(datetime.combine(as_date(r.day), datetime.min.time()), unit))
+        if b is None:
+            continue
+        n = int(r.n)
+        b["events"] += n
+        b["risk_points"] += w.get(r.event_type, 0.5) * n
+        b["accidents"] += n if r.event_type == HistoricalEventType.ACCIDENT.value else 0
+    for d, n in squares.items():
+        b = buckets.get(datetime.combine(d, datetime.min.time()))
+        if b is not None:
+            b["cells"] = n
+    for b in buckets.values():
+        b["risk_points"] = round(b["risk_points"], 2)
+    return list(buckets.values())
+
+
+async def import_batches(db: AsyncSession) -> List[dict]:
+    """Import batches (same source, same import minute), newest first — one grouped read."""
+    from app.modules.m08_historical.aggregates import as_dt, import_rows
+    groups: Dict[Tuple[str, str], dict] = {}
+    for src, minute, t, n, first, last in await import_rows(db):
+        at = as_dt(minute)
+        key = (src, at.isoformat() if at else "")
+        g = groups.setdefault(key, {"source": src, "imported_at": key[1] or None, "events": 0,
+                                    "first_event_at": None, "last_event_at": None, "by_type": {}})
+        g["events"] += int(n)
+        g["by_type"][t] = g["by_type"].get(t, 0) + int(n)
+        f, l_ = as_dt(first), as_dt(last)
+        g["first_event_at"] = f if g["first_event_at"] is None or f < g["first_event_at"] else g["first_event_at"]
+        g["last_event_at"] = l_ if g["last_event_at"] is None or l_ > g["last_event_at"] else g["last_event_at"]
+    out = list(groups.values())
+    for g in out:
+        g["by_type"] = dict(sorted(g["by_type"].items(), key=lambda kv: -kv[1]))
+    out.sort(key=lambda g: g["imported_at"] or "", reverse=True)
+    return out

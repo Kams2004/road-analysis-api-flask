@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     MINIO_BUCKET_SIGNALEMENTS:  str  = "signalements"
     MINIO_BUCKET_REPORTS:       str  = "reports"      # generated PDF reports (Module 14), never public
     MINIO_BUCKET_EVENTS:        str  = "events-raw"   # daily event files as received (gzip), never public
+    # Raw driving events older than this are deleted every night; their daily summaries
+    # (app/modules/m08_historical/rollups.py) are kept without limit.
+    RAW_EVENT_RETENTION_DAYS:   int  = 3 * 365
     MINIO_SECURE:            bool = False
 
     # Models paths

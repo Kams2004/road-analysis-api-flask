@@ -540,4 +540,15 @@ async def update_section(db: AsyncSession, section: str, patch: dict, actor: str
         clustering_service.invalidate(broadcast=False)
     from app.core import cache_bus
     cache_bus.publish(f"settings:{section}")      # the other API / worker processes, at once
+    if section == "driver_behaviour":
+        # Weights change the points of cached answers; severity rules change the daily summaries
+        # (they are not used until rebuilt: app/modules/m08_historical/rollups.ready).
+        from app.modules.m08_historical import agg_cache
+        agg_cache.bump()
+        try:
+            from app.workers.event_feed_tasks import rebuild_event_rollups
+            rebuild_event_rollups.delay()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("summary rebuild not queued (worker queue unavailable)")
     return before, redact(section, updated)

@@ -184,6 +184,8 @@ _PERIOD_Q = Query("all", description="`7d`, `30d`, `90d`, `12m` or `all` (defaul
 _FROM_Q = Query(None, description="First day (inclusive, UTC).")
 _TO_Q = Query(None, description="Last day (inclusive, UTC).")
 _BBOX_Q = Query(None, description="Only inside `south,west,north,east` (WGS84 degrees).")
+_COUNTRY_Q = Query(None, description="Only these countries (repeat or comma-separate), e.g. `CAMEROUN` "
+                                     "(list: `GET /driver-behaviour/countries`).")
 _PERIOD_ERR = errors(legacy(422, "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all", summary="unknown period"),
                      legacy(422, "'bbox' must be 'south,west,north,east'", summary="malformed bbox"))
 
@@ -201,9 +203,28 @@ class CellOut(ZoneRiskProfile):
         "`low` (< 3 events: a low score is NOT a safe place), `medium` or `good` (RRAP-08-015)."))
 
 
-def _cells(rows) -> List[CellOut]:
-    return [CellOut(**p.model_dump(), coverage=historical_service.coverage_level(p.total_events))
-            for p in historical_service._aggregate_by_cell(rows)]
+def _cells(profiles) -> List[CellOut]:
+    return [CellOut(**p.model_dump(), coverage=historical_service.coverage_level(p.total_events)) for p in profiles]
+
+
+async def _scope(db: AsyncSession, win, bbox, country):
+    """(behaviour settings — severity rules of the summaries —, scope over every event type)."""
+    from app.modules.m08_historical import aggregates as G, rollups
+    from app.modules.m09_driver_behaviour import service as behaviour
+    cfg = await behaviour.get_settings(db)
+    use = await rollups.ready(db, cfg)
+    return cfg, G.Scope(win.start, win.end, None, G.clean_countries(country), bbox=parse_bbox(bbox), rollups=use)
+
+
+async def _profiles(db: AsyncSession, cfg, scope):
+    from app.modules.m08_historical import aggregates as G
+    rows = await G.cell_rows(db, cfg, scope, ("k_lat", "k_lon", "event_type", "road_name"))
+    return historical_service.profiles_from_squares(rows, settings.HISTORICAL_GRID_CELL_SIZE_M)
+
+
+def _hparams(period, date_from, date_to, bbox, country, **extra) -> dict:
+    return {"period": period, "from": date_from, "to": date_to, "bbox": bbox, "country": country,
+            "today": _dt.utcnow().date(), **extra}
 
 
 class HistoricalOverviewOut(BaseModel):
@@ -228,37 +249,53 @@ class HistoricalOverviewOut(BaseModel):
             responses=_PERIOD_ERR)
 async def historical_overview(period: str = _PERIOD_Q, date_from: Optional[date] = _FROM_Q,
                               date_to: Optional[date] = _TO_Q, bbox: Optional[str] = _BBOX_Q,
+                              country: Optional[List[str]] = _COUNTRY_Q,
                               db: AsyncSession = Depends(get_db)):
     """Events, scored cells, high-risk and low-coverage cells, sources and the scoring parameters."""
     from sqlalchemy import func, select
+    from app.modules.m08_historical import agg_cache, aggregates as G
     from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
     win = _win(period, date_from, date_to)
-    rows = await historical_service.load_rows(db, win.start, win.end, parse_bbox(bbox))
-    cells = historical_service._aggregate_by_cell(rows)
-    srcs: Dict[str, int] = {}
-    for r in rows:
-        srcs[r.source] = srcs.get(r.source, 0) + 1
-    last_import = (await db.execute(select(func.max(HistoricalEventRecord.imported_at)))).scalar()
-    return HistoricalOverviewOut(
-        window=WindowOut.of(win), total_events=len(rows), cells=len(cells),
-        high_risk_cells=sum(1 for c in cells if c.historical_risk_score >= historical_service.HIGH_RISK_SCORE),
-        low_coverage_cells=sum(1 for c in cells if c.total_events < historical_service.LOW_COVERAGE_EVENTS),
-        max_score=max((c.historical_risk_score for c in cells), default=0.0),
-        accidents=sum(1 for r in rows if r.event_type == "ACCIDENT"), sources=srcs,
-        first_event_at=rows[0].occurred_at if rows else None, last_event_at=rows[-1].occurred_at if rows else None,
-        last_import_at=last_import, cell_size_m=settings.HISTORICAL_GRID_CELL_SIZE_M,
-        saturation_weight=settings.HISTORICAL_RISK_SATURATION_WEIGHT, weights=historical_service.weights(),
-    )
+    cfg, sc = await _scope(db, win, bbox, country)
+
+    async def compute():
+        cells = await _profiles(db, cfg, sc)
+        by_source = await G.entity_rows(db, cfg, sc, ("source",))
+        by_type = await G.entity_rows(db, cfg, sc, ("event_type",))
+        span = (await G.entity_rows(db, cfg, sc, ()))[0]
+        total = int(span.n or 0)
+        last_import = (await db.execute(select(func.max(HistoricalEventRecord.imported_at)))).scalar()
+        return HistoricalOverviewOut(
+            window=WindowOut.of(win), total_events=total, cells=len(cells),
+            high_risk_cells=sum(1 for c in cells if c.historical_risk_score >= historical_service.HIGH_RISK_SCORE),
+            low_coverage_cells=sum(1 for c in cells if c.total_events < historical_service.LOW_COVERAGE_EVENTS),
+            max_score=max((c.historical_risk_score for c in cells), default=0.0),
+            accidents=sum(int(r.n) for r in by_type if r.event_type == "ACCIDENT"),
+            sources={r.source: int(r.n) for r in by_source},
+            first_event_at=G.as_dt(span.first_at) if total else None,
+            last_event_at=G.as_dt(span.last_at) if total else None,
+            last_import_at=last_import, cell_size_m=settings.HISTORICAL_GRID_CELL_SIZE_M,
+            saturation_weight=settings.HISTORICAL_RISK_SATURATION_WEIGHT, weights=historical_service.weights(),
+        )
+    return await agg_cache.cached("hist.overview", _hparams(period, date_from, date_to, bbox, country), compute,
+                                  enabled=sc.rollups)
 
 
 @router.get("/heatmap", response_model=List[CellOut], summary="Get the historical risk heatmap",
             responses=_PERIOD_ERR)
 async def historical_heatmap(period: str = _PERIOD_Q, date_from: Optional[date] = _FROM_Q,
                              date_to: Optional[date] = _TO_Q, bbox: Optional[str] = _BBOX_Q,
+                             country: Optional[List[str]] = _COUNTRY_Q,
                              db: AsyncSession = Depends(get_db)):
     """Every grid cell with events in the period and its overall historical risk score (0–1), riskiest first."""
+    from app.modules.m08_historical import agg_cache
     win = _win(period, date_from, date_to)
-    return _cells(await historical_service.load_rows(db, win.start, win.end, parse_bbox(bbox)))
+    cfg, sc = await _scope(db, win, bbox, country)
+
+    async def compute():
+        return _cells(await _profiles(db, cfg, sc))
+    return await agg_cache.cached("hist.heatmap", _hparams(period, date_from, date_to, bbox, country), compute,
+                                  enabled=sc.rollups)
 
 
 @router.get("/zones", response_model=List[CellOut], summary="List the top historical risk zones",
@@ -267,11 +304,19 @@ async def historical_zones(period: str = _PERIOD_Q, date_from: Optional[date] = 
                            date_to: Optional[date] = _TO_Q, bbox: Optional[str] = _BBOX_Q,
                            min_score: float = Query(0.5, ge=0, le=1, description="Minimum score (0–1)."),
                            limit: int = Query(50, ge=1, le=500, description="Maximum zones."),
+                           country: Optional[List[str]] = _COUNTRY_Q,
                            db: AsyncSession = Depends(get_db)):
     """Risk zones: cells whose historical score is at least `min_score`, riskiest first, with their coverage."""
+    from app.modules.m08_historical import agg_cache
     win = _win(period, date_from, date_to)
-    cells = _cells(await historical_service.load_rows(db, win.start, win.end, parse_bbox(bbox)))
-    return [c for c in cells if c.historical_risk_score >= min_score][:limit]
+    cfg, sc = await _scope(db, win, bbox, country)
+
+    async def compute():
+        cells = _cells(await _profiles(db, cfg, sc))
+        return [c for c in cells if c.historical_risk_score >= min_score][:limit]
+    return await agg_cache.cached("hist.zones", _hparams(period, date_from, date_to, bbox, country,
+                                                         min_score=min_score, limit=limit), compute,
+                                  enabled=sc.rollups)
 
 
 class TrendPoint(BaseModel):
@@ -280,7 +325,7 @@ class TrendPoint(BaseModel):
     events: int = Field(..., description="Events.")
     risk_points: float = Field(..., description="Type-weighted event count (the score's numerator).")
     accidents: int = Field(..., description="ACCIDENT events.")
-    cells: int = Field(..., description="Distinct grid cells with events.")
+    cells: int = Field(..., description="Distinct ~110 m squares with events (spread of the risk).")
 
 
 class HistoricalTrendOut(BaseModel):
@@ -295,16 +340,25 @@ class HistoricalTrendOut(BaseModel):
 async def historical_trends(period: str = _PERIOD_Q, date_from: Optional[date] = _FROM_Q,
                             date_to: Optional[date] = _TO_Q, bbox: Optional[str] = _BBOX_Q,
                             unit: Optional[str] = Query(None, description="`day`, `week` or `month` (default: from the period)."),
+                            country: Optional[List[str]] = _COUNTRY_Q,
                             db: AsyncSession = Depends(get_db)):
     """Whether road safety improves or deteriorates: events and weighted risk points per day / week / month."""
     if unit not in (None, "day", "week", "month"):
         raise HTTPException(422, "'unit' must be day, week or month")
+    from app.modules.m08_historical import agg_cache, aggregates as G
     win = _win(period, date_from, date_to)
-    rows = await historical_service.load_rows(db, win.start, win.end, parse_bbox(bbox))
-    start = win.start or (rows[0].occurred_at if rows else win.end)
-    u = unit or bucket_unit(start, win.end)
-    return HistoricalTrendOut(window=WindowOut.of(win), unit=u,
-                              series=historical_service.trend_series(rows, start, win.end, u) if rows or win.start else [])
+    cfg, sc = await _scope(db, win, bbox, country)
+
+    async def compute():
+        days = await G.entity_rows(db, cfg, sc, ("day", "event_type"))
+        first = min((G.as_date(r.day) for r in days), default=None)
+        start = win.start or (_dt.combine(first, _dt.min.time()) if first else win.end)
+        u = unit or bucket_unit(start, win.end)
+        squares = await G.squares_per_bucket(db, cfg, sc, u)
+        series = historical_service.trend_from_days(days, squares, start, win.end, u) if days or win.start else []
+        return HistoricalTrendOut(window=WindowOut.of(win), unit=u, series=series)
+    return await agg_cache.cached("hist.trends", _hparams(period, date_from, date_to, bbox, country, unit=unit),
+                                  compute, enabled=sc.rollups)
 
 
 class ImportBatchOut(BaseModel):
@@ -320,6 +374,6 @@ class ImportBatchOut(BaseModel):
 @router.get("/imports", response_model=List[ImportBatchOut], summary="List historical import batches")
 async def historical_imports(limit: int = Query(50, ge=1, le=500, description="Maximum batches."),
                              db: AsyncSession = Depends(get_db)):
-    """Import history (driving event collection), newest first."""
-    rows = await historical_service.load_rows(db)
-    return historical_service.import_history(rows)[:limit]
+    """Import history (driving event collection), newest first: events grouped by source and import
+    minute (one grouped read)."""
+    return (await historical_service.import_batches(db))[:limit]

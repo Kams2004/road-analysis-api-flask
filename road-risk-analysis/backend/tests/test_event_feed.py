@@ -184,7 +184,7 @@ async def test_a_check_imports_new_files_and_records_failures(monkeypatch):
     monkeypatch.setattr(sftp_source, "make_log", lambda cid, source="api": SimpleNamespace(
         status=lambda m: None, error=lambda m: None))
 
-    async def ingest(db, cid, f, data, matcher=None):
+    async def ingest(db, cid, f, data, matcher=None, touched=None):
         if b"exceptionid" not in data:
             raise ymane_csv.CsvFormatError("Not an exception export")
         f.status, f.inserted, f.updated, f.rows = "imported", 1, 0, 1

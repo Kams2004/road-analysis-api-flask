@@ -207,8 +207,9 @@ async def upsert(db: AsyncSession, events: list[dict], file_id: str) -> tuple[in
 
 
 async def ingest(db: AsyncSession, conn_id: str, ef: EventFile, data: bytes,
-                 matcher: Optional[Callable] = None) -> str:
-    """Import one fetched file into `ef` (caller commits). "imported" or "unchanged"."""
+                 matcher: Optional[Callable] = None, touched: Optional[set] = None) -> str:
+    """Import one fetched file into `ef` (caller commits). "imported" or "unchanged". The UTC
+    days of its events are added to `touched` (their daily summaries need a rebuild)."""
     sha = hashlib.sha256(data).hexdigest()
     if ef.sha256 == sha and ef.status == "imported":
         ef.error = None
@@ -222,6 +223,8 @@ async def ingest(db: AsyncSession, conn_id: str, ef: EventFile, data: bytes,
     known = await _existing_ids(db, [e["source_event_id"] for e in result.events])
     await _match([e for e in result.events if e["source_event_id"] not in known], matcher)
     inserted, updated = await upsert(db, result.events, ef.id)
+    if touched is not None:
+        touched.update(e["occurred_at"].date() for e in result.events)
     ef.sha256, ef.status, ef.error, ef.archive_key = sha, "imported", None, key
     ef.rows, ef.inserted, ef.updated, ef.invalid = result.rows, inserted, updated, result.invalid
     ef.problems, ef.by_type = result.problems or None, result.by_type()
@@ -267,6 +270,7 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
         return {**summary, "error": str(exc)}
 
     summary["listed"], summary["fetched"] = len(remote), len(got)
+    touched: set = set()
     for f, data in got:
         ef = known.get(f.name)
         if ef is None:
@@ -280,7 +284,7 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
         try:
             if isinstance(data, Exception):
                 raise data
-            outcome = await ingest(db, conn.id, ef, data, matcher)
+            outcome = await ingest(db, conn.id, ef, data, matcher, touched)
             await db.commit()
             summary[outcome] += 1
             if outcome == "imported":
@@ -296,6 +300,9 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
             log.error(f"Error: {f.name}: {str(exc)[:300]}")
             logger.warning("event file %s/%s failed: %s", conn.id, f.name, exc)
 
+    if touched:
+        from app.modules.m08_historical import rollups
+        await rollups.rebuild_safely(db, touched)
     conn = await db.get(CloudConnection, connection_id)
     conn.last_sync_at = datetime.utcnow()
     conn.last_sync_status = "error" if summary["failed"] else "ok"

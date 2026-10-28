@@ -69,6 +69,8 @@ celery_app.conf.update(
         # Daily event files of "events" sources (app/workers/event_feed_tasks.py)
         "app.workers.celery_app.sync_event_feeds":       {"queue": "processing"},
         "app.workers.celery_app.sync_event_feed":        {"queue": "processing"},
+        "app.workers.celery_app.rebuild_event_rollups":  {"queue": "processing"},
+        "app.workers.celery_app.purge_old_events":       {"queue": "processing"},
     },
     beat_schedule={
         "sync-ymane-historical-events": {
@@ -110,6 +112,11 @@ celery_app.conf.update(
         "event-feeds-sync": {
             "task": "app.workers.celery_app.sync_event_feeds",
             "schedule": 3600.0,
+        },
+        # Raw driving events past RAW_EVENT_RETENTION_DAYS (daily summaries are kept)
+        "events-retention": {
+            "task": "app.workers.celery_app.purge_old_events",
+            "schedule": 86400.0,
         },
     },
 )

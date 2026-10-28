@@ -56,7 +56,9 @@ def resolve_window(period: Optional[str], date_from: Optional[date], date_to: Op
         return Window(None, now, None, "all")
     if period not in PERIODS:
         raise ValueError(f"Unknown period '{period}' — expected 7d, 30d, 90d, 12m or all")
-    start = now - PERIODS[period]
+    # Whole UTC days: the daily summaries (app/modules/m08_historical/rollups.py) and the raw
+    # events then cover exactly the same span.
+    start = (now - PERIODS[period]).replace(hour=0, minute=0, second=0, microsecond=0)
     return Window(start, now, start - PERIODS[period], period)
 
 

@@ -4,10 +4,14 @@
 Every endpoint reads the behaviour events (SPEEDING, HARD_BRAKING,
 HARD_ACCELERATION, HARSH_CORNERING) stored in `historical_events` and accepts
 the same filters: `period` (7d / 30d / 90d / 12m / all) or `date_from` /
-`date_to`, `types`, `driver`, `vehicle` and `bbox`.
+`date_to`, `types`, `country`, `driver`, `vehicle` and `bbox`.
+
+The answers are grouped reads (views.py over app/modules/m08_historical/aggregates.py): daily
+summaries when they are complete, the raw events otherwise — never every event in memory —
+cached 10 minutes per data version (agg_cache.py).
 """
 import csv
-import io
+import tempfile
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -18,11 +22,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.openapi import errors, legacy
 from app.core.db.session import get_db
+from app.modules.m08_historical import agg_cache
+from app.modules.m08_historical import aggregates as G
+from app.modules.m08_historical import rollups
 from app.modules.m09_driver_behaviour import analytics as A
-from app.modules.m09_driver_behaviour import service
+from app.modules.m09_driver_behaviour import service, views
 from app.modules.m09_driver_behaviour.settings import BEHAVIOUR_TYPES
 
 router = APIRouter()
+EXPORT_PAGE = 5000
 
 _FILTER_ERRORS = (
     legacy(422, "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all", summary="unknown period"),
@@ -44,6 +52,9 @@ class Filters:
         types: Optional[List[str]] = Query(None, description=(
             "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, "
             "`HARSH_CORNERING`. Default: all four."), examples=[["SPEEDING"]]),
+        country: Optional[List[str]] = Query(None, description=(
+            "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. "
+            "List: `GET /driver-behaviour/countries`."), examples=[["CAMEROUN"]]),
         driver: Optional[str] = Query(None, description="Only this driver (source driver id)."),
         vehicle: Optional[str] = Query(None, description="Only this vehicle (source vehicle id)."),
         bbox: Optional[str] = Query(None, description="Only inside `south,west,north,east` (WGS84 degrees).",
@@ -51,6 +62,7 @@ class Filters:
     ):
         self.period, self.date_from, self.date_to = period, date_from, date_to
         self.types = service.clean_types(types)
+        self.countries = G.clean_countries(country)
         self.driver, self.vehicle = driver or None, vehicle or None
         self.bbox = parse_bbox(bbox)
 
@@ -76,12 +88,18 @@ async def _window(f: Filters, db: AsyncSession):
     return cfg, win
 
 
-async def _events(f: Filters, db: AsyncSession, win, *, previous: bool = False):
-    if previous:
-        if not win.has_previous:
-            return None
-        return await service.load_events(db, win.prev_start, win.start, f.types, f.driver, f.vehicle, f.bbox)
-    return await service.load_events(db, win.start, win.end, f.types, f.driver, f.vehicle, f.bbox)
+async def _scopes(f: Filters, db: AsyncSession):
+    """(settings, window, scope, previous scope or None)."""
+    cfg, win = await _window(f, db)
+    use = await rollups.ready(db, cfg)
+    s = G.Scope(win.start, win.end, f.types, f.countries, f.driver, f.vehicle, f.bbox, rollups=use)
+    prev = s.shifted(win.prev_start, win.start) if win.has_previous else None
+    return cfg, win, s, prev
+
+
+def _params(f: Filters, **extra) -> dict:
+    return {"period": f.period, "from": f.date_from, "to": f.date_to, "types": f.types, "countries": f.countries,
+            "driver": f.driver, "vehicle": f.vehicle, "bbox": f.bbox, "today": datetime.utcnow().date(), **extra}
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -145,6 +163,8 @@ class BehaviourEvent(BaseModel):
     occurred_at: datetime = Field(..., description="When it happened (UTC).")
     latitude: float = Field(..., description="Latitude (degrees).")
     longitude: float = Field(..., description="Longitude (degrees).")
+    country: Optional[str] = Field(None, description="Country (customer affiliate) from the source.")
+    transporter: Optional[str] = Field(None, description="Transporter from the source.")
     driver_external_id: Optional[str] = Field(None, description="Driver id from the source.")
     vehicle_external_id: Optional[str] = Field(None, description="Vehicle id from the source.")
     speed_kmh: Optional[float] = Field(None, description="Speed, km/h.")
@@ -272,6 +292,7 @@ def _event_out(r, cfg) -> BehaviourEvent:
     return BehaviourEvent(
         id=r.id, source=r.source, source_event_id=getattr(r, "source_event_id", "") or "",
         event_type=r.event_type, occurred_at=r.occurred_at, latitude=r.latitude, longitude=r.longitude,
+        country=getattr(r, "country", None), transporter=getattr(r, "transporter", None),
         driver_external_id=r.driver_external_id, vehicle_external_id=r.vehicle_external_id,
         speed_kmh=A._kmh(r.speed_mps), speed_limit_kmh=A._kmh(r.speed_limit_mps),
         excess_pct=round(x, 1) if x is not None else None, severity_raw=r.severity,
@@ -290,12 +311,14 @@ async def overview(f: Filters = Depends(), db: AsyncSession = Depends(get_db)):
     severity mix, speed vs limit, peak hour, main roads, distinct drivers / vehicles, and the change
     against the previous period of the same length.
     """
-    cfg, win = await _window(f, db)
-    events = await _events(f, db, win)
-    prev = await _events(f, db, win, previous=True)
-    extent = await service.data_extent(db)
-    return OverviewOut(window=WindowOut.of(win), data_first_event_at=extent["first_event_at"],
-                       data_last_event_at=extent["last_event_at"], **A.overview(events, prev, cfg, f.types))
+    cfg, win, s, prev = await _scopes(f, db)
+
+    async def compute():
+        extent = await service.data_extent(db)
+        return OverviewOut(window=WindowOut.of(win), data_first_event_at=extent["first_event_at"],
+                           data_last_event_at=extent["last_event_at"],
+                           **await views.overview(db, cfg, s, prev, f.types))
+    return await agg_cache.cached("db.overview", _params(f), compute, enabled=s.rollups)
 
 
 @router.get("/events", response_model=EventListOut, summary="List driver behaviour events",
@@ -311,17 +334,10 @@ async def list_events(
 ):
     """Behaviour events with their location, speed / limit, normalised severity and weighted points, newest first."""
     cfg, win = await _window(f, db)
-    if severity:
-        rows = await service.load_events(db, win.start, win.end, f.types, f.driver, f.vehicle, f.bbox)
-        if search:
-            s = search.lower()
-            rows = [r for r in rows if any(s in (v or "").lower() for v in
-                                           (r.road_name, r.driver_external_id, r.vehicle_external_id))]
-        rows = [r for r in rows if A.normalize_severity(r, cfg) == severity]
-        rows.sort(key=lambda r: r.occurred_at, reverse=sort != "occurred_at")
-        return EventListOut(total=len(rows), items=[_event_out(r, cfg) for r in rows[offset:offset + limit]])
+    if severity and severity not in ("low", "medium", "high", "unknown"):
+        raise HTTPException(422, "'severity' must be low, medium, high or unknown")
     total, rows = await service.page_events(db, win.start, win.end, f.types, f.driver, f.vehicle, f.bbox,
-                                            search, sort, offset, limit)
+                                            search, sort, offset, limit, f.countries, severity, cfg)
     return EventListOut(total=total, items=[_event_out(r, cfg) for r in rows])
 
 
@@ -331,32 +347,52 @@ async def list_events(
 async def export_events(f: Filters = Depends(), db: AsyncSession = Depends(get_db)):
     """The filtered events as a CSV file (RRAP-09-012), oldest first."""
     cfg, win = await _window(f, db)
-    rows = await _events(f, db, win)
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["occurred_at_utc", "event_type", "severity", "points", "driver", "vehicle", "speed_kmh",
-                "speed_limit_kmh", "excess_pct", "latitude", "longitude", "road_name", "source", "event_id"])
-    for r in rows:
-        x = A.excess_pct(r)
-        w.writerow([r.occurred_at.isoformat(), r.event_type, A.normalize_severity(r, cfg),
-                    round(A.event_points(r, cfg), 2), r.driver_external_id or "", r.vehicle_external_id or "",
-                    A._kmh(r.speed_mps) or "", A._kmh(r.speed_limit_mps) or "",
-                    round(x, 1) if x is not None else "", r.latitude, r.longitude, r.road_name or "",
-                    r.source, r.id])
+    out = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+", newline="", encoding="utf-8")
+    w = csv.writer(out)
+    w.writerow(["occurred_at_utc", "event_type", "severity", "points", "country", "transporter", "driver", "vehicle",
+                "speed_kmh", "speed_limit_kmh", "excess_pct", "latitude", "longitude", "road_name", "source",
+                "event_id"])
+    offset = 0
+    while True:                                   # pages of EXPORT_PAGE: memory stays bounded
+        _, rows = await service.page_events(db, win.start, win.end, f.types, f.driver, f.vehicle, f.bbox, None,
+                                            "occurred_at", offset, EXPORT_PAGE, f.countries)
+        for r in rows:
+            x = A.excess_pct(r)
+            w.writerow([r.occurred_at.isoformat(), r.event_type, A.normalize_severity(r, cfg),
+                        round(A.event_points(r, cfg), 2), r.country or "", r.transporter or "",
+                        r.driver_external_id or "", r.vehicle_external_id or "",
+                        A._kmh(r.speed_mps) or "", A._kmh(r.speed_limit_mps) or "",
+                        round(x, 1) if x is not None else "", r.latitude, r.longitude, r.road_name or "",
+                        r.source, r.id])
+        if len(rows) < EXPORT_PAGE:
+            break
+        offset += EXPORT_PAGE
+    out.seek(0)
+
+    def chunks():
+        try:
+            while True:
+                part = out.read(256 * 1024)
+                if not part:
+                    break
+                yield part
+        finally:
+            out.close()
     name = f"driver-behaviour-{datetime.utcnow():%Y%m%d-%H%M}.csv"
-    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+    return StreamingResponse(chunks(), media_type="text/csv",
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 async def _ranking(kind: str, f: Filters, db: AsyncSession, offset: int, limit: int) -> EntityListOut:
-    cfg, win = await _window(f, db)
-    events = await _events(f, db, win)
-    prev = await _events(f, db, win, previous=True)
-    rows = A.rank_entities(events, prev, kind, cfg)
-    key = (lambda e: e.driver_external_id) if kind == "driver" else (lambda e: e.vehicle_external_id)
-    return EntityListOut(window=WindowOut.of(win), total=len(rows),
-                         unidentified_events=sum(1 for e in events if not key(e)),
-                         items=[EntityRow(**r) for r in rows[offset:offset + limit]])
+    cfg, win, s, prev = await _scopes(f, db)
+
+    async def compute():
+        rows, unidentified = await views.ranking(db, cfg, s, prev, kind)
+        page = await views.with_top_roads(db, s, kind, rows[offset:offset + limit])
+        return EntityListOut(window=WindowOut.of(win), total=len(rows), unidentified_events=unidentified,
+                             items=[EntityRow(**r) for r in page])
+    return await agg_cache.cached(f"db.rank.{kind}", _params(f, offset=offset, limit=limit), compute,
+                                  enabled=s.rollups)
 
 
 @router.get("/drivers", response_model=EntityListOut, summary="Rank drivers by behaviour risk",
@@ -382,13 +418,14 @@ async def vehicles(f: Filters = Depends(), offset: int = Query(0, ge=0, descript
 
 
 async def _detail(kind: str, entity_id: str, f: Filters, db: AsyncSession) -> EntityDetailOut:
-    cfg, win = await _window(f, db)
-    events = await _events(f, db, win)
-    prev = await _events(f, db, win, previous=True)
-    ranking = A.rank_entities(events, prev, kind, cfg)
+    cfg, win, s, prev = await _scopes(f, db)
+    ranking, _ = await views.ranking(db, cfg, s, prev, kind)
     row = next((r for r in ranking if r["id"] == entity_id), None)
-    key = (lambda e: e.driver_external_id) if kind == "driver" else (lambda e: e.vehicle_external_id)
-    mine = [e for e in events if key(e) == entity_id]
+    if row is not None:
+        await views.with_top_roads(db, s, kind, [row])
+    # One driver's / vehicle's own events: a bounded set, analysed event by event.
+    mine = await service.load_events(db, win.start, win.end, f.types, entity_id if kind == "driver" else None,
+                                     entity_id if kind == "vehicle" else None, f.bbox, f.countries)
     if row is None:
         if not await service.load_events(db, None, None, f.types, entity_id if kind == "driver" else None,
                                           entity_id if kind == "vehicle" else None):
@@ -427,12 +464,14 @@ async def heatmap(f: Filters = Depends(),
     Concentration of the selected behaviour types per grid cell. The intensity is an event count
     (and weighted points), not an accident probability (RRAP-09-008).
     """
-    cfg, win = await _window(f, db)
-    events = await _events(f, db, win)
+    cfg, win, s, _ = await _scopes(f, db)
     size = cell_size_m or cfg.zone_cell_size_m
-    cells = A.heatmap(events, size, cfg)
-    return HeatmapOut(window=WindowOut.of(win), cell_size_m=size,
-                      max_count=max((c["count"] for c in cells), default=0), cells=cells)
+
+    async def compute():
+        cells = await views.heatmap(db, cfg, s, size)
+        return HeatmapOut(window=WindowOut.of(win), cell_size_m=size,
+                          max_count=max((c["count"] for c in cells), default=0), cells=cells)
+    return await agg_cache.cached("db.heatmap", _params(f, size=size), compute, enabled=s.rollups)
 
 
 @router.get("/trends", response_model=TrendsOut, summary="Get driver behaviour trends",
@@ -443,10 +482,11 @@ async def trends(f: Filters = Depends(),
     """Events per day / week / month and type, and the hour-of-day and weekday patterns (local time)."""
     if unit not in (None, "day", "week", "month"):
         raise HTTPException(422, "'unit' must be day, week or month")
-    cfg, win = await _window(f, db)
-    events = await _events(f, db, win)
-    t = A.trends(events, win.start, win.end, cfg, f.types, unit)
-    return TrendsOut(window=WindowOut.of(win), types=f.types, **t)
+    cfg, win, s, _ = await _scopes(f, db)
+
+    async def compute():
+        return TrendsOut(window=WindowOut.of(win), types=f.types, **await views.trends(db, cfg, s, f.types, unit))
+    return await agg_cache.cached("db.trends", _params(f, unit=unit), compute, enabled=s.rollups)
 
 
 @router.get("/zones", response_model=ZoneListOut, summary="List high-risk behaviour zones",
@@ -459,11 +499,30 @@ async def zones(f: Filters = Depends(), limit: int = Query(100, ge=1, le=1000, d
     pattern worth investigating, not a confirmed accident hotspot. Module 4 (`/historical`) gives the
     overall historical risk score of the same place.
     """
-    cfg, win = await _window(f, db)
-    events = await _events(f, db, win)
+    cfg, win, s, _ = await _scopes(f, db)
     criteria = {"zone_cell_size_m": cfg.zone_cell_size_m, "zone_min_events": cfg.zone_min_events,
                 "zone_min_drivers": cfg.zone_min_drivers, "types": f.types}
-    return ZoneListOut(window=WindowOut.of(win), criteria=criteria, items=A.zones(events, cfg)[:limit])
+
+    async def compute():
+        return ZoneListOut(window=WindowOut.of(win), criteria=criteria, items=await views.zones(db, cfg, s, limit))
+    return await agg_cache.cached("db.zones", _params(f, limit=limit), compute, enabled=s.rollups)
+
+
+class CountryOut(BaseModel):
+    """A country present in the events (customer affiliate sent by the source)."""
+    country: str = Field(..., examples=["CAMEROUN"])
+    events: int = Field(..., description="Events stored for it (every type, all time).")
+
+
+@router.get("/countries", response_model=List[CountryOut], summary="List the countries of the events")
+async def countries(db: AsyncSession = Depends(get_db)):
+    """Countries found in the events, most events first — the values of the `country` filter."""
+    cfg = await service.get_settings(db)
+    use = await rollups.ready(db, cfg)
+
+    async def compute():
+        return [CountryOut(country=c, events=n) for c, n in await G.countries(db, use)]
+    return await agg_cache.cached("db.countries", {}, compute, enabled=use)
 
 
 @router.get("/methodology", response_model=MethodologyOut, summary="Get the behaviour scoring method")

@@ -277,10 +277,12 @@ async def hist_client():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from app.core.db.session import Base, get_db
     from app.modules.m08_historical.routes.historical import router
+    from app.modules.m13_admin.models.system_setting import SystemSetting   # severity rules of the summaries
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
-        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=[HistoricalEventRecord.__table__]))
+        await conn.run_sync(lambda c: Base.metadata.create_all(
+            c, tables=[HistoricalEventRecord.__table__, SystemSetting.__table__]))
     Session = async_sessionmaker(engine, expire_on_commit=False)
     now = datetime.utcnow()
     async with Session() as s:

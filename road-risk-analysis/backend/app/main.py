@@ -90,6 +90,18 @@ async def _startup() -> None:
         await _asyncio.to_thread(get_minio)
     except Exception:  # MinIO down must not keep the API down
         logging.getLogger(__name__).exception("MinIO not reachable at start-up")
+    # Daily event summaries (Historical analysis / Driver behaviour) never built, or built for other
+    # severity rules: one full rebuild in the worker (the screens read raw events meanwhile).
+    if await _claim("event_rollups_check", 600):
+        try:
+            from app.core import settings_service as _ss
+            from app.modules.m08_historical import rollups as _rollups
+            async with AsyncSessionLocal() as db:
+                if not await _rollups.ready(db, await _ss.get_cached(db, "driver_behaviour")):
+                    from app.workers.event_feed_tasks import rebuild_event_rollups
+                    rebuild_event_rollups.delay()
+        except Exception:
+            logging.getLogger(__name__).exception("event summaries check failed")
     # Training-data objects left unwritten before a restart (docs/TRAINING-DATA.md; SKIP LOCKED)
     from app.modules.m06_hazards.training_data import sync as training_sync
     training_sync.kick(delay_s=15)

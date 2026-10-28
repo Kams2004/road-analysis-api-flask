@@ -16,7 +16,8 @@ from app.modules.m09_driver_behaviour.settings import BEHAVIOUR_TYPES, DriverBeh
 
 MAX_ROWS = 200_000
 
-COLUMNS = (E.id, E.source, E.event_type, E.occurred_at, E.latitude, E.longitude, E.driver_external_id,
+COLUMNS = (E.id, E.source, E.event_type, E.occurred_at, E.latitude, E.longitude, E.country, E.transporter,
+           E.driver_external_id,
            E.vehicle_external_id, E.speed_mps, E.speed_limit_mps, E.severity, E.road_name, E.grid_cell_id)
 
 BBox = Tuple[float, float, float, float]   # south, west, north, east
@@ -39,8 +40,11 @@ def clean_types(types: Optional[Sequence[str]]) -> List[str]:
 
 
 def _filters(start: Optional[datetime], end: Optional[datetime], types: Sequence[str],
-             driver: Optional[str], vehicle: Optional[str], bbox: Optional[BBox], search: Optional[str] = None):
+             driver: Optional[str], vehicle: Optional[str], bbox: Optional[BBox], search: Optional[str] = None,
+             countries: Optional[Sequence[str]] = None):
     conds = [E.event_type.in_(list(types))]
+    if countries:
+        conds.append(func.coalesce(E.country, "").in_(list(countries)))
     if start is not None:
         conds.append(E.occurred_at >= start)
     if end is not None:
@@ -61,17 +65,24 @@ def _filters(start: Optional[datetime], end: Optional[datetime], types: Sequence
 
 async def load_events(db: AsyncSession, start: Optional[datetime], end: Optional[datetime],
                       types: Sequence[str] = BEHAVIOUR_TYPES, driver: Optional[str] = None,
-                      vehicle: Optional[str] = None, bbox: Optional[BBox] = None) -> list:
+                      vehicle: Optional[str] = None, bbox: Optional[BBox] = None,
+                      countries: Optional[Sequence[str]] = None) -> list:
+    """Raw events — only for bounded sets (one driver / vehicle, reports); the screens use
+    grouped reads (views.py)."""
     rows = (await db.execute(
-        select(*COLUMNS).where(*_filters(start, end, types, driver, vehicle, bbox))
+        select(*COLUMNS).where(*_filters(start, end, types, driver, vehicle, bbox, countries=countries))
         .order_by(E.occurred_at).limit(MAX_ROWS)
     )).all()
     return list(rows)
 
 
 async def page_events(db: AsyncSession, start, end, types, driver, vehicle, bbox, search,
-                      sort: str, offset: int, limit: int) -> tuple[int, list]:
-    conds = _filters(start, end, types, driver, vehicle, bbox, search)
+                      sort: str, offset: int, limit: int, countries: Optional[Sequence[str]] = None,
+                      severity: Optional[str] = None, cfg=None) -> tuple[int, list]:
+    conds = _filters(start, end, types, driver, vehicle, bbox, search, countries)
+    if severity:
+        from app.modules.m08_historical.rollups import severity_expr
+        conds.append(severity_expr(cfg) == severity)
     total = (await db.execute(select(func.count()).select_from(E).where(*conds))).scalar_one()
     order = {
         "-occurred_at": E.occurred_at.desc(), "occurred_at": E.occurred_at.asc(),
