@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     GEOCODING_LANGUAGE:     str   = ""      # Accept-Language ("" = local names)
     GEOCODING_TIMEOUT_S:    float = 6.0
     GEOCODING_MIN_INTERVAL_S: float = 1.0
+    # Place names of the driving events (app/modules/m03_maps/place_names.py): lookups a day at most.
+    GEOCODING_DAILY_BUDGET: int = 2000
     # Back-fill of detections stored before structured addresses existed:
     # at API start-up, at most this many lookups in the background (0 = off).
     GEOCODING_BACKFILL_ON_STARTUP: int = 300

@@ -79,7 +79,9 @@ async def zone_risk(
     hard braking / harsh cornering 1.5, hard acceleration 1.2, speeding 1, other 0.5, idle 0.3)
     saturating at `HISTORICAL_RISK_SATURATION_WEIGHT`.
     """
-    return await historical_service.get_zone_risk_profiles(latitude, longitude, radius_m, db)
+    from app.modules.m03_maps import place_names
+    return await place_names.attach(db, await historical_service.get_zone_risk_profiles(latitude, longitude, radius_m, db),
+                                    "center_latitude", "center_longitude")
 
 
 class RouteRiskIn(BaseModel):
@@ -101,7 +103,10 @@ async def route_risk(body: RouteRiskIn, db: AsyncSession = Depends(get_db)):
     """
     if len(body.waypoints) < 2:
         raise HTTPException(422, "At least 2 waypoints required.")
-    return await historical_service.get_zone_risk_profiles_along_route(body.waypoints, body.corridor_m, db)
+    from app.modules.m03_maps import place_names
+    return await place_names.attach(
+        db, await historical_service.get_zone_risk_profiles_along_route(body.waypoints, body.corridor_m, db),
+        "center_latitude", "center_longitude")
 
 
 # ── Route preview (web "Historical Risk Analysis": Départ → Destination) ──
@@ -293,7 +298,9 @@ async def historical_heatmap(period: str = _PERIOD_Q, date_from: Optional[date] 
     cfg, sc = await _scope(db, win, bbox, country)
 
     async def compute():
-        return _cells(await _profiles(db, cfg, sc))
+        from app.modules.m03_maps import place_names
+        return await place_names.attach(db, _cells(await _profiles(db, cfg, sc)), "center_latitude",
+                                        "center_longitude")
     return await agg_cache.cached("hist.heatmap", _hparams(period, date_from, date_to, bbox, country), compute,
                                   enabled=sc.rollups)
 
@@ -312,8 +319,10 @@ async def historical_zones(period: str = _PERIOD_Q, date_from: Optional[date] = 
     cfg, sc = await _scope(db, win, bbox, country)
 
     async def compute():
+        from app.modules.m03_maps import place_names
         cells = _cells(await _profiles(db, cfg, sc))
-        return [c for c in cells if c.historical_risk_score >= min_score][:limit]
+        return await place_names.attach(db, [c for c in cells if c.historical_risk_score >= min_score][:limit],
+                                        "center_latitude", "center_longitude")
     return await agg_cache.cached("hist.zones", _hparams(period, date_from, date_to, bbox, country,
                                                          min_score=min_score, limit=limit), compute,
                                   enabled=sc.rollups)

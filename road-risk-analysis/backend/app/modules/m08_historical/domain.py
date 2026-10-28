@@ -128,3 +128,5 @@ class ZoneRiskProfile(BaseModel):
         examples=[0.42])
     road_name: Optional[str] = Field(None, description=(  # most common matched road name in this cell, if any
         "Most common matched road name in the cell."))
+    place: Optional[str] = Field(None, description=(
+        "Place name of the cell centre (reverse geocoding, stored per ~110 m square; null until looked up)."))

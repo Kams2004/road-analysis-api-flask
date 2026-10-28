@@ -153,3 +153,20 @@ def check_event_alerts():
                     logging.getLogger(__name__).warning("event alert to %s not sent: %s", to, exc)
         return {"sent": sent}
     return _run(run)
+
+
+@celery_app.task(name="app.workers.celery_app.geocode_places")
+def geocode_places():
+    """Place names of the squares shown on screen, then of the busiest event squares
+    (app/modules/m03_maps/place_names.py) — one run at a time, within the daily budget."""
+    from app.modules.m07_ingestion import job_slots
+    r = job_slots.client()
+    if not r.set("geo:run", "1", nx=True, ex=600):
+        return {"skipped": "already running"}
+    try:
+        async def run(db):
+            from app.modules.m03_maps import place_names
+            return await place_names.fill(db)
+        return _run(run)
+    finally:
+        r.delete("geo:run")

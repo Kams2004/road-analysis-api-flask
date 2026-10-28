@@ -72,6 +72,7 @@ celery_app.conf.update(
         "app.workers.celery_app.rebuild_event_rollups":  {"queue": "processing"},
         "app.workers.celery_app.purge_old_events":       {"queue": "processing"},
         "app.workers.celery_app.check_event_alerts":     {"queue": "processing"},
+        "app.workers.celery_app.geocode_places":         {"queue": "processing"},
     },
     beat_schedule={
         "sync-ymane-historical-events": {
@@ -113,6 +114,11 @@ celery_app.conf.update(
         "event-feeds-sync": {
             "task": "app.workers.celery_app.sync_event_feeds",
             "schedule": 3600.0,
+        },
+        # Place names of the event locations (Nominatim, ≤ 1 request / s, daily budget)
+        "geocode-places": {
+            "task": "app.workers.celery_app.geocode_places",
+            "schedule": 120.0,
         },
         # E-mail once per newly missing / failed daily event file
         "event-feeds-alerts": {

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.openapi import errors, legacy
 from app.core.db.session import get_db
+from app.modules.m03_maps import place_names
 from app.modules.m08_historical import agg_cache
 from app.modules.m08_historical import aggregates as G
 from app.modules.m08_historical import rollups
@@ -174,6 +175,7 @@ class BehaviourEvent(BaseModel):
     severity: str = Field(..., description="Normalised severity: low / medium / high / unknown.")
     points: float = Field(..., description="Weighted points of this event.")
     road_name: Optional[str] = Field(None, description="Matched road name.")
+    place: Optional[str] = Field(None, description="Place name of the position (reverse geocoding; null until looked up).")
     grid_cell_id: str = Field(..., description="Module 4 grid cell of the event.")
 
 
@@ -227,6 +229,7 @@ class ZoneOut(BaseModel):
     drivers: int = Field(..., description="Distinct drivers / vehicles.")
     high_severity: int = Field(..., description="High-severity events.")
     road_name: Optional[str] = Field(None, description="Most common road.")
+    place: Optional[str] = Field(None, description="Place name of the zone centre (reverse geocoding; null until looked up).")
     first_event_at: datetime = Field(..., description="Oldest event.")
     last_event_at: datetime = Field(..., description="Most recent event.")
 
@@ -246,6 +249,7 @@ class HeatCell(BaseModel):
     count: int = Field(..., description="Events.")
     points: float = Field(..., description="Weighted points.")
     by_type: Dict[str, int] = Field(..., description="Events per behaviour type.")
+    place: Optional[str] = Field(None, description="Place name (driver / vehicle profile zones only).")
 
 
 class HeatmapOut(BaseModel):
@@ -338,7 +342,9 @@ async def list_events(
         raise HTTPException(422, "'severity' must be low, medium, high or unknown")
     total, rows = await service.page_events(db, win.start, win.end, f.types, f.driver, f.vehicle, f.bbox,
                                             search, sort, offset, limit, f.countries, severity, cfg)
-    return EventListOut(total=total, items=[_event_out(r, cfg) for r in rows])
+    items = [_event_out(r, cfg) for r in rows]
+    await place_names.attach(db, items)
+    return EventListOut(total=total, items=items)
 
 
 @router.get("/events/export", summary="Export driver behaviour events as CSV",
@@ -430,13 +436,16 @@ async def _detail(kind: str, entity_id: str, f: Filters, db: AsyncSession) -> En
         if not await service.load_events(db, None, None, f.types, entity_id if kind == "driver" else None,
                                           entity_id if kind == "vehicle" else None):
             raise HTTPException(404, f"No behaviour events for {kind} '{entity_id}'.")
+    zones_ = await place_names.attach(db, A.heatmap(mine, cfg.zone_cell_size_m, cfg)[:20])
+    recent = [_event_out(e, cfg) for e in sorted(mine, key=lambda e: e.occurred_at, reverse=True)[:50]]
+    await place_names.attach(db, recent)
     return EntityDetailOut(
         window=WindowOut.of(win), kind=kind, id=entity_id,
         ranking=EntityRow(**row) if row else None, rank_of=len(ranking),
         by_type=A.type_summaries(mine, cfg, f.types),
         trends=A.trends(mine, win.start, win.end, cfg, f.types),
-        zones=A.heatmap(mine, cfg.zone_cell_size_m, cfg)[:20],
-        recent_events=[_event_out(e, cfg) for e in sorted(mine, key=lambda e: e.occurred_at, reverse=True)[:50]],
+        zones=zones_,
+        recent_events=recent,
     )
 
 
@@ -504,7 +513,8 @@ async def zones(f: Filters = Depends(), limit: int = Query(100, ge=1, le=1000, d
                 "zone_min_drivers": cfg.zone_min_drivers, "types": f.types}
 
     async def compute():
-        return ZoneListOut(window=WindowOut.of(win), criteria=criteria, items=await views.zones(db, cfg, s, limit))
+        items = await place_names.attach(db, await views.zones(db, cfg, s, limit))
+        return ZoneListOut(window=WindowOut.of(win), criteria=criteria, items=items)
     return await agg_cache.cached("db.zones", _params(f, limit=limit), compute, enabled=s.rollups)
 
 

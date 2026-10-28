@@ -37285,6 +37285,18 @@
             "title": "Road Name",
             "description": "Matched road name."
           },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place",
+            "description": "Place name of the position (reverse geocoding; null until looked up)."
+          },
           "grid_cell_id": {
             "type": "string",
             "title": "Grid Cell Id",
@@ -37855,6 +37867,18 @@
             ],
             "title": "Road Name",
             "description": "Most common matched road name in the cell."
+          },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place",
+            "description": "Place name of the cell centre (reverse geocoding, stored per ~110 m square; null until looked up)."
           },
           "coverage": {
             "type": "string",
@@ -45297,6 +45321,18 @@
             "type": "object",
             "title": "By Type",
             "description": "Events per behaviour type."
+          },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place",
+            "description": "Place name (driver / vehicle profile zones only)."
           }
         },
         "type": "object",
@@ -59087,6 +59123,18 @@
             ],
             "title": "Road Name",
             "description": "Most common matched road name in the cell."
+          },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place",
+            "description": "Place name of the cell centre (reverse geocoding, stored per ~110 m square; null until looked up)."
           }
         },
         "type": "object",
@@ -59935,6 +59983,18 @@
             ],
             "title": "Road Name",
             "description": "Most common road."
+          },
+          "place": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place",
+            "description": "Place name of the zone centre (reverse geocoding; null until looked up)."
           },
           "first_event_at": {
             "type": "string",
