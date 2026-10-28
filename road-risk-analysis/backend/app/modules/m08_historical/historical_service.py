@@ -16,7 +16,7 @@ model; this step only prepares the data it would train on.
 """
 import logging
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Tuple
 
 from sqlalchemy import select
@@ -182,12 +182,9 @@ async def get_zone_risk_profiles(
     if not candidate_cells:
         return []
 
-    rows = (await db.execute(
-        select(HistoricalEventRecord).where(HistoricalEventRecord.grid_cell_id.in_(candidate_cells))
-    )).scalars().all()
-
+    rows = await _recent_rows(db, candidate_cells)
     filtered = [r for r in rows if geo.haversine_m(latitude, longitude, r.latitude, r.longitude) <= radius_m]
-    return _aggregate_by_cell(filtered)
+    return await _current_profiles(db, filtered)
 
 
 async def get_zone_risk_profiles_along_route(
@@ -214,19 +211,84 @@ async def get_zone_risk_profiles_along_route(
             "this query will be slower than usual", len(candidate_cells),
         )
 
-    rows = (await db.execute(
-        select(HistoricalEventRecord).where(HistoricalEventRecord.grid_cell_id.in_(candidate_cells))
-    )).scalars().all()
+    rows = await _recent_rows(db, candidate_cells)
 
-    def _near_route(r: HistoricalEventRecord) -> bool:
+    # Each event is checked against the legs crossing its cell only (not every leg of the route).
+    legs_by_cell: Dict[str, List[int]] = defaultdict(list)
+    for i in range(len(waypoints) - 1):
+        for cid in grid_cell_ids_along_route(waypoints[i:i + 2], corridor_m, cell_size_m):
+            legs_by_cell[cid].append(i)
+
+    def _near_route(r) -> bool:
         point = (r.latitude, r.longitude)
-        for i in range(len(waypoints) - 1):
-            if geo.point_to_segment_distance_m(point, waypoints[i], waypoints[i + 1]) <= corridor_m:
-                return True
-        return False
+        return any(geo.point_to_segment_distance_m(point, waypoints[i], waypoints[i + 1]) <= corridor_m
+                   for i in legs_by_cell.get(r.grid_cell_id, ()))
 
     filtered = [r for r in rows if _near_route(r)]
-    return _aggregate_by_cell(filtered)
+    return await _current_profiles(db, filtered)
+
+
+# ── "current risk" (mobile: around a position / along a route) ───────────────
+
+async def _recent_rows(db: AsyncSession, cells) -> list:
+    """The events of these cells within HISTORICAL_RISK_WINDOW_DAYS — only the columns scored."""
+    since = datetime.utcnow() - timedelta(days=settings.HISTORICAL_RISK_WINDOW_DAYS)
+    H = HistoricalEventRecord
+    cols = (H.grid_cell_id, H.event_type, H.occurred_at, H.latitude, H.longitude, H.road_name, H.severity,
+            H.speed_mps, H.speed_limit_mps)
+    out: list = []
+    cells = list(cells)
+    for i in range(0, len(cells), 2000):
+        out += (await db.execute(select(*cols).where(H.grid_cell_id.in_(cells[i:i + 2000]),
+                                                     H.occurred_at >= since))).all()
+    return out
+
+
+def recency(occurred_at: datetime, now: datetime, half_life_days: float) -> float:
+    age_days = max(0.0, (now - occurred_at).total_seconds() / 86400.0)
+    return 0.5 ** (age_days / half_life_days) if half_life_days > 0 else 1.0
+
+
+def current_profiles(rows, cfg, now: datetime) -> List[ZoneRiskProfile]:
+    """Per cell: score = min(1, Σ type weight × severity multiplier × recency / saturation)."""
+    from app.modules.m09_driver_behaviour.analytics import normalize_severity
+    half = settings.HISTORICAL_RISK_HALF_LIFE_DAYS
+    recent_since = now - timedelta(days=90)
+    by_cell: Dict[str, dict] = {}
+    for r in rows:
+        c = by_cell.setdefault(r.grid_cell_id, {"counts": defaultdict(int), "w": defaultdict(float), "roads": defaultdict(int),
+                                                "first": None, "last": None, "high": 0, "recent": 0})
+        sev = normalize_severity(r, cfg)
+        t = r.event_type
+        c["counts"][t] += 1
+        c["w"][t] += _EVENT_TYPE_WEIGHT.get(HistoricalEventType(t), 0.5) * cfg.multiplier(sev) * recency(r.occurred_at, now, half)
+        c["high"] += sev == "high"
+        c["recent"] += r.occurred_at >= recent_since
+        if r.road_name:
+            c["roads"][r.road_name] += 1
+        c["first"] = r.occurred_at if c["first"] is None or r.occurred_at < c["first"] else c["first"]
+        c["last"] = r.occurred_at if c["last"] is None or r.occurred_at > c["last"] else c["last"]
+    out = []
+    for cid, c in by_cell.items():
+        lat, lon = grid_cell_center(cid)
+        weighted = sum(c["w"].values())
+        out.append(ZoneRiskProfile(
+            grid_cell_id=cid, center_latitude=lat, center_longitude=lon, total_events=sum(c["counts"].values()),
+            events_by_type=[EventTypeCount(event_type=HistoricalEventType(t), count=n) for t, n in c["counts"].items()],
+            earliest_event_at=c["first"], latest_event_at=c["last"],
+            historical_risk_score=round(max(0.0, min(1.0, weighted / settings.HISTORICAL_RISK_SATURATION_WEIGHT)), 4),
+            road_name=max(c["roads"], key=c["roads"].get) if c["roads"] else None,
+            high_severity=c["high"], recent_events=c["recent"],
+            dominant_type=max(c["w"], key=c["w"].get) if c["w"] else None,
+        ))
+    out.sort(key=lambda p: -p.historical_risk_score)
+    return out
+
+
+async def _current_profiles(db: AsyncSession, rows) -> List[ZoneRiskProfile]:
+    from app.core import settings_service
+    cfg = await settings_service.get_cached(db, "driver_behaviour")
+    return current_profiles(rows, cfg, datetime.utcnow())
 
 
 # ── Module 4 dashboard: overview, heatmap, risk zones, trend, import history ──

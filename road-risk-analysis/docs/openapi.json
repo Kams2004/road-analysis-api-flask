@@ -37880,6 +37880,30 @@
             "title": "Place",
             "description": "Place name of the cell centre (reverse geocoding, stored per ~110 m square; null until looked up)."
           },
+          "high_severity": {
+            "type": "integer",
+            "title": "High Severity",
+            "description": "Events of high severity (level 3) among `total_events` (risk around a position / along a route).",
+            "default": 0
+          },
+          "recent_events": {
+            "type": "integer",
+            "title": "Recent Events",
+            "description": "Events of the last 90 days (risk around a position / along a route).",
+            "default": 0
+          },
+          "dominant_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dominant Type",
+            "description": "Event type weighing most in the score."
+          },
           "coverage": {
             "type": "string",
             "title": "Coverage",
@@ -59135,6 +59159,30 @@
             ],
             "title": "Place",
             "description": "Place name of the cell centre (reverse geocoding, stored per ~110 m square; null until looked up)."
+          },
+          "high_severity": {
+            "type": "integer",
+            "title": "High Severity",
+            "description": "Events of high severity (level 3) among `total_events` (risk around a position / along a route).",
+            "default": 0
+          },
+          "recent_events": {
+            "type": "integer",
+            "title": "Recent Events",
+            "description": "Events of the last 90 days (risk around a position / along a route).",
+            "default": 0
+          },
+          "dominant_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dominant Type",
+            "description": "Event type weighing most in the score."
           }
         },
         "type": "object",

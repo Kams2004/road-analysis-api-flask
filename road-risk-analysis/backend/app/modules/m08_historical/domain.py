@@ -130,3 +130,7 @@ class ZoneRiskProfile(BaseModel):
         "Most common matched road name in the cell."))
     place: Optional[str] = Field(None, description=(
         "Place name of the cell centre (reverse geocoding, stored per ~110 m square; null until looked up)."))
+    high_severity: int = Field(0, description="Events of high severity (level 3) among `total_events` "
+                                              "(risk around a position / along a route).")
+    recent_events: int = Field(0, description="Events of the last 90 days (risk around a position / along a route).")
+    dominant_type: Optional[str] = Field(None, description="Event type weighing most in the score.")

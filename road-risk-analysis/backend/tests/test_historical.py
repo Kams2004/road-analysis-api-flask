@@ -325,3 +325,26 @@ async def test_historical_overview_zones_trends_imports(hist_client):
     imp = (await c.get("/historical/imports")).json()
     assert {b["source"] for b in imp} == {"pytest", "ymane"}
     assert (await c.get("/historical/overview", params={"period": "x"})).status_code == 422
+
+
+def test_current_risk_weighs_severity_and_recency():
+    from datetime import timedelta
+    from types import SimpleNamespace as NS
+    from app.modules.m08_historical.historical_service import current_profiles, recency
+    from app.modules.m09_driver_behaviour.settings import DriverBehaviourSettings
+    now = datetime(2026, 10, 28)
+    cell = grid_cell_id(*KAMBO, 150.0)
+
+    def ev(t, days, sev):
+        return NS(grid_cell_id=cell, event_type=t, occurred_at=now - timedelta(days=days), latitude=KAMBO[0],
+                  longitude=KAMBO[1], road_name="N3", severity=sev, speed_mps=None, speed_limit_mps=None)
+
+    cfg = DriverBehaviourSettings()
+    assert recency(now - timedelta(days=90), now, 90) == 0.5
+    fresh_high = current_profiles([ev("HARD_BRAKING", 0, "3")] * 4, cfg, now)[0]
+    old_low = current_profiles([ev("HARD_BRAKING", 180, "1")] * 4, cfg, now)[0]
+    # 4 × 1.5 × 2 (high) = 12 / 20 → 0.6 ; 4 × 1.5 × 0.5 (low) × 0.25 (two half-lives) = 0.75 / 20
+    assert fresh_high.historical_risk_score == 0.6 and old_low.historical_risk_score == 0.0375
+    assert fresh_high.high_severity == 4 and fresh_high.recent_events == 4 and old_low.recent_events == 0
+    mixed = current_profiles([ev("SPEEDING", 1, "1")] * 3 + [ev("HARD_BRAKING", 1, "3")], cfg, now)[0]
+    assert mixed.dominant_type == "HARD_BRAKING" and mixed.total_events == 4
