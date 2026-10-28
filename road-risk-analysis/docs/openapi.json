@@ -11423,6 +11423,178 @@
         "x-api-key": false
       }
     },
+    "/cloud-connections/{connection_id}/event-calendar": {
+      "get": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "Get the days received / missing of an event source",
+        "description": "Every day of the month with its file's status and events — gaps in the history at a glance.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "operationId": "event_calendar",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`YYYY-MM` (default: the current month).",
+              "title": "Month"
+            },
+            "description": "`YYYY-MM` (default: the current month)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventCalendarOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `not_an_event_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_an_event_source": {
+                    "summary": "not_an_event_source",
+                    "value": {
+                      "detail": {
+                        "code": "not_an_event_source",
+                        "message": "This source is not an event source."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:view",
+        "x-api-key": false
+      }
+    },
     "/imports/": {
       "get": {
         "tags": [
@@ -34974,6 +35146,101 @@
         "x-api-key": false
       }
     },
+    "/driver-behaviour/data-status": {
+      "get": {
+        "tags": [
+          "Driver behaviour"
+        ],
+        "summary": "Get the completeness of the event data",
+        "description": "For each daily event-file source: up to which day the data is complete and which days are\nmissing — so a missing file is never mistaken for a day without incidents.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "operationId": "data_status",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DataStatusOut"
+                  },
+                  "type": "array",
+                  "title": "Response Data Status"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks driver_behaviour:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "driver_behaviour",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "driver_behaviour:view",
+        "x-api-key": false
+      }
+    },
     "/driver-behaviour/methodology": {
       "get": {
         "tags": [
@@ -39391,6 +39658,36 @@
             ],
             "title": "Saved Folders",
             "description": "The whole list of saved folders (replaces it; `[]` clears it). Same folder id twice is kept once."
+          },
+          "event_alert_hour": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 23.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Alert Hour",
+            "description": "Event sources: hour (UTC) of the day after D from which a missing day D file raises an alert (default 10)."
+          },
+          "event_alert_emails": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Alert Emails",
+            "description": "Event sources: addresses also warned by e-mail (`[]` = none)."
           }
         },
         "type": "object",
@@ -39709,6 +40006,74 @@
         ],
         "title": "DashboardOut",
         "description": "Everything the console home page shows."
+      },
+      "DataStatusOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Source name."
+          },
+          "first_day": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Day",
+            "description": "First day received."
+          },
+          "complete_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complete Until",
+            "description": "Every day up to this one is imported."
+          },
+          "due_until": {
+            "type": "string",
+            "format": "date",
+            "title": "Due Until",
+            "description": "Last day whose file is due by now."
+          },
+          "missing": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Missing",
+            "description": "Due days without a file (last 60 days)."
+          },
+          "failed": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Failed",
+            "description": "Days whose file could not be imported."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "due_until",
+          "missing",
+          "failed"
+        ],
+        "title": "DataStatusOut",
+        "description": "Completeness of one daily event-file source."
       },
       "DatasetExportIn": {
         "properties": {
@@ -42361,6 +42726,154 @@
         "title": "EntityRow",
         "description": "A driver or vehicle with its behaviour score over the period."
       },
+      "EventAlertOut": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "title": "Connection Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "missing": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Missing",
+            "description": "Due days without a file."
+          },
+          "failed": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Failed",
+            "description": "Days whose file could not be imported."
+          },
+          "complete_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complete Until",
+            "description": "Every day up to this one is imported."
+          }
+        },
+        "type": "object",
+        "required": [
+          "connection_id",
+          "name",
+          "missing",
+          "failed"
+        ],
+        "title": "EventAlertOut",
+        "description": "A daily event-file source whose files did not all arrive."
+      },
+      "EventCalendarOut": {
+        "properties": {
+          "month": {
+            "type": "string",
+            "title": "Month",
+            "examples": [
+              "2026-10"
+            ]
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/EventDayOut"
+            },
+            "type": "array",
+            "title": "Days"
+          },
+          "feed": {
+            "$ref": "#/components/schemas/EventFeedOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "month",
+          "days",
+          "feed"
+        ],
+        "title": "EventCalendarOut",
+        "description": "One month of an event source, day by day (UTC days)."
+      },
+      "EventDayOut": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "imported",
+              "failed",
+              "pending",
+              "missing",
+              "waiting",
+              "none"
+            ],
+            "title": "Status",
+            "description": "`imported`, `failed` (see `error`), `pending` (being imported), `missing` (due, no file), `waiting` (not due yet), `none` (before the source's first file)."
+          },
+          "events": {
+            "type": "integer",
+            "title": "Events",
+            "default": 0
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id",
+            "description": "Event file id (`…/event-files/{file_id}/reimport`)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "day",
+          "status"
+        ],
+        "title": "EventDayOut"
+      },
       "EventFeedOut": {
         "properties": {
           "files": {
@@ -42439,6 +42952,64 @@
               }
             ],
             "title": "Last Imported At"
+          },
+          "due_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Until",
+            "description": "Last day whose file is due by now (day D: D+1 at `alert_hour` UTC)."
+          },
+          "complete_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complete Until",
+            "description": "Every day from the first one up to this one is imported."
+          },
+          "missing": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Missing",
+            "description": "Due days without a file (last 60 days)."
+          },
+          "failed_days": {
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "type": "array",
+            "title": "Failed Days",
+            "description": "Days whose file could not be imported."
+          },
+          "alert_hour": {
+            "type": "integer",
+            "title": "Alert Hour",
+            "description": "Hour (UTC) after which a missing file raises an alert.",
+            "default": 10
+          },
+          "alert_emails": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Alert Emails",
+            "description": "Also warned by e-mail."
           }
         },
         "type": "object",
@@ -58606,6 +59177,14 @@
             "type": "array",
             "title": "Recent Jobs",
             "description": "The 5 most recent jobs, newest first."
+          },
+          "event_alerts": {
+            "items": {
+              "$ref": "#/components/schemas/EventAlertOut"
+            },
+            "type": "array",
+            "title": "Event Alerts",
+            "description": "Event sources (daily CSV files) with due days missing or failed (last 60 days)."
           }
         },
         "type": "object",

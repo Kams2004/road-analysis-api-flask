@@ -2,6 +2,8 @@
 -- Applied automatically at API start-up (app/core/db/upgrade.py, EVENT_FEED_COLUMNS); event_files
 -- is created by create_all (app/modules/m08_historical/models/event_file.py).
 ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS purpose VARCHAR NOT NULL DEFAULT 'videos';
+ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_alert_hour INTEGER;      -- NULL = 10 (UTC)
+ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_alert_emails JSON;
 ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS country VARCHAR;
 ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS transporter VARCHAR;
 ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP;

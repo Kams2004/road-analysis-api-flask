@@ -101,3 +101,55 @@ def purge_old_events():
             agg_cache.bump()
         return {"deleted": total, "before": cutoff.isoformat()}
     return _run(run)
+
+
+ALERT_TTL_S = 90 * 86400
+
+
+def alert_text(name: str, missing: list, failed: list, web_url: str, cid: str) -> tuple[str, str]:
+    """(subject, body) of the e-mail about the newly missing / failed days of a source."""
+    lines = [f"Daily event files of “{name}” (VIASafe):", ""]
+    if missing:
+        lines.append("Missing (no file on the server): " + ", ".join(f"{d:%Y-%m-%d}" for d in missing))
+    if failed:
+        lines.append("Could not be imported: " + ", ".join(f"{d:%Y-%m-%d}" for d in failed))
+    lines += ["", "Driver behaviour and historical analysis do not count these days until their file is imported.",
+              "Late files are imported automatically at the next hourly check.",
+              f"Details: {web_url.rstrip('/')}/cloud-sources?connection={cid}"]
+    days = missing + failed
+    return f"[VIASafe] Event data missing for {name} ({days[0]:%Y-%m-%d}{'…' if len(days) > 1 else ''})", "\n".join(lines)
+
+
+@celery_app.task(name="app.workers.celery_app.check_event_alerts")
+def check_event_alerts():
+    """E-mail the addresses of each event source once per newly missing / failed day (the in-app
+    alert needs no task: it is computed live)."""
+    from app.modules.m07_ingestion import job_slots
+    r = job_slots.client()
+
+    async def run(db):
+        from app.core.config import settings
+        from app.core.email_service import send_email
+        from app.modules.m08_historical import event_feed
+        sent = 0
+        for h in await event_feed.source_health(db):
+            if not h["emails"]:
+                continue
+            new = {"missing": [], "failed": []}
+            for kind in new:
+                for d in h[kind]:
+                    if r.set(f"events:alerted:{h['connection_id']}:{d}:{kind}", "1", nx=True, ex=ALERT_TTL_S):
+                        new[kind].append(d)
+            if not new["missing"] and not new["failed"]:
+                continue
+            subject, text = alert_text(h["name"], new["missing"], new["failed"], settings.WEB_BASE_URL,
+                                       h["connection_id"])
+            for to in h["emails"]:
+                try:
+                    await send_email(db, to, subject, text)
+                    sent += 1
+                except Exception as exc:              # SMTP not configured / down: logged, retried never
+                    import logging
+                    logging.getLogger(__name__).warning("event alert to %s not sent: %s", to, exc)
+        return {"sent": sent}
+    return _run(run)

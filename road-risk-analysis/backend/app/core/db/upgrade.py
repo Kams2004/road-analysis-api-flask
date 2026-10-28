@@ -260,6 +260,8 @@ SFTP_COLUMNS = [
 # event_files comes from create_all.
 EVENT_FEED_COLUMNS = [
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS purpose VARCHAR NOT NULL DEFAULT 'videos'",
+    "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_alert_hour INTEGER",
+    "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_alert_emails JSON",
     "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS country VARCHAR",
     "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS transporter VARCHAR",
     "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP",

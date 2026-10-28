@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, case
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from app.core.db.session import get_db
 from app.modules.m06_hazards.models.detection import ACCEPTED_STATUSES, Detection, ReviewStatus
@@ -25,6 +25,15 @@ class StatsRecentJob(BaseModel):
     finished_at: Optional[str] = Field(description="Completion time, ISO 8601 (UTC), or null.")
 
 
+class EventAlertOut(BaseModel):
+    """A daily event-file source whose files did not all arrive."""
+    connection_id: str
+    name: str
+    missing: List[date] = Field(..., description="Due days without a file.")
+    failed: List[date] = Field(..., description="Days whose file could not be imported.")
+    complete_until: Optional[date] = Field(None, description="Every day up to this one is imported.")
+
+
 class StatsOut(BaseModel):
     """All-time detection and job counters."""
     total_detections: int = Field(..., description="All detections.")
@@ -41,6 +50,8 @@ class StatsOut(BaseModel):
     by_status: Dict[str, int] = Field(..., description="Detection count per review status.",  # review_status → count
                                       examples=[{"pending": 12, "validated": 80, "rejected": 9}])
     recent_jobs: List[StatsRecentJob] = Field(..., description="The 5 most recent jobs, newest first.")  # last 5 jobs
+    event_alerts: List[EventAlertOut] = Field(default_factory=list, description=(
+        "Event sources (daily CSV files) with due days missing or failed (last 60 days)."))
 
 
 @router.get("/", response_model=StatsOut, summary="Get overall counters")
@@ -105,7 +116,17 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         by_type=by_type,
         by_status=by_status,
         recent_jobs=recent_jobs,
+        event_alerts=await _event_alerts(db),
     )
+
+
+async def _event_alerts(db: AsyncSession) -> List[EventAlertOut]:
+    from app.modules.m08_historical import event_feed
+    try:
+        return [EventAlertOut(**h) for h in await event_feed.source_health(db) if h["missing"] or h["failed"]]
+    except Exception:                          # the counters must never fail because of this
+        await db.rollback()
+        return []
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -32,7 +32,7 @@ import posixpath
 import re
 import stat as stat_mod
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Iterable, Optional
 
 from sqlalchemy import literal_column, select
@@ -271,6 +271,17 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
 
     summary["listed"], summary["fetched"] = len(remote), len(got)
     touched: set = set()
+    # Files listed but left for a later check (catch-up, MAX_FILES_PER_RUN): known as pending at
+    # once, so their days count as "received" and never raise a missing-file alert.
+    fetching = {f.name for f, _ in got}
+    for f in remote:
+        if f.day and f.name not in known and f.name not in fetching:
+            pending = EventFile(connection_id=conn.id, name=f.name, path=f.path, day=f.day, size=f.size,
+                                mtime=f.mtime, status="pending", attempts=0, rows=0, inserted=0, updated=0,
+                                invalid=0)
+            db.add(pending)
+            known[f.name] = pending
+    await db.commit()
     for f, data in got:
         ef = known.get(f.name)
         if ef is None:
@@ -314,3 +325,97 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
         log.status(f"Event files: {len(remote)} on the server, nothing new")
     logger.info("[EVENT-FEED] %s %s", conn.id, summary)
     return summary
+
+
+# ── completeness: which days arrived, which are missing ──────────────────────
+
+DEFAULT_ALERT_HOUR = 10          # UTC: the day D file (made ~03:00 on D+1) is late after D+1 10:00
+ALERT_WINDOW_DAYS = 60           # missing days looked for (alerts, cards); the calendar shows any month
+
+
+@dataclass
+class DayStatus:
+    day: date
+    status: str                  # imported | failed | pending | missing | waiting (not due yet) | none (before the feed)
+    events: int = 0
+    file: Optional[str] = None
+    error: Optional[str] = None
+    file_id: Optional[str] = None
+
+
+def expected_until(now: datetime, alert_hour: Optional[int]) -> date:
+    """Last day whose file is due by `now` (the day D file is due on D+1 at alert_hour UTC)."""
+    hour = DEFAULT_ALERT_HOUR if alert_hour is None else alert_hour
+    return (now - timedelta(days=1, hours=hour)).date()
+
+
+def day_statuses(files: Iterable[Any], first: Optional[date], due: date, start: date, end: date) -> list[DayStatus]:
+    """Status of every day of [start, end] from the source's file rows (day, status, inserted,
+    updated, name, error). Days before `first` (the feed's first file) are `none`, days after
+    `due` without a file `waiting`."""
+    by_day: dict[date, Any] = {}
+    for f in files:
+        d = f.day if isinstance(f.day, date) else date.fromisoformat(str(f.day))
+        prev = by_day.get(d)
+        if prev is None or (prev.status != "imported" and f.status == "imported"):
+            by_day[d] = f
+    out, d = [], start
+    while d <= end:
+        f = by_day.get(d)
+        if f is not None:
+            out.append(DayStatus(d, f.status, (f.inserted or 0) + (f.updated or 0) if f.status == "imported" else 0,
+                                 f.name, f.error if f.status == "failed" else None, getattr(f, "id", None)))
+        elif first is None or d < first:
+            out.append(DayStatus(d, "none"))
+        else:
+            out.append(DayStatus(d, "missing" if d <= due else "waiting"))
+        d += timedelta(days=1)
+    return out
+
+
+def health(files: list, now: datetime, alert_hour: Optional[int]) -> dict:
+    """Completeness of a source: first day, `complete_until` (every day from the first one up to
+    it imported), missing / failed days due by now (last ALERT_WINDOW_DAYS days)."""
+    due = expected_until(now, alert_hour)
+    days = [f.day if isinstance(f.day, date) else date.fromisoformat(str(f.day)) for f in files]
+    first = min(days) if days else None
+    if first is None:
+        return {"first_day": None, "due_until": due, "complete_until": None, "missing": [], "failed": []}
+    start = max(first, due - timedelta(days=ALERT_WINDOW_DAYS - 1))
+    st = day_statuses(files, first, due, first, due) if first <= due else []
+    complete = None
+    for s in st:
+        if s.status != "imported":
+            break
+        complete = s.day
+    recent = [s for s in st if s.day >= start]
+    return {"first_day": first, "due_until": due, "complete_until": complete,
+            "missing": [s.day for s in recent if s.status == "missing"],
+            "failed": [s.day for s in recent if s.status == "failed"]}
+
+
+async def file_rows(db: AsyncSession, connection_id: str, since: Optional[date] = None) -> list:
+    q = select(EventFile.id, EventFile.day, EventFile.status, EventFile.inserted, EventFile.updated, EventFile.name,
+               EventFile.error).where(EventFile.connection_id == connection_id)
+    if since is not None:
+        q = q.where(EventFile.day >= since)
+    return (await db.execute(q)).all()
+
+
+async def first_day(db: AsyncSession, connection_id: str) -> Optional[date]:
+    from sqlalchemy import func
+    return (await db.execute(select(func.min(EventFile.day)).where(EventFile.connection_id == connection_id))).scalar()
+
+
+async def source_health(db: AsyncSession, now: Optional[datetime] = None) -> list[dict]:
+    """Every enabled event source with its completeness (health()) — the bell, the analysis pages,
+    the e-mail alerts."""
+    from app.modules.m07_ingestion.models.cloud_connection import CloudConnection
+    now = now or datetime.utcnow()
+    conns = (await db.execute(select(CloudConnection).where(
+        CloudConnection.purpose == PURPOSE, CloudConnection.enabled.is_(True)))).scalars().all()
+    out = []
+    for c in conns:
+        h = health(await file_rows(db, c.id), now, c.event_alert_hour)
+        out.append({"connection_id": c.id, "name": c.name, "emails": c.event_alert_emails or [], **h})
+    return out

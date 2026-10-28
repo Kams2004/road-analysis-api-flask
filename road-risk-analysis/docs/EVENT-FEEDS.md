@@ -97,4 +97,25 @@ keeps three small tables, built from `historical_events` with plain SQL:
 - **Indexes:** `(event_type, occurred_at)`, `(country, occurred_at)`, driver, vehicle, file.
   Summaries: `(driver, day)`, `(vehicle, day)`, `(country, day)`, squares.
 
-Still to do (step 3): missing-file alerts and a calendar of the days received / missing.
+## Missing files
+
+The file of day D is **due on D+1 at the alert hour** (UTC, 10:00 by default, set per source
+in its panel). A due day without an imported file is:
+
+- **missing**: no file on the server. Files listed but not fetched yet (catch-up) count as
+  received.
+- **failed**: the file is there but could not be imported (reason shown).
+
+Where it shows (computed live from `event_files`, so it clears itself when the file arrives;
+late files are imported by the hourly check):
+
+- **the bell** (`GET /stats` → `event_alerts`), linking to the source;
+- **the source card** (orange line, orange dot when folded) and **its panel**: banner with the
+  missing / failed days and *Data complete up to …*, and a **month calendar** (`GET …/event-calendar?month=YYYY-MM`).
+  A missing or failed day can be re-checked / re-imported from it;
+- **Driver behaviour and Historical analysis**: *Event data complete up to …, missing: …*
+  (`GET /driver-behaviour/data-status`). A missing file never reads as a day without incidents;
+- **e-mail** (optional): the addresses set in the source's panel, once per missing or failed day
+  (hourly task `check_event_alerts`; needs SMTP in *Settings → Platform → E-mail*).
+
+Alerts look back 60 days; the calendar shows any month.

@@ -525,6 +525,24 @@ async def countries(db: AsyncSession = Depends(get_db)):
     return await agg_cache.cached("db.countries", {}, compute, enabled=use)
 
 
+class DataStatusOut(BaseModel):
+    """Completeness of one daily event-file source."""
+    name: str = Field(..., description="Source name.")
+    first_day: Optional[date] = Field(None, description="First day received.")
+    complete_until: Optional[date] = Field(None, description="Every day up to this one is imported.")
+    due_until: date = Field(..., description="Last day whose file is due by now.")
+    missing: List[date] = Field(..., description="Due days without a file (last 60 days).")
+    failed: List[date] = Field(..., description="Days whose file could not be imported.")
+
+
+@router.get("/data-status", response_model=List[DataStatusOut], summary="Get the completeness of the event data")
+async def data_status(db: AsyncSession = Depends(get_db)):
+    """For each daily event-file source: up to which day the data is complete and which days are
+    missing — so a missing file is never mistaken for a day without incidents."""
+    from app.modules.m08_historical import event_feed
+    return [DataStatusOut(**h) for h in await event_feed.source_health(db)]
+
+
 @router.get("/methodology", response_model=MethodologyOut, summary="Get the behaviour scoring method")
 async def methodology(db: AsyncSession = Depends(get_db)):
     """The scoring formula, weights, severity rules and zone criteria in force (settings section `driver_behaviour`)."""

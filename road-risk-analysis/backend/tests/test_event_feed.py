@@ -227,3 +227,42 @@ async def test_a_check_imports_new_files_and_records_failures(monkeypatch):
 
     conn.purpose = "videos"
     assert (await ef.sync_connection(db, "c1")) == {"skipped": True}
+
+
+# ── completeness / alerts ────────────────────────────────────────────────────
+
+def f(day, status="imported", n=10, error=None):
+    return SimpleNamespace(day=day, status=status, inserted=n, updated=0, name=f"{day}.csv", error=error)
+
+
+def test_a_day_is_due_the_next_day_at_the_alert_hour():
+    assert ef.expected_until(datetime(2026, 10, 29, 9, 59), None) == date(2026, 10, 27)
+    assert ef.expected_until(datetime(2026, 10, 29, 10, 0), None) == date(2026, 10, 28)
+    assert ef.expected_until(datetime(2026, 10, 29, 4, 0), 3) == date(2026, 10, 28)
+
+
+def test_health_missing_failed_pending_and_complete_until():
+    files = [f(date(2026, 10, 20)), f(date(2026, 10, 21)), f(date(2026, 10, 23), "failed", error="bad"),
+             f(date(2026, 10, 24), "pending"), f(date(2026, 10, 25))]
+    h = ef.health(files, datetime(2026, 10, 27, 11), None)          # due until the 26th
+    assert h["first_day"] == date(2026, 10, 20) and h["complete_until"] == date(2026, 10, 21)
+    assert h["missing"] == [date(2026, 10, 22), date(2026, 10, 26)] and h["failed"] == [date(2026, 10, 23)]
+    days = ef.day_statuses(files, h["first_day"], h["due_until"], date(2026, 10, 19), date(2026, 10, 28))
+    assert [d.status for d in days] == ["none", "imported", "imported", "missing", "failed", "pending",
+                                        "imported", "missing", "waiting", "waiting"]
+    assert days[1].events == 10 and days[4].error == "bad"
+    assert ef.health([], datetime(2026, 10, 27), None)["missing"] == []          # no file yet: nothing expected
+
+
+def test_a_reimported_day_counts_once_imported():
+    files = [f(date(2026, 10, 20), "failed"), f(date(2026, 10, 20))]
+    assert ef.health(files, datetime(2026, 10, 21, 12), None)["complete_until"] == date(2026, 10, 20)
+
+
+def test_alert_email_text():
+    from app.workers.event_feed_tasks import alert_text
+    subject, text = alert_text("Ymane", [date(2026, 10, 26)], [date(2026, 10, 23)], "https://roadrisk.camtrack.net/",
+                               "c1")
+    assert subject == "[VIASafe] Event data missing for Ymane (2026-10-26…)"
+    assert "Missing (no file on the server): 2026-10-26" in text and "Could not be imported: 2026-10-23" in text
+    assert "https://roadrisk.camtrack.net/cloud-sources?connection=c1" in text

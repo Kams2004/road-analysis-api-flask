@@ -113,6 +113,25 @@ class ConnectionPatch(BaseModel):
     saved_folders: Optional[list[SavedFolder]] = Field(
         None, max_length=SAVED_FOLDERS_MAX, description="The whole list of saved folders (replaces it; `[]` "
                                                         "clears it). Same folder id twice is kept once.")
+    event_alert_hour: Optional[int] = Field(None, ge=0, le=23, description="Event sources: hour (UTC) of the day "
+                                                                            "after D from which a missing day D file "
+                                                                            "raises an alert (default 10).")
+    event_alert_emails: Optional[list[str]] = Field(None, max_length=10, description="Event sources: addresses also "
+                                                                                     "warned by e-mail (`[]` = none).")
+
+    @field_validator("event_alert_emails")
+    @classmethod
+    def _emails(cls, v):
+        if v is None:
+            return v
+        out = []
+        for e in v:
+            e = e.strip().lower()
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", e) or len(e) > 254:
+                raise ValueError(f"Invalid e-mail address: {e!r}")
+            if e not in out:
+                out.append(e)
+        return out
 
     @field_validator("auto_import_models")
     @classmethod
@@ -175,6 +194,13 @@ class EventFeedOut(BaseModel):
     last_day:       Optional[date] = Field(None, description="Latest day imported.")
     last_file:      Optional[str] = Field(None, description="Latest file imported.", examples=["2026-10-27.csv"])
     last_imported_at: Optional[datetime] = None
+    due_until:      Optional[date] = Field(None, description="Last day whose file is due by now (day D: D+1 at "
+                                                             "`alert_hour` UTC).")
+    complete_until: Optional[date] = Field(None, description="Every day from the first one up to this one is imported.")
+    missing:        list[date] = Field(default_factory=list, description="Due days without a file (last 60 days).")
+    failed_days:    list[date] = Field(default_factory=list, description="Days whose file could not be imported.")
+    alert_hour:     int = Field(10, description="Hour (UTC) after which a missing file raises an alert.")
+    alert_emails:   list[str] = Field(default_factory=list, description="Also warned by e-mail.")
 
 
 class ConnectionOut(BaseModel):
@@ -280,12 +306,26 @@ async def _feeds(db: AsyncSession, conns) -> dict[str, EventFeedOut]:
                func.max(F.imported_at))
         .where(F.connection_id.in_(ids)).group_by(F.connection_id))).all()
     out = {}
+    by_id = {c.id: c for c in conns}
+    now = datetime.utcnow()
     for cid, n, ok, bad, events, first, last, at in rows:
         last_file = (await db.execute(select(F.name).where(F.connection_id == cid, F.status == "imported")
                                       .order_by(F.day.desc()).limit(1))).scalar_one_or_none()
+        c = by_id[cid]
+        h = event_feed.health(await event_feed.file_rows(db, cid), now, c.event_alert_hour)
         out[cid] = EventFeedOut(files=n, imported=ok, failed=bad, events=int(events or 0), first_day=first,
-                                last_day=last, last_file=last_file, last_imported_at=at)
+                                last_day=last, last_file=last_file, last_imported_at=at, due_until=h["due_until"],
+                                complete_until=h["complete_until"], missing=h["missing"], failed_days=h["failed"],
+                                alert_hour=_alert_hour(c), alert_emails=c.event_alert_emails or [])
+    for cid in ids:
+        if cid not in out:
+            c = by_id[cid]
+            out[cid] = EventFeedOut(alert_hour=_alert_hour(c), alert_emails=c.event_alert_emails or [])
     return out
+
+
+def _alert_hour(c) -> int:
+    return event_feed.DEFAULT_ALERT_HOUR if c.event_alert_hour is None else c.event_alert_hour
 
 
 def _saved(raw) -> list[SavedFolder]:
@@ -303,7 +343,8 @@ def _snapshot(c: CloudConnection) -> dict:
             "enabled": c.enabled, "status": c.status, "auto_import": bool(c.auto_import),
             "auto_import_models": c.auto_import_models, "auto_import_frame_skip": c.auto_import_frame_skip,
             "saved_folders": [f.get("name") for f in (c.saved_folders or []) if isinstance(f, dict)],
-            "purpose": c.purpose or "videos"}
+            "purpose": c.purpose or "videos", "event_alert_hour": getattr(c, "event_alert_hour", None),
+            "event_alert_emails": getattr(c, "event_alert_emails", None)}
     if c.provider == "sftp":
         snap.update({"sftp_host": c.sftp_host, "sftp_port": c.sftp_port, "sftp_username": c.sftp_username,
                      "sftp_base_path": c.sftp_base_path, "sftp_password_key": c.sftp_password_key,
@@ -459,6 +500,10 @@ async def update_connection(connection_id: ConnectionId, body: ConnectionPatch, 
         conn.auto_import_models = data["auto_import_models"]
     if "auto_import_frame_skip" in data:
         conn.auto_import_frame_skip = data["auto_import_frame_skip"]
+    if "event_alert_hour" in data:
+        conn.event_alert_hour = data["event_alert_hour"]
+    if body.event_alert_emails is not None:
+        conn.event_alert_emails = body.event_alert_emails or None
     if body.saved_folders is not None:
         seen: set[str] = set()
         conn.saved_folders = [f.model_dump() for f in body.saved_folders
@@ -475,7 +520,7 @@ async def update_connection(connection_id: ConnectionId, body: ConnectionPatch, 
     audit.record(db, request, "cloud_connection.update", principal=principal, object_type="cloud_connection",
                  object_id=conn.id, details=audit.diff(before, _snapshot(conn)))
     await db.commit()
-    return _out(conn)
+    return _out(conn, None, (await _feeds(db, [conn])).get(conn.id))
 
 
 @router.delete("/{connection_id}", status_code=204, summary="Delete a cloud connection",
@@ -1194,3 +1239,43 @@ async def reimport_event_file(connection_id: ConnectionId, file_id: str, request
                  object_id=conn.id, details={"file": ef.name})
     await db.commit()
     return {"message": "Import queued."}
+
+
+
+class EventDayOut(BaseModel):
+    day: date
+    status: Literal["imported", "failed", "pending", "missing", "waiting", "none"] = Field(
+        description="`imported`, `failed` (see `error`), `pending` (being imported), `missing` (due, no file), "
+                    "`waiting` (not due yet), `none` (before the source's first file).")
+    events: int = 0
+    file: Optional[str] = None
+    error: Optional[str] = None
+    file_id: Optional[str] = Field(None, description="Event file id (`…/event-files/{file_id}/reimport`).")
+
+
+class EventCalendarOut(BaseModel):
+    """One month of an event source, day by day (UTC days)."""
+    month: str = Field(examples=["2026-10"])
+    days: list[EventDayOut]
+    feed: EventFeedOut
+
+
+@router.get("/{connection_id}/event-calendar", response_model=EventCalendarOut,
+            summary="Get the days received / missing of an event source", responses=errors(E_NOT_FOUND, E_NOT_EVENTS))
+async def event_calendar(connection_id: ConnectionId, db: AsyncSession = Depends(get_db),
+                         month: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}$",
+                                                      description="`YYYY-MM` (default: the current month).")):
+    """Every day of the month with its file's status and events — gaps in the history at a glance."""
+    import calendar as _cal
+    conn = await _events_source(db, connection_id)
+    now = datetime.utcnow()
+    y, m = (int(month[:4]), int(month[5:])) if month else (now.year, now.month)
+    if not 1 <= m <= 12:
+        raise api_error(422, "invalid_month", "month must be YYYY-MM.")
+    start, end = date(y, m, 1), date(y, m, _cal.monthrange(y, m)[1])
+    rows = await event_feed.file_rows(db, conn.id, start)
+    first = await event_feed.first_day(db, conn.id)
+    due = event_feed.expected_until(now, conn.event_alert_hour)
+    days = event_feed.day_statuses([r for r in rows if r.day <= end], first, due, start, end)
+    feed = (await _feeds(db, [conn])).get(conn.id) or EventFeedOut(alert_hour=_alert_hour(conn))
+    return EventCalendarOut(month=f"{y:04d}-{m:02d}", days=[EventDayOut(**d.__dict__) for d in days], feed=feed)
