@@ -256,6 +256,20 @@ SFTP_COLUMNS = [
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS sftp_password_enc VARCHAR",
 ]
 
+# ── Daily event files (migrations/add_event_feeds.sql) ───────────────────────
+# event_files comes from create_all.
+EVENT_FEED_COLUMNS = [
+    "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS purpose VARCHAR NOT NULL DEFAULT 'videos'",
+    "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS country VARCHAR",
+    "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS transporter VARCHAR",
+    "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP",
+    "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS duration_s DOUBLE PRECISION",
+    "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS distance_km DOUBLE PRECISION",
+    "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS event_file_id VARCHAR",
+    "CREATE INDEX IF NOT EXISTS ix_historical_events_country_occurred ON historical_events (country, occurred_at)",
+    "CREATE INDEX IF NOT EXISTS ix_historical_events_file ON historical_events (event_file_id)",
+]
+
 # ── Training data (migrations/add_training_data.sql) ────────────────────────
 # training_samples / training_frames come from create_all.
 TRAINING_DATA_COLUMNS = [
@@ -343,7 +357,7 @@ async def run(engine: AsyncEngine) -> None:
                      + AI_VALIDATION_COLUMNS + SIGN_CLASSIFIER_COLUMNS
                      + HAZARD_LIFECYCLE_COLUMNS + HAZARD_LIFECYCLE_BACKFILL + PARKED_VEHICLE_COLUMNS
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
-                     + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + REJECTION_KIND_COLUMNS
+                     + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + EVENT_FEED_COLUMNS + REJECTION_KIND_COLUMNS
                      + HAZARD_CLUSTER_STATEMENTS + OBJECT_POSITION_STATEMENTS
                      + DRIVER_BEHAVIOUR_STATEMENTS + SCALE_INDEX_STATEMENTS):
             m = _ADD_COLUMN.match(stmt)

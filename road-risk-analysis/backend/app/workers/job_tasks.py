@@ -328,6 +328,7 @@ async def _dispatch_due_syncs(db) -> int:
     conns = (await db.execute(select(CloudConnection).where(
         CloudConnection.enabled.is_(True),
         CloudConnection.auto_import.is_(True),
+        CloudConnection.purpose != "events",          # event files: app/workers/event_feed_tasks.py
         CloudConnection.status.in_([ConnectionStatus.active.value, ConnectionStatus.error.value]),
         or_(CloudConnection.refresh_token_enc.isnot(None), CloudConnection.provider == "sftp"),
     ))).scalars().all()

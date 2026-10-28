@@ -10851,6 +10851,578 @@
         "x-api-key": false
       }
     },
+    "/cloud-connections/{connection_id}/event-files": {
+      "get": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "List the daily event files",
+        "description": "Files found on an `events` source, newest day first, with what each import did.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "operationId": "list_event_files",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "imported",
+                    "failed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Skip"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 31,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventFilesOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `not_an_event_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_an_event_source": {
+                    "summary": "not_an_event_source",
+                    "value": {
+                      "detail": {
+                        "code": "not_an_event_source",
+                        "message": "This source is not an event source."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:view",
+        "x-api-key": false
+      }
+    },
+    "/cloud-connections/{connection_id}/event-files/sync": {
+      "post": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "Check an event source now",
+        "description": "List the server folder now and import the new or changed files (the hourly check, run at\nonce). The outcome appears in `last_sync_*`, `event_feed` and `GET …/event-files`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
+        "operationId": "check_event_files",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncQueuedOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:edit",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "edit"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `connection_disabled`, `not_an_event_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_an_event_source": {
+                    "summary": "not_an_event_source",
+                    "value": {
+                      "detail": {
+                        "code": "not_an_event_source",
+                        "message": "This source is not an event source."
+                      }
+                    }
+                  },
+                  "connection_disabled": {
+                    "summary": "connection_disabled",
+                    "value": {
+                      "detail": {
+                        "code": "connection_disabled",
+                        "message": "Enable the connection first."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable — `queue_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "queue_unavailable": {
+                    "summary": "queue_unavailable",
+                    "value": {
+                      "detail": {
+                        "code": "queue_unavailable",
+                        "message": "Could not queue the check: Connection refused"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:edit",
+        "x-api-key": false
+      }
+    },
+    "/cloud-connections/{connection_id}/event-files/{file_id}/reimport": {
+      "post": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "Import a daily event file again",
+        "description": "Fetch and import this file again even if it did not change (its events are updated, never\nduplicated).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:edit`",
+        "operationId": "reimport_event_file",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          },
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncQueuedOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:edit",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "edit"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `connection_disabled`, `not_an_event_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_an_event_source": {
+                    "summary": "not_an_event_source",
+                    "value": {
+                      "detail": {
+                        "code": "not_an_event_source",
+                        "message": "This source is not an event source."
+                      }
+                    }
+                  },
+                  "connection_disabled": {
+                    "summary": "connection_disabled",
+                    "value": {
+                      "detail": {
+                        "code": "connection_disabled",
+                        "message": "Enable the connection first."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable — `queue_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "queue_unavailable": {
+                    "summary": "queue_unavailable",
+                    "value": {
+                      "detail": {
+                        "code": "queue_unavailable",
+                        "message": "Could not queue the import: Connection refused"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:edit",
+        "x-api-key": false
+      }
+    },
     "/imports/": {
       "get": {
         "tags": [
@@ -38193,6 +38765,27 @@
             ],
             "description": "SFTP server profile (provider `sftp`)."
           },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "videos",
+              "events"
+            ],
+            "title": "Purpose",
+            "description": "`videos` (browse / import → processing jobs) or `events` (daily driving-event CSV files → historical analysis and driver behaviour).",
+            "default": "videos"
+          },
+          "event_feed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventFeedOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Daily files (purpose `events`)."
+          },
           "saved_folders": {
             "items": {
               "$ref": "#/components/schemas/SavedFolder"
@@ -41281,6 +41874,256 @@
         ],
         "title": "EntityRow",
         "description": "A driver or vehicle with its behaviour score over the period."
+      },
+      "EventFeedOut": {
+        "properties": {
+          "files": {
+            "type": "integer",
+            "title": "Files",
+            "description": "Files found on the server.",
+            "default": 0
+          },
+          "imported": {
+            "type": "integer",
+            "title": "Imported",
+            "description": "Files imported.",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "description": "Files whose last import failed.",
+            "default": 0
+          },
+          "events": {
+            "type": "integer",
+            "title": "Events",
+            "description": "Events stored from this source.",
+            "default": 0
+          },
+          "first_day": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Day",
+            "description": "Oldest day imported."
+          },
+          "last_day": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Day",
+            "description": "Latest day imported."
+          },
+          "last_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last File",
+            "description": "Latest file imported.",
+            "examples": [
+              "2026-10-27.csv"
+            ]
+          },
+          "last_imported_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Imported At"
+          }
+        },
+        "type": "object",
+        "title": "EventFeedOut",
+        "description": "Daily event files of an `events` source (counts over every file seen)."
+      },
+      "EventFileOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "2026-10-27.csv"
+            ]
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day",
+            "description": "Day the file covers."
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "imported",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "rows": {
+            "type": "integer",
+            "title": "Rows",
+            "description": "Data lines read.",
+            "default": 0
+          },
+          "inserted": {
+            "type": "integer",
+            "title": "Inserted",
+            "description": "New events.",
+            "default": 0
+          },
+          "updated": {
+            "type": "integer",
+            "title": "Updated",
+            "description": "Events already known, updated (corrected file).",
+            "default": 0
+          },
+          "invalid": {
+            "type": "integer",
+            "title": "Invalid",
+            "description": "Lines skipped (see `problems`).",
+            "default": 0
+          },
+          "problems": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problems",
+            "description": "First skipped lines: `{line, reason}`."
+          },
+          "by_type": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By Type",
+            "description": "Events per type.",
+            "examples": [
+              {
+                "HARD_ACCELERATION": 693,
+                "SPEEDING": 947
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "default": 0
+          },
+          "found_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Found At"
+          },
+          "imported_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imported At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "day",
+          "status",
+          "found_at"
+        ],
+        "title": "EventFileOut",
+        "description": "One daily file of an `events` source."
+      },
+      "EventFilesOut": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EventFileOut"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "items"
+        ],
+        "title": "EventFilesOut"
       },
       "EventListOut": {
         "properties": {
@@ -51273,6 +52116,16 @@
             "description": "SSH password (write-only: stored encrypted, never returned, logged or audited).",
             "writeOnly": true
           },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "videos",
+              "events"
+            ],
+            "title": "Purpose",
+            "description": "`videos`: browse and import videos. `events`: the server drops one driving-event CSV a day (`YYYY-MM-DD.csv`) in the base folder — imported automatically every hour.",
+            "default": "videos"
+          },
           "password_key": {
             "anyOf": [
               {
@@ -51660,6 +52513,21 @@
               }
             ],
             "title": "Password Key"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "videos",
+                  "events"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose"
           },
           "password": {
             "anyOf": [

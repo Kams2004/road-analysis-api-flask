@@ -66,6 +66,9 @@ celery_app.conf.update(
         "app.workers.celery_app.hazard_lifecycle_tick":  {"queue": "processing"},
         # Live training dataset (app/workers/training_tasks.py)
         "app.workers.celery_app.sync_training_data":     {"queue": "processing"},
+        # Daily event files of "events" sources (app/workers/event_feed_tasks.py)
+        "app.workers.celery_app.sync_event_feeds":       {"queue": "processing"},
+        "app.workers.celery_app.sync_event_feed":        {"queue": "processing"},
     },
     beat_schedule={
         "sync-ymane-historical-events": {
@@ -102,6 +105,11 @@ celery_app.conf.update(
         "training-data-sync": {
             "task": "app.workers.celery_app.sync_training_data",
             "schedule": 120.0,
+        },
+        # Daily event files (dropped ~03:00 for the previous day): one listing per source an hour
+        "event-feeds-sync": {
+            "task": "app.workers.celery_app.sync_event_feeds",
+            "schedule": 3600.0,
         },
     },
 )
@@ -201,3 +209,4 @@ from app.workers import job_tasks  # noqa: E402,F401
 from app.workers import hazard_tasks  # noqa: E402,F401 — Module 6 hazard lifecycle
 from app.workers import import_tasks  # noqa: E402,F401 — cloud imports (input sources)
 from app.workers import training_tasks  # noqa: E402,F401 — live training dataset
+from app.workers import event_feed_tasks  # noqa: E402,F401 — daily event files (historical / behaviour)

@@ -55,6 +55,9 @@ class CloudConnection(Base):
     auto_import:            Mapped[bool]             = mapped_column(Boolean, default=False)
     auto_import_models:     Mapped[list | None]      = mapped_column(JSON, nullable=True)   # None = defaults
     auto_import_frame_skip: Mapped[int | None]       = mapped_column(Integer, nullable=True)
+    # What the source feeds: "videos" (browse / import → processing jobs) or "events" (daily
+    # driving-event CSV files → historical_events, app.modules.m08_historical.event_feed).
+    purpose:                Mapped[str]              = mapped_column(String, default="videos", server_default="videos")
     # Folders bookmarked in the browser ("Saved folders"): [{id, name, breadcrumbs, link}]
     saved_folders:          Mapped[list | None]      = mapped_column(JSON, nullable=True)
     # SFTP server profile (provider "sftp"). The password typed in the web console is stored

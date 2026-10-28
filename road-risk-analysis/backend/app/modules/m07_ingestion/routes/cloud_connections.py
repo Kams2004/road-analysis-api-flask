@@ -21,12 +21,12 @@ connection log (see the "SFTP servers" section below and docs/SFTP-SOURCE.md).
 """
 import asyncio
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import BaseModel, Field, SecretStr, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Principal, actor_name, api_error, get_principal
@@ -34,6 +34,8 @@ from app.api.openapi import err, errors, legacy
 from app.core.security import encrypt_secret
 from app.core.db.session import get_db
 from app.modules.m07_ingestion.models.cloud_connection import CloudConnection, ConnectionStatus
+from app.modules.m08_historical import event_feed
+from app.modules.m08_historical.models.event_file import EventFile
 from app.core import audit
 from app.modules.m07_ingestion import (
     cloud_import, cloud_providers, cloud_storage, job_service, sftp_core, sftp_source,
@@ -160,6 +162,21 @@ class SftpInfoOut(BaseModel):
                                                           "until *Connect* (`409 sftp_disconnected`).")
 
 
+Purpose = Literal["videos", "events"]
+
+
+class EventFeedOut(BaseModel):
+    """Daily event files of an `events` source (counts over every file seen)."""
+    files:          int = Field(0, description="Files found on the server.")
+    imported:       int = Field(0, description="Files imported.")
+    failed:         int = Field(0, description="Files whose last import failed.")
+    events:         int = Field(0, description="Events stored from this source.")
+    first_day:      Optional[date] = Field(None, description="Oldest day imported.")
+    last_day:       Optional[date] = Field(None, description="Latest day imported.")
+    last_file:      Optional[str] = Field(None, description="Latest file imported.", examples=["2026-10-27.csv"])
+    last_imported_at: Optional[datetime] = None
+
+
 class ConnectionOut(BaseModel):
     """A cloud storage connection (the OAuth tokens / SFTP password are never returned)."""
     id:                   str = Field(description="Connection id (UUID).")
@@ -184,6 +201,10 @@ class ConnectionOut(BaseModel):
     last_sync_files:      int = Field(0, description="Files imported by the last sync.")
     files_imported_total: int = Field(0, description="Files imported since creation.")
     sftp:                 Optional[SftpInfoOut] = Field(None, description="SFTP server profile (provider `sftp`).")
+    purpose:              Purpose = Field("videos", description="`videos` (browse / import → processing jobs) or "
+                                                                "`events` (daily driving-event CSV files → historical "
+                                                                "analysis and driver behaviour).")
+    event_feed:           Optional[EventFeedOut] = Field(None, description="Daily files (purpose `events`).")
     saved_folders:        list[SavedFolder] = Field(default_factory=list, description="Folders bookmarked in "
                                                                                      "the browser.")
 
@@ -227,7 +248,7 @@ def _sftp_out(c: CloudConnection, link: Optional[dict] = None) -> Optional[SftpI
         link_held=bool(link.get("held")))
 
 
-def _out(c: CloudConnection, link: Optional[dict] = None) -> ConnectionOut:
+def _out(c: CloudConnection, link: Optional[dict] = None, feed: Optional[EventFeedOut] = None) -> ConnectionOut:
     sftp = _sftp_out(c, link)
     return ConnectionOut(
         id=c.id, provider=c.provider, name=c.name,
@@ -241,8 +262,30 @@ def _out(c: CloudConnection, link: Optional[dict] = None) -> ConnectionOut:
         last_sync_files=c.last_sync_files or 0, files_imported_total=c.files_imported_total or 0,
         auto_import=bool(c.auto_import), auto_import_models=c.auto_import_models,
         auto_import_frame_skip=c.auto_import_frame_skip, sftp=sftp,
-        saved_folders=_saved(c.saved_folders),
+        saved_folders=_saved(c.saved_folders), purpose=c.purpose or "videos",
+        event_feed=(feed or EventFeedOut()) if c.purpose == event_feed.PURPOSE else None,
     )
+
+
+async def _feeds(db: AsyncSession, conns) -> dict[str, EventFeedOut]:
+    """Event-file counters of the `events` sources, one grouped query."""
+    ids = [c.id for c in conns if c.purpose == event_feed.PURPOSE]
+    if not ids:
+        return {}
+    F = EventFile
+    rows = (await db.execute(
+        select(F.connection_id, func.count(), func.count().filter(F.status == "imported"),
+               func.count().filter(F.status == "failed"), func.coalesce(func.sum(F.inserted), 0),
+               func.min(F.day).filter(F.status == "imported"), func.max(F.day).filter(F.status == "imported"),
+               func.max(F.imported_at))
+        .where(F.connection_id.in_(ids)).group_by(F.connection_id))).all()
+    out = {}
+    for cid, n, ok, bad, events, first, last, at in rows:
+        last_file = (await db.execute(select(F.name).where(F.connection_id == cid, F.status == "imported")
+                                      .order_by(F.day.desc()).limit(1))).scalar_one_or_none()
+        out[cid] = EventFeedOut(files=n, imported=ok, failed=bad, events=int(events or 0), first_day=first,
+                                last_day=last, last_file=last_file, last_imported_at=at)
+    return out
 
 
 def _saved(raw) -> list[SavedFolder]:
@@ -259,7 +302,8 @@ def _snapshot(c: CloudConnection) -> dict:
     snap = {"provider": c.provider, "name": c.name, "folder_id": c.folder_id, "folder_name": c.folder_name,
             "enabled": c.enabled, "status": c.status, "auto_import": bool(c.auto_import),
             "auto_import_models": c.auto_import_models, "auto_import_frame_skip": c.auto_import_frame_skip,
-            "saved_folders": [f.get("name") for f in (c.saved_folders or []) if isinstance(f, dict)]}
+            "saved_folders": [f.get("name") for f in (c.saved_folders or []) if isinstance(f, dict)],
+            "purpose": c.purpose or "videos"}
     if c.provider == "sftp":
         snap.update({"sftp_host": c.sftp_host, "sftp_port": c.sftp_port, "sftp_username": c.sftp_username,
                      "sftp_base_path": c.sftp_base_path, "sftp_password_key": c.sftp_password_key,
@@ -309,7 +353,8 @@ async def list_connections(db: AsyncSession = Depends(get_db)):
     link state)."""
     rows = (await db.execute(select(CloudConnection).order_by(CloudConnection.created_at.desc()))).scalars().all()
     links = await _links(rows)
-    return [_out(c, links.get(c.id)) for c in rows]
+    feeds = await _feeds(db, rows)
+    return [_out(c, links.get(c.id), feeds.get(c.id)) for c in rows]
 
 
 @router.post("/", response_model=ConnectionAuthorizeOut, status_code=201, summary="Create a cloud connection",
@@ -474,8 +519,12 @@ async def sync_now(connection_id: ConnectionId, request: Request, db: AsyncSessi
     if not conn.enabled:
         raise api_error(409, "connection_disabled", "Enable the connection before syncing.")
     from app.workers.job_tasks import sync_cloud_connection
+    from app.workers.event_feed_tasks import sync_event_feed
     try:
-        sync_cloud_connection.delay(conn.id, actor_name(principal, principal.label) or "system")
+        if conn.purpose == event_feed.PURPOSE:
+            sync_event_feed.delay(conn.id)
+        else:
+            sync_cloud_connection.delay(conn.id, actor_name(principal, principal.label) or "system")
     except Exception as exc:
         raise api_error(503, "queue_unavailable", f"Could not queue the sync: {exc}")
     audit.record(db, request, "cloud_connection.sync_requested", principal=principal,
@@ -688,6 +737,9 @@ async def create_import(connection_id: ConnectionId, body: ImportIn, request: Re
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     conn = await _usable(db, connection_id)
+    if conn.purpose == event_feed.PURPOSE:
+        raise api_error(409, "not_a_video_source", "This source provides event files, not videos: they are "
+                                                   "imported automatically every day.")
     provider = cloud_providers.get_provider(conn.provider)
 
     async def collect(token) -> list[cloud_providers.DriveEntry]:
@@ -783,6 +835,9 @@ class SftpIn(BaseModel):
                                                     "(empty = the user's home).",
                                         examples=["/home/Ymane-New/ft_violations"])
     password:     Optional[SecretStr] = PasswordField
+    purpose:      Purpose = Field("videos", description="`videos`: browse and import videos. `events`: the server "
+                                                        "drops one driving-event CSV a day (`YYYY-MM-DD.csv`) in "
+                                                        "the base folder — imported automatically every hour.")
     password_key: Optional[str] = Field(None, max_length=64,
                                         description="Legacy, instead of `password`: the API reads "
                                                     "`SFTP_PASSWORD_<KEY>` from the secrets file (letters, digits, _).",
@@ -804,6 +859,7 @@ class SftpPatch(BaseModel):
     username:     Optional[str] = Field(None, max_length=64)
     base_path:    Optional[str] = Field(None, max_length=1024, description="Empty string = the user's home.")
     password_key: Optional[str] = Field(None, max_length=64)
+    purpose:      Optional[Purpose] = None
     password:     Optional[SecretStr] = PasswordField
     clear_password: bool = Field(False, description="Forget the saved password (the secrets-file key, if any, "
                                                     "is used again).")
@@ -877,7 +933,7 @@ async def create_sftp(body: SftpIn, request: Request, db: AsyncSession = Depends
         created_by=actor_name(principal, principal.label), enabled=True, auto_import=False, last_sync_files=0,
         files_imported_total=0, sftp_host=body.host, sftp_port=body.port, sftp_username=body.username,
         sftp_base_path=body.base_path, sftp_password_key=None if password else body.password_key,
-        sftp_password_enc=encrypt_secret(password) if password else None)
+        sftp_password_enc=encrypt_secret(password) if password else None, purpose=body.purpose)
     del password
     db.add(conn)
     await db.flush()
@@ -913,6 +969,10 @@ async def update_sftp(connection_id: ConnectionId, body: SftpPatch, request: Req
         conn.sftp_base_path = data["base_path"] or None
     if data.get("password_key"):
         conn.sftp_password_key = data["password_key"]
+    if data.get("purpose") and data["purpose"] != conn.purpose:
+        conn.purpose = data["purpose"]
+        if conn.purpose == event_feed.PURPOSE:          # no watched folder / auto-import of videos
+            conn.auto_import = False
     if body.clear_password and not password:
         conn.sftp_password_enc = None
     if password:
@@ -1034,3 +1094,103 @@ async def clear_sftp_log(connection_id: ConnectionId, db: AsyncSession = Depends
     """Empty the connection log of the server (the link state is kept)."""
     conn = await _sftp(db, connection_id)
     await sftp_source.clear_log(conn.id)
+
+
+# ── Event files (purpose "events") ───────────────────────────────────────────
+
+class EventFileOut(BaseModel):
+    """One daily file of an `events` source."""
+    id:          str
+    name:        str = Field(examples=["2026-10-27.csv"])
+    day:         date = Field(description="Day the file covers.")
+    size:        Optional[int] = None
+    status:      Literal["pending", "imported", "failed"]
+    rows:        int = Field(0, description="Data lines read.")
+    inserted:    int = Field(0, description="New events.")
+    updated:     int = Field(0, description="Events already known, updated (corrected file).")
+    invalid:     int = Field(0, description="Lines skipped (see `problems`).")
+    problems:    Optional[list[dict]] = Field(None, description="First skipped lines: `{line, reason}`.")
+    by_type:     Optional[dict[str, int]] = Field(None, description="Events per type.",
+                                                  examples=[{"SPEEDING": 947, "HARD_ACCELERATION": 693}])
+    error:       Optional[str] = None
+    attempts:    int = 0
+    found_at:    datetime
+    imported_at: Optional[datetime] = None
+
+
+class EventFilesOut(BaseModel):
+    total: int
+    items: list[EventFileOut]
+
+
+E_NOT_EVENTS = err(409, "not_an_event_source", "This source is not an event source.")
+
+
+async def _events_source(db: AsyncSession, connection_id: str) -> CloudConnection:
+    conn = await _get(db, connection_id)
+    if conn.purpose != event_feed.PURPOSE:
+        raise api_error(409, "not_an_event_source", "This source is not an event source.")
+    return conn
+
+
+@router.get("/{connection_id}/event-files", response_model=EventFilesOut, summary="List the daily event files",
+            responses=errors(E_NOT_FOUND, E_NOT_EVENTS))
+async def list_event_files(connection_id: ConnectionId, db: AsyncSession = Depends(get_db),
+                           status: Optional[Literal["pending", "imported", "failed"]] = Query(None),
+                           skip: int = Query(0, ge=0), limit: int = Query(31, ge=1, le=200)):
+    """Files found on an `events` source, newest day first, with what each import did."""
+    await _events_source(db, connection_id)
+    conds = [EventFile.connection_id == connection_id]
+    if status:
+        conds.append(EventFile.status == status)
+    total = (await db.execute(select(func.count()).select_from(EventFile).where(*conds))).scalar_one()
+    rows = (await db.execute(select(EventFile).where(*conds).order_by(EventFile.day.desc(), EventFile.name)
+                             .offset(skip).limit(limit))).scalars().all()
+    return {"total": total, "items": [EventFileOut.model_validate(r, from_attributes=True) for r in rows]}
+
+
+@router.post("/{connection_id}/event-files/sync", response_model=SyncQueuedOut, status_code=202,
+             summary="Check an event source now",
+             responses=errors(E_NOT_FOUND, E_NOT_EVENTS, E_DISABLED,
+                              err(503, "queue_unavailable", "Could not queue the check: Connection refused")))
+async def check_event_files(connection_id: ConnectionId, request: Request, db: AsyncSession = Depends(get_db),
+                            principal: Principal = Depends(get_principal)):
+    """List the server folder now and import the new or changed files (the hourly check, run at
+    once). The outcome appears in `last_sync_*`, `event_feed` and `GET …/event-files`."""
+    conn = await _events_source(db, connection_id)
+    if not conn.enabled:
+        raise api_error(409, "connection_disabled", "Enable the connection first.")
+    from app.workers.event_feed_tasks import sync_event_feed
+    try:
+        sync_event_feed.delay(conn.id)
+    except Exception as exc:
+        raise api_error(503, "queue_unavailable", f"Could not queue the check: {exc}")
+    audit.record(db, request, "cloud_connection.events_check", principal=principal, object_type="cloud_connection",
+                 object_id=conn.id)
+    await db.commit()
+    return {"message": "Check queued."}
+
+
+@router.post("/{connection_id}/event-files/{file_id}/reimport", response_model=SyncQueuedOut, status_code=202,
+             summary="Import a daily event file again",
+             responses=errors(E_NOT_FOUND, E_NOT_EVENTS, E_DISABLED,
+                              err(503, "queue_unavailable", "Could not queue the import: Connection refused")))
+async def reimport_event_file(connection_id: ConnectionId, file_id: str, request: Request,
+                              db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """Fetch and import this file again even if it did not change (its events are updated, never
+    duplicated)."""
+    conn = await _events_source(db, connection_id)
+    if not conn.enabled:
+        raise api_error(409, "connection_disabled", "Enable the connection first.")
+    ef = await db.get(EventFile, file_id)
+    if ef is None or ef.connection_id != conn.id:
+        raise HTTPException(404, "Event file not found")
+    from app.workers.event_feed_tasks import sync_event_feed
+    try:
+        sync_event_feed.delay(conn.id, [ef.name])
+    except Exception as exc:
+        raise api_error(503, "queue_unavailable", f"Could not queue the import: {exc}")
+    audit.record(db, request, "cloud_connection.events_reimport", principal=principal, object_type="cloud_connection",
+                 object_id=conn.id, details={"file": ef.name})
+    await db.commit()
+    return {"message": "Import queued."}

@@ -93,6 +93,9 @@ def register_routes(app: FastAPI) -> None:
             ("POST", "/cloud-connections/{connection_id}/sftp/disconnect"):      ("jobs", VIEW),
             ("POST", "/cloud-connections/{connection_id}/sftp/forget-host-key"): ("jobs", EDIT),
             ("DELETE", "/cloud-connections/{connection_id}/sftp/log"):           ("jobs", EDIT),
+            # Event sources: checking now / re-importing a day changes stored data (edit).
+            ("POST", "/cloud-connections/{connection_id}/event-files/sync"):               ("jobs", EDIT),
+            ("POST", "/cloud-connections/{connection_id}/event-files/{file_id}/reimport"): ("jobs", EDIT),
             # POST /cloud-connections/{connection_id}/imports and POST /cloud-connections/sftp
             # keep the default jobs:add.
         },

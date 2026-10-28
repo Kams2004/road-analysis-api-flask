@@ -25,6 +25,8 @@ from app.modules.m03_maps.osrm.models import stable_segment_id
 
 logger = logging.getLogger(__name__)
 
+MAX_SNAP_M = 200.0     # farther than this from any known road → not matched
+
 
 async def match_event(
     event: HistoricalEvent,
@@ -53,6 +55,10 @@ async def match_event(
     lon, lat = wp["location"]
     road_name = wp.get("name") or None
     distance_to_road = wp.get("distance", 0.0) or 0.0
+    if distance_to_road > MAX_SNAP_M:
+        # Outside the road network OSRM knows (the server only has Cameroon): /nearest still
+        # answers with the closest road it has — possibly in another country. Keep the cell only.
+        return MapMatchedHistoricalEvent(event=event, grid_cell_id=cell)
 
     return MapMatchedHistoricalEvent(
         event=event,

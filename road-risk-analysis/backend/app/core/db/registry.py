@@ -23,6 +23,7 @@ def import_all_models() -> None:
         cloud_connection, cloud_import, job, job_event, job_track_point, stream_source,
     )
     from app.modules.m08_historical.models import historical_event  # noqa: F401
+    from app.modules.m08_historical.models import event_file  # noqa: F401
     from app.modules.m10_collision.models import vehicle, vehicle_road_state  # noqa: F401
     from app.modules.m11_community.models import signalement, signalement_vote  # noqa: F401
     from app.modules.m12_integration.models import api_client  # noqa: F401

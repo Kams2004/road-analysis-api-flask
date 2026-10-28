@@ -708,6 +708,11 @@ class SftpProvider(DriveProvider):
                 if e.kind == "folder":
                     self._walk(s, e.id, recursive, max_depth, max_files, found, seen, depth + 1)
 
+    def run_session(self, target: SftpTarget, fn: Callable[[SftpSession], Any]) -> Any:
+        """`fn(session)` on a fresh session (blocking; transient failures retried), closed after —
+        e.g. the daily event files (app.modules.m08_historical.event_feed)."""
+        return self._with_fresh(target, fn)
+
     def _with_fresh(self, target: SftpTarget, fn: Callable[[SftpSession], Any]) -> Any:
         log = self._log(target)
         attempt = 0

@@ -23,7 +23,8 @@ PW = "s3cr#t pass=word"
 def _conn(**kw):
     base = dict(id="c1", provider="sftp", name="srv", enabled=True, status="active", sftp_host="h", sftp_port=22,
                 sftp_username="u", sftp_base_path=None, sftp_password_key=None, sftp_password_enc=None,
-                sftp_host_key=None, sftp_host_key_fp=None, sftp_host_key_at=None, saved_folders=None)
+                sftp_host_key=None, sftp_host_key_fp=None, sftp_host_key_at=None, saved_folders=None,
+                purpose="videos")
     base.update(kw)
     return SimpleNamespace(**base)
 

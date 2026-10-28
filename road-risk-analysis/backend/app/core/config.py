@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     MINIO_BUCKET_DATASETS:      str  = "datasets"
     MINIO_BUCKET_SIGNALEMENTS:  str  = "signalements"
     MINIO_BUCKET_REPORTS:       str  = "reports"      # generated PDF reports (Module 14), never public
+    MINIO_BUCKET_EVENTS:        str  = "events-raw"   # daily event files as received (gzip), never public
     MINIO_SECURE:            bool = False
 
     # Models paths

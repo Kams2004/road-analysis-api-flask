@@ -30,6 +30,8 @@ class HistoricalEventRecord(Base):
         Index("ix_historical_events_type_occurred", "event_type", "occurred_at"),
         Index("ix_historical_events_driver", "driver_external_id"),
         Index("ix_historical_events_vehicle", "vehicle_external_id"),
+        Index("ix_historical_events_country_occurred", "country", "occurred_at"),
+        Index("ix_historical_events_file", "event_file_id"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -57,6 +59,14 @@ class HistoricalEventRecord(Base):
     road_name:          Mapped[str | None]  = mapped_column(String, nullable=True)
     road_segment_id:    Mapped[str | None]  = mapped_column(String, nullable=True)  # descriptive only, not stable long-term
     match_confidence:   Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Fleet context (daily event files — app/modules/m08_historical/sources/ymane_csv.py)
+    country:      Mapped[str | None]      = mapped_column(String, nullable=True)   # customer affiliate, e.g. CAMEROUN
+    transporter:  Mapped[str | None]      = mapped_column(String, nullable=True)
+    ended_at:     Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_s:   Mapped[float | None]    = mapped_column(Float, nullable=True)
+    distance_km:  Mapped[float | None]    = mapped_column(Float, nullable=True)
+    event_file_id: Mapped[str | None]     = mapped_column(String, nullable=True)   # event_files.id it came from
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)  # untouched source payload — forward-compatible, debuggable
 
