@@ -144,28 +144,37 @@ async def register(c, vid, plate=None):
 
 
 async def drive(c, vid, samples, sent, jitter_m=0.0, accuracy=5.0):
-    for lat, lon, v, hdg in samples:
-        if jitter_m:
-            lat, lon = offset((lat, lon), random.uniform(0, jitter_m), random.uniform(0, 360))
-        t0 = time.time()
+    """One ping per second on a fixed clock, like a phone: a slow network delays the arrival of a ping,
+    never the position / timestamp of the next one (each request runs in its own task)."""
+    async def post(lat, lon, v, hdg, t0):
         try:
             r = await c.post(f"{API}/vehicles/{vid}/ping", headers=H, json={
                 "latitude": lat, "longitude": lon, "speed_mps": v, "heading": hdg, "accuracy_m": accuracy, "ts": t0})
-            sent.append((t0, vid, r.status_code))
+            sent.append((t0, vid, r.status_code, time.time() - t0))
         except Exception as e:
-            sent.append((t0, vid, str(e)))
-        await asyncio.sleep(max(0.0, 1.0 - (time.time() - t0)))
+            sent.append((t0, vid, str(e), time.time() - t0))
+
+    start, tasks = time.time(), []
+    for i, (lat, lon, v, hdg) in enumerate(samples):
+        await asyncio.sleep(max(0.0, start + i - time.time()))
+        if jitter_m:
+            lat, lon = offset((lat, lon), random.uniform(0, jitter_m), random.uniform(0, 360))
+        tasks.append(asyncio.create_task(post(lat, lon, v, hdg, time.time())))
+    await asyncio.gather(*tasks)
 
 
 def report(name, rec, sent, involved, expect):
-    evs = [(t, v, a) for t, v, a in rec.events if v in involved and a.get("status") != "RESOLVED"]
+    # Only alerts BETWEEN the scenario's vehicles (a simulated car may also meet the parked phone).
+    evs = [(t, v, a) for t, v, a in rec.events if a.get("status") != "RESOLVED"
+           and a.get("vehicle_a_id") in involved and a.get("vehicle_b_id") in involved]
     top = max((a["level"] for _, _, a in evs), key=ORDER.index, default="NONE")
     best = max((a for _, _, a in evs), key=lambda a: ORDER.index(a["level"]), default=None)
-    t0 = min((t for t, *_ in sent), default=time.time())
+    t0 = min((x[0] for x in sent), default=time.time())
     first = min((t for t, _, a in evs if ORDER.index(a["level"]) >= 2), default=None)
     print(f"\n=== {name}\n  expected: {expect}")
-    print(f"  pings: {len(sent)} (errors {sum(1 for *_, s in sent if s != 204)})  alert messages: {len(evs)}  "
-          f"highest level: {top}")
+    lat = sorted(x[3] for x in sent)
+    print(f"  pings: {len(sent)} (errors {sum(1 for x in sent if x[2] != 204)})  alert messages: {len(evs)}  "
+          f"highest level: {top}  ping latency median {lat[len(lat) // 2]:.1f}s max {lat[-1]:.1f}s")
     if best:
         print(f"  physical={best.get('physical_level')} context_index={best.get('context_index')} "
               f"boost={best.get('context_level_boost')} encounter={best.get('encounter')} "
@@ -240,27 +249,53 @@ async def main():
             await head_on("F2 passing in opposite lanes 3.5 m apart (Douala)", cut(far, 500),
                           "at most MONITOR (normal passing)", lane=3.5)
         if "F3" in which:
+            # Two LEGAL approaches to one junction (OSRM routes ending there, so no wrong way on a one-way
+            # street), crossing at 60–120°, each 220 m long: both reach the junction at the same time.
             path, rt = await route(c, [(4.0480, 9.7050), (4.0535, 9.7120)])
             turns = [s for s in rt["legs"][0]["steps"] if s["maneuver"]["type"] in ("turn", "end of road")]
-            if turns:
-                x = (turns[0]["maneuver"]["location"][1], turns[0]["maneuver"]["location"][0])
-                k = min(range(len(path)), key=lambda i: hav(path[i], x))
-                in_a = cut(path[:k + 1], 220, from_end=True)
-                in_b = list(reversed(cut(path[k:], 220)))
+            x = (turns[0]["maneuver"]["location"][1], turns[0]["maneuver"]["location"][0])
+            k = min(range(len(path)), key=lambda i: hav(path[i], x))
+            in_a = cut(path[:k + 1], 220, from_end=True)
+            brg_a = bearing(in_a[-2], in_a[-1])
+            in_b = None
+            for b0 in range(0, 360, 30):
+                cand, _ = await route(c, [offset(x, 250, b0), x])
+                if sum(hav(p, q) for p, q in zip(cand, cand[1:])) < 230 or len(cand) < 2:
+                    continue
+                cand = cut(cand, 220, from_end=True)
+                diff = abs((bearing(cand[-2], cand[-1]) - brg_a + 180) % 360 - 180)
+                if 60 <= diff <= 120 and hav(cand[0], in_a[0]) > 100:
+                    in_b = cand
+                    break
+            if in_b is None:
+                print("\n=== F3 skipped: no legal crossing approach found")
+            else:
                 a, b = await one("xa"), await one("xb")
-                sa = walk(in_a + [offset(x, 60, bearing(in_a[-2], x))], lambda t, r: 12.0)
-                sb = walk(in_b + [offset(x, 60, bearing(in_b[-2], x))], lambda t, r: 12.0)
+                sa = walk(in_a + [offset(x, 60, brg_a)], lambda t, r: 12.0)
+                sb = walk(in_b + [offset(x, 60, bearing(in_b[-2], in_b[-1]))], lambda t, r: 12.0)
                 n = min(len(sa), len(sb))
                 await run("F3 crossing at an intersection, 12 m/s each", [(a, sa[:n], {}), (b, sb[:n], {})],
                           [a, b], "WARNING or more")
         if "F5" in which:
-            limbe, _ = await route(c, [(4.0120, 9.1480), (4.0175, 9.1300)])
-            await head_on("F5a head-on in a RISKY place (Limbé, exception history)", cut(limbe, 600),
-                          "context_index high, history reasons, level possibly raised one step", speed=10.0)
+            # The riskiest place of the fleet data (Limbé, cell 150m:2980:6770: 31 SPEEDING exceptions,
+            # place score 0.5), crossed at 14 m/s — above its 30 km/h local limit — so that the vehicle
+            # speeding factor adds to the place history and the index can reach the boost threshold.
+            hot = (4.016125, 9.145482)
+            limbe = None
+            for b0 in range(0, 180, 30):
+                cand, _ = await route(c, [offset(hot, 300, b0), offset(hot, 300, b0 + 180)])
+                mid = cand[min(range(len(cand)), key=lambda i: abs(
+                    sum(hav(p, q) for p, q in zip(cand[:i + 1], cand[1:i + 1])) - 300))]
+                if hav(mid, hot) < 60 and sum(hav(p, q) for p, q in zip(cand, cand[1:])) < 800:
+                    limbe = cand
+                    break
+            await head_on("F5a head-on in a RISKY place (Limbé, exception history)", limbe or cand,
+                          "context_index high, history reasons, level possibly raised one step", speed=14.0)
             quiet, _ = await route(c, [(3.8480, 11.5021), (3.8560, 11.5100)])
             await head_on("F5b same head-on in a QUIET place (Yaoundé)", cut(quiet, 600),
                           "context_index low, no history reasons", speed=10.0)
     print("\nSUMMARY", json.dumps(results))
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
