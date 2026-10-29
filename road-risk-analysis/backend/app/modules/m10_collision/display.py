@@ -2,13 +2,14 @@
 Where to DRAW a vehicle on the maps (its own app and the others'): the raw GPS fix cleaned of its
 uncertainty, kept in the live hash next to the raw fix (`display_*` fields).
 
-  stopped   no trusted motion and the new fix within the GPS uncertainty (max(HOLD_MIN_M,
+  stopped   no trusted motion (speed > MOVING_SPEED_MPS — slower GPS speeds are noise as often as
+            not) and the new fix within the GPS uncertainty (max(HOLD_MIN_M,
             accuracy)) of the last drawn point → the point does not move: a parked phone's GPS
             wanders by metres (indoors by 100 m, with fake speeds of several m/s), the vehicle
             does not. The speed (and heading) is only trusted with an accuracy ≤
             SPEED_TRUST_ACCURACY_M; with a poorer fix only a jump beyond the uncertainty counts as
             motion. A held point is replaced by a much more precise fix (≤ IMPROVE × its
-            accuracy), so a parked position gets better, never stuck on a bad first fix.
+            accuracy, i.e. twice as precise), so a parked position gets better, never stuck on a bad first fix.
   on a road the fix is projected onto the road it is map-matched to (previous pipeline run:
             road_state_service cache, ≤ ROAD_MAX_AGE_S old) when it lies within
             max(SNAP_MIN_M, 1.5 × accuracy) (≤ SNAP_MAX_M) of it and — when moving — the heading
@@ -33,10 +34,10 @@ from app.modules.m10_collision.collision import thresholds
 
 LatLon = Tuple[float, float]
 
-HOLD_SPEED_MPS = 0.8
+MOVING_SPEED_MPS = 3.0
 HOLD_MIN_M = 8.0
 SPEED_TRUST_ACCURACY_M = 25.0
-IMPROVE = 0.7
+IMPROVE = 0.5
 SNAP_MIN_M = 12.0
 SNAP_MAX_M = 35.0
 SNAP_MAX_HEADING_DIFF = 50.0
@@ -84,7 +85,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     acc = live.get("accuracy_m") or thresholds.current().assumed_accuracy_m
     speed = live.get("speed_mps")
     trusted = acc <= SPEED_TRUST_ACCURACY_M
-    moving = trusted and speed is not None and speed > HOLD_SPEED_MPS
+    moving = trusted and speed is not None and speed > MOVING_SPEED_MPS
     heading = live.get("heading") if moving else None
 
     out = {"latitude": raw[0], "longitude": raw[1], "snapped": False, "stationary": not moving,

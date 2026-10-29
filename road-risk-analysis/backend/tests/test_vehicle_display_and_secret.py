@@ -51,8 +51,9 @@ async def test_a_stopped_vehicle_does_not_move_with_gps_jitter(world, shown):
 async def test_indoor_gps_with_fake_speeds_does_not_move_the_point(world, shown):
     # Indoors: ±60–120 m fixes reporting 3–4 m/s that are pure noise (seen on a real phone).
     world.use(ew_road())
-    first = await shown("A", north(30), 0.3, 0.0, accuracy=60.0)
-    for brg, d, v, acc in ((40, 55.0, 3.2, 105.0), (250, 35.0, 4.4, 121.0), (130, 50.0, 4.0, 110.0)):
+    first = await shown("A", north(30), 0.3, 0.0, accuracy=25.0)
+    for brg, d, v, acc in ((40, 55.0, 3.2, 105.0), (250, 35.0, 4.4, 121.0), (130, 50.0, 4.0, 110.0),
+                           (300, 14.0, 2.0, 20.0), (90, 12.0, 1.5, 14.0)):        # slow fake speeds
         out = await shown("A", geo.destination(*north(30), brg, d), v, (brg + 90) % 360, accuracy=acc)
         assert (out["latitude"], out["longitude"]) == (first["latitude"], first["longitude"])
         assert not out["snapped"] and out["stationary"]
