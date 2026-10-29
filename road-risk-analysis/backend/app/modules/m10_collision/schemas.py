@@ -37,6 +37,11 @@ class VehicleOut(BaseModel):
         "Last ping time (UTC), updated at most every `VEHICLE_LAST_SEEN_THROTTLE_S` seconds; null if never pinged."))
     plate:        Optional[str] = Field(None, description="Licence plate, if registered.")
     driver_external_id: Optional[str] = Field(None, description="Fleet driver id, if registered.")
+    device_secret: Optional[str] = Field(None, description=(
+        "Secret of the device that owns the vehicle — answered ONCE, when the vehicle is created (or a "
+        "vehicle registered before device secrets is claimed). Send it as `X-Device-Secret` on every call "
+        "about this vehicle (ping, its alerts, trajectory, road state, conflicts, alert WebSocket); "
+        "with an API key, calls without it are refused (403 `device_secret_invalid`)."))
 
     class Config:
         from_attributes = True
@@ -112,6 +117,27 @@ class VehicleLiveOut(BaseModel):
     ts:           datetime = Field(..., description="Timestamp of the latest ping.")
     distance_m:   Optional[float] = Field(None, description=(  # populated for /nearby queries
         "Distance from the query position, metres (only in `/vehicles/nearby`)."))
+    display_latitude:  Optional[float] = Field(None, description=(
+        "Where to draw the vehicle, latitude: the GPS fix held still while it is stopped and snapped onto "
+        "its road while it drives on one (raw fix otherwise). Null before its first processed ping."))
+    display_longitude: Optional[float] = Field(None, description="Where to draw the vehicle, longitude.")
+    display_snapped:   bool = Field(False, description="`display_*` is on the vehicle's map-matched road.")
+
+
+class PingAck(BaseModel):
+    """Answer to a ping: where to draw the vehicle, its road, and its current alert level."""
+    display_latitude:  float = Field(..., description="Where to draw the vehicle (see `VehicleLiveOut`), latitude.")
+    display_longitude: float = Field(..., description="Where to draw the vehicle, longitude.")
+    snapped:    bool = Field(..., description="The display position is on the vehicle's road.")
+    stationary: bool = Field(..., description="The vehicle is stopped (its display position is held still).")
+    road:       Optional[List[List[float]]] = Field(None, description=(
+        "The map-matched road around the vehicle, ±250 m, as [[lat, lon], …] — the app snaps its own "
+        "GPS fixes onto it between pings. Null when the vehicle is not reliably on a mapped road."))
+    road_name:  Optional[str] = Field(None, description="Name of that road.")
+    alert_level: Optional[str] = Field(None, description=(
+        "Highest level of the vehicle's active collision alerts (`MONITOR` … `CRITICAL`), null without any — "
+        "lets an app running in the background notify the driver without its WebSocket."))
+    alerts: int = Field(0, description="Number of active alerts.")
 
 
 class VehicleNearbyIn(BaseModel):

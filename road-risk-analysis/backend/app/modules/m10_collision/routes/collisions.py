@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.session import get_db
-from app.modules.m10_collision import collision_service, road_state_service
+from app.modules.m10_collision import device_auth, collision_service, road_state_service
 from app.modules.m10_collision.collision.models import VehicleConflictReport
 from app.api.openapi import errors, legacy
 
@@ -34,7 +34,7 @@ async def list_active_conflicts():
 # on a cache miss.
 
 @router.get("/{vehicle_id}", response_model=VehicleConflictReport, summary="Get a vehicle's conflicts",
-            responses=_NO_TELEMETRY)
+            responses=_NO_TELEMETRY, dependencies=[Depends(device_auth.vehicle_owner)])
 async def get_vehicle_conflicts(
     vehicle_id: str = _VEHICLE_ID,
     db: AsyncSession = Depends(get_db),

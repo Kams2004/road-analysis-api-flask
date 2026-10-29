@@ -89,7 +89,8 @@ def _destination(lat, lon, bearing_deg, distance_m):
     return math.degrees(phi2), (math.degrees(lam2) + 540) % 360 - 180
 
 
-def _request(method: str, path: str, body: dict | None = None, base_url: str = API_BASE_URL) -> dict:
+def _request(method: str, path: str, body: dict | None = None, base_url: str = API_BASE_URL,
+             device_secret: str | None = None) -> dict:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         f"{base_url}{path}",
@@ -100,6 +101,8 @@ def _request(method: str, path: str, body: dict | None = None, base_url: str = A
             # Needed once the API runs with AUTH_ENFORCED=true — create one with
             # `python -m app.cli create-api-client --name simulator`.
             **({"X-API-Key": os.environ["API_KEY"]} if os.environ.get("API_KEY") else {}),
+            # The vehicle's own secret (answered by /vehicles/register) — like a phone.
+            **({"X-Device-Secret": device_secret} if device_secret else {}),
         },
     )
     with urllib.request.urlopen(req, timeout=8) as resp:
@@ -143,7 +146,10 @@ class FakeVehicle:
         self.dist_along = 0.0
 
     def register(self):
-        _request("POST", "/vehicles/register", {"vehicle_id": self.id, "vehicle_type": self.vehicle_type})
+        out = _request("POST", "/vehicles/register", {"vehicle_id": self.id, "vehicle_type": self.vehicle_type},
+                       device_secret=getattr(self, "secret", None))
+        if out.get("device_secret"):
+            self.secret = out["device_secret"]
 
     def _set_path(self, path):
         self.path = path
@@ -211,13 +217,14 @@ class FakeVehicle:
             "accuracy_m": 5.0,
         }
         try:
-            _request("POST", f"/vehicles/{self.id}/ping", body)
+            _request("POST", f"/vehicles/{self.id}/ping", body, device_secret=getattr(self, "secret", None))
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
             # Unknown id: the database was reset since we registered — register again.
+            self.secret = None
             self.register()
-            _request("POST", f"/vehicles/{self.id}/ping", body)
+            _request("POST", f"/vehicles/{self.id}/ping", body, device_secret=self.secret)
 
 
 def find_anchor(known_ids: set[str]):

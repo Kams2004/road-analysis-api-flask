@@ -170,6 +170,10 @@ def _parse_hash(vehicle_id: str, h: dict) -> Optional[dict]:
         "plate": h.get("plate") or None,
         "driver_external_id": h.get("driver_external_id") or None,
         "ts": h["ts"],
+        # display.py: where to draw it (held still when stopped, snapped onto its road)
+        "display_latitude": float(h["display_latitude"]) if h.get("display_latitude") else None,
+        "display_longitude": float(h["display_longitude"]) if h.get("display_longitude") else None,
+        "display_snapped": bool(h.get("display_snapped")),
     }
 
 

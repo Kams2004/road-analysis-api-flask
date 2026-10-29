@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,9 +39,10 @@ from app.api.deps import Principal, actor_name, get_principal, resolve_principal
 from app.core.config import settings
 from app.core.db.session import get_db
 from app.core.storage.redis_client import get_redis
-from app.modules.m10_collision import alert_service, road_state_service
+from app.modules.m10_collision import alert_service, device_auth, road_state_service
 from app.modules.m10_collision.alerts.models import ConflictAlert
 from app.modules.m10_collision.models.alert_feedback import AlertFeedback
+from app.modules.m10_collision.models.vehicle import Vehicle
 from app.modules.m10_collision.schemas import AlertFeedbackIn, AlertFeedbackOut
 from app.api.openapi import errors, legacy
 
@@ -76,7 +77,8 @@ async def list_active_alerts():
 # task fired from POST /vehicles/{id}/ping (see app/modules/m10_collision/routes/vehicles.py).
 # Never triggers computation or notification. ──────────────────────────────
 
-@router.get("/{vehicle_id}", response_model=List[ConflictAlert], summary="Get a vehicle's alerts")
+@router.get("/{vehicle_id}", response_model=List[ConflictAlert], summary="Get a vehicle's alerts",
+            dependencies=[Depends(device_auth.vehicle_owner)])
 async def get_vehicle_alerts(vehicle_id: str = _VEHICLE_ID):
     """
     **Mobile** — the vehicle's current alerts as computed by the last pipeline run triggered by its
@@ -116,6 +118,7 @@ async def refresh_vehicle_alerts(
              responses=errors(legacy(422, "Unknown conflict_id format")))
 async def alert_feedback(
     body: AlertFeedbackIn,
+    request: Request,
     conflict_id: str = Path(..., description="`conflict_id` of the alert.", examples=["CF-20261029-3fa2b9c1"]),
     db: AsyncSession = Depends(get_db),
     principal: Principal = Depends(get_principal),
@@ -128,6 +131,7 @@ async def alert_feedback(
     """
     if not CONFLICT_ID.match(conflict_id):
         raise HTTPException(422, "Unknown conflict_id format")
+    await device_auth.check_owner(db, principal, body.vehicle_id, request.headers)
     alert = next((a for a in await alert_service.get_alerts(body.vehicle_id) if a.conflict_id == conflict_id), None)
     if alert is not None and body.vehicle_id not in (alert.vehicle_a_id, alert.vehicle_b_id):
         alert = None
@@ -186,14 +190,24 @@ async def authorize_ws(headers) -> Principal:
     return principal
 
 
+async def device_owns(vehicle_id: str, headers) -> bool:
+    """The socket's X-Device-Secret is the vehicle's (device_auth); unknown vehicles pass."""
+    from app.core.db.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        vehicle = await db.get(Vehicle, vehicle_id)
+    return vehicle is None or device_auth.secret_matches(vehicle, headers.get(device_auth.HEADER))
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 async def stream_alerts(websocket, r, vehicle_id: Optional[str], keepalive_s: float = KEEPALIVE_S,
-                        subscribe_timeout_s: float = SUBSCRIBE_TIMEOUT_S, poll_s: float = _POLL_S) -> None:
+                        subscribe_timeout_s: float = SUBSCRIBE_TIMEOUT_S, poll_s: float = _POLL_S,
+                        may_subscribe=None) -> None:
     """Fan-out of one socket: snapshot on (re)subscription, every published transition of the
-    vehicle's channel, keepalive pings. Returns when the client disconnects."""
+    vehicle's channel, keepalive pings. Returns when the client disconnects. `may_subscribe(vid)`
+    (async → bool), when given, refuses a vehicle the caller does not own (error + close 4403)."""
     inbox: asyncio.Queue = asyncio.Queue()
     closed = object()
 
@@ -222,10 +236,18 @@ async def stream_alerts(websocket, r, vehicle_id: Optional[str], keepalive_s: fl
         await websocket.send_text(json.dumps(payload))
         last_sent = time.monotonic()
 
+    class Refused(Exception):
+        pass
+
     async def subscribe(vid: str):
         nonlocal current
         if current == vid:
             return
+        if may_subscribe is not None and not await may_subscribe(vid):
+            await send({"type": "error", "code": "device_secret_invalid",
+                        "message": "This vehicle belongs to another device (missing or wrong X-Device-Secret)."})
+            await websocket.close(code=4403)
+            raise Refused
         if current is not None:
             await pubsub.unsubscribe(alert_service.alert_channel(current))
         await pubsub.subscribe(alert_service.alert_channel(vid))
@@ -266,7 +288,7 @@ async def stream_alerts(websocket, r, vehicle_id: Optional[str], keepalive_s: fl
                     last_sent = time.monotonic()
             if time.monotonic() - last_sent >= keepalive_s:
                 await send({"type": "ping", "server_time": _now_iso()})
-    except (WebSocketDisconnect, RuntimeError):
+    except (WebSocketDisconnect, RuntimeError, Refused):
         return
     finally:
         task.cancel()
@@ -284,9 +306,14 @@ async def alerts_ws(websocket: WebSocket, vehicle_id: Optional[str] = None):
     """WS /alerts/ws — see the module docstring for the protocol."""
     await websocket.accept()
     try:
-        await authorize_ws(websocket.headers)
+        principal = await authorize_ws(websocket.headers)
     except WsAuthError as e:
         await websocket.send_text(json.dumps({"type": "error", "code": e.code, "message": e.message}))
         await websocket.close(code=e.close_code)
         return
-    await stream_alerts(websocket, get_redis(), vehicle_id, KEEPALIVE_S, SUBSCRIBE_TIMEOUT_S)
+    may_subscribe = None
+    if principal.kind == "client":                  # API key: only the vehicles this device owns
+        async def may_subscribe(vid: str) -> bool:
+            return await device_owns(vid, websocket.headers)
+    await stream_alerts(websocket, get_redis(), vehicle_id, KEEPALIVE_S, SUBSCRIBE_TIMEOUT_S,
+                        may_subscribe=may_subscribe)

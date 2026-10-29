@@ -117,7 +117,7 @@ class Recorder:
 
     async def listen(self, vid):
         url = f"{API.replace('https', 'wss').replace('http', 'ws')}/alerts/ws?vehicle_id={vid}"
-        async for ws in websockets.connect(url, additional_headers={"X-API-Key": KEY}):
+        async for ws in websockets.connect(url, additional_headers=vh(vid)):
             try:
                 async for raw in ws:
                     m = json.loads(raw)
@@ -129,18 +129,31 @@ class Recorder:
                 continue
 
     def start(self, vids):
-        self.tasks = [asyncio.create_task(self.listen(v)) for v in vids]
+        # Only our simulated vehicles: the phone's alerts belong to the phone (device secret) —
+        # its side of each conflict shows on its screen; ours come through the simulated vehicle.
+        self.tasks = [asyncio.create_task(self.listen(v)) for v in vids if v in SECRETS]
 
     def stop(self):
         for t in self.tasks:
             t.cancel()
 
 
+SECRETS = {}     # vehicle id → its device secret (POST /vehicles/register answers it once)
+
+
+def vh(vid):
+    """Headers of a call about vehicle `vid`: the API key and the vehicle's device secret."""
+    return {**H, **({"X-Device-Secret": SECRETS[vid]} if vid in SECRETS else {})}
+
+
 async def register(c, vid, plate=None):
     body = {"vehicle_id": vid, "vehicle_type": "private"}
     if plate:
         body["plate"] = plate
-    (await c.post(f"{API}/vehicles/register", headers=H, json=body)).raise_for_status()
+    r = await c.post(f"{API}/vehicles/register", headers=vh(vid), json=body)
+    r.raise_for_status()
+    if r.json().get("device_secret"):
+        SECRETS[vid] = r.json()["device_secret"]
 
 
 async def drive(c, vid, samples, sent, jitter_m=0.0, accuracy=5.0):
@@ -148,7 +161,7 @@ async def drive(c, vid, samples, sent, jitter_m=0.0, accuracy=5.0):
     never the position / timestamp of the next one (each request runs in its own task)."""
     async def post(lat, lon, v, hdg, t0):
         try:
-            r = await c.post(f"{API}/vehicles/{vid}/ping", headers=H, json={
+            r = await c.post(f"{API}/vehicles/{vid}/ping", headers=vh(vid), json={
                 "latitude": lat, "longitude": lon, "speed_mps": v, "heading": hdg, "accuracy_m": accuracy, "ts": t0})
             sent.append((t0, vid, r.status_code, time.time() - t0))
         except Exception as e:
@@ -173,7 +186,7 @@ def report(name, rec, sent, involved, expect):
     first = min((t for t, _, a in evs if ORDER.index(a["level"]) >= 2), default=None)
     print(f"\n=== {name}\n  expected: {expect}")
     lat = sorted(x[3] for x in sent)
-    print(f"  pings: {len(sent)} (errors {sum(1 for x in sent if x[2] != 204)})  alert messages: {len(evs)}  "
+    print(f"  pings: {len(sent)} (errors {sum(1 for x in sent if x[2] not in (200, 204))})  alert messages: {len(evs)}  "
           f"highest level: {top}  ping latency median {lat[len(lat) // 2]:.1f}s max {lat[-1]:.1f}s")
     if best:
         print(f"  physical={best.get('physical_level')} context_index={best.get('context_index')} "

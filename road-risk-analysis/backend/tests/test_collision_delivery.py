@@ -53,6 +53,10 @@ def ws_app(fake, monkeypatch):
             raise alert_routes.WsAuthError(4401, "invalid_api_key", "Unknown or revoked API key.")
         return Principal(kind="client", id="c1", label="VIASafe mobile")
     monkeypatch.setattr(alert_routes, "authorize_ws", allow)
+
+    async def owns(vid, headers):                 # device secrets: vehicle "intruder" is someone else's
+        return vid != "intruder"
+    monkeypatch.setattr(alert_routes, "device_owns", owns)
     app = FastAPI()
     app.include_router(alert_routes.ws_router, prefix="/alerts")
     return app
@@ -79,6 +83,13 @@ def test_ws_snapshot_then_pushed_transition(ws_app, fake):
             assert msg["alert"]["level"] == "CRITICAL" and msg["alert"]["transition"] == "ESCALATED"
             ws.send_text(json.dumps({"type": "ping"}))
             assert ws.receive_json()["type"] == "pong"
+
+
+def test_ws_refuses_a_vehicle_of_another_device(ws_app):
+    with TestClient(ws_app) as client:
+        with client.websocket_connect("/alerts/ws?vehicle_id=intruder", headers={"X-API-Key": "good"}) as ws:
+            msg = ws.receive_json()
+            assert msg["type"] == "error" and msg["code"] == "device_secret_invalid"
 
 
 def test_ws_subscribe_by_message_and_switch(ws_app, fake):
@@ -142,6 +153,7 @@ async def db():
     from app.modules.m08_historical.models import event_rollup as M
     from app.modules.m08_historical.models.historical_event import HistoricalEventRecord as E
     from app.modules.m10_collision.models.alert_feedback import AlertFeedback
+    from app.modules.m10_collision.models.vehicle import Vehicle
     from app.modules.m11_community.models.signalement import Signalement
     from app.modules.m13_admin.models.system_setting import SystemSetting
 
@@ -149,7 +161,7 @@ async def db():
     engine = create_async_engine(url)
     tables = [E.__table__, M.EventDaily.__table__, M.EventDailyHour.__table__, M.EventDailyCell.__table__,
               M.EventRollupState.__table__, Hazard.__table__, Signalement.__table__, SystemSetting.__table__,
-              AlertFeedback.__table__]
+              AlertFeedback.__table__, Vehicle.__table__]
     async with engine.begin() as conn:
         if url.startswith("postgresql"):        # throwaway database: start from an empty schema (enum types)
             await conn.exec_driver_sql("DROP SCHEMA public CASCADE")

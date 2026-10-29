@@ -1,16 +1,19 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import Principal, api_error, get_principal
 from app.core.db.session import get_db
 from app.modules.m10_collision.models.vehicle import Vehicle
 from app.modules.m10_collision.schemas import (
-    VehicleRegisterIn, VehicleOut, VehiclePingIn, VehicleNearbyIn, VehicleNearbyOut, VehicleLiveOut,
+    PingAck, VehicleRegisterIn, VehicleOut, VehiclePingIn, VehicleNearbyIn, VehicleNearbyOut, VehicleLiveOut,
 )
 from app.modules.m10_collision import (
-    alert_service, collision_service, road_state_service, trajectory_service, vehicle_service,
+    alert_service, collision_service, device_auth, display, road_state_service, trajectory_service,
+    vehicle_service,
 )
+from app.modules.m10_collision.alerts.models import AlertLifecycleStatus
 from app.modules.m12_integration.mobile_config import mobile_radius
 from app.api.openapi import errors, legacy
 
@@ -20,10 +23,13 @@ logger = logging.getLogger(__name__)
 
 # ── Mobile: register (or re-register) a vehicle identity ──────────────────────
 
-@router.post("/register", response_model=VehicleOut, summary="Register a vehicle for live telemetry")
+@router.post("/register", response_model=VehicleOut, summary="Register a vehicle for live telemetry",
+             responses=errors(403))
 async def register_vehicle(
     body: VehicleRegisterIn,
+    request: Request,
     db: AsyncSession = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ):
     """
     **Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its
@@ -31,15 +37,34 @@ async def register_vehicle(
     `vehicle_id` is created with that id, so a device survives a backend reset. Optional `plate` /
     `driver_external_id` link the vehicle to its fleet driving-behaviour score (a high score raises
     the collision context index — reason `RISKY_DRIVER`); null keeps the stored value, `""` clears it.
+
+    A new vehicle (or one registered before device secrets) gets a `device_secret`, answered only
+    this once: send it as `X-Device-Secret` from then on. With an API key, re-registering a vehicle
+    that has a secret needs it too (403 `device_secret_invalid`) — a device cannot take over another
+    device's vehicle.
     """
-    return await vehicle_service.register_vehicle(db, body.vehicle_id, body.vehicle_type,
-                                                  body.plate, body.driver_external_id)
+    existing = await db.get(Vehicle, body.vehicle_id) if body.vehicle_id else None
+    if existing is not None:
+        if principal.kind == "client" and not device_auth.secret_matches(existing, request.headers.get(device_auth.HEADER)):
+            raise api_error(403, "device_secret_invalid",
+                            "This vehicle belongs to another device (missing or wrong X-Device-Secret).")
+    vehicle = await vehicle_service.register_vehicle(db, body.vehicle_id, body.vehicle_type,
+                                                     body.plate, body.driver_external_id)
+    secret = None
+    if not vehicle.device_secret_hash:
+        secret, vehicle.device_secret_hash = device_auth.new_secret()
+        await db.commit()
+        await db.refresh(vehicle)
+    out = VehicleOut.model_validate(vehicle)
+    out.device_secret = secret
+    return out
 
 
 # ── Mobile: periodic telemetry ping (position, speed, heading) ────────────────
 
-@router.post("/{vehicle_id}/ping", status_code=204, summary="Send a telemetry ping",
-             responses=errors(legacy(404, "Unknown vehicle_id — call /vehicles/register first")))
+@router.post("/{vehicle_id}/ping", response_model=PingAck, summary="Send a telemetry ping",
+             dependencies=[Depends(device_auth.vehicle_owner)],
+             responses=errors(403, legacy(404, "Unknown vehicle_id — call /vehicles/register first")))
 async def ping_vehicle(
     body: VehiclePingIn,
     background_tasks: BackgroundTasks,
@@ -54,7 +79,10 @@ async def ping_vehicle(
     100 m/s instead of being rejected. The fix becomes the vehicle's live state (expires after `VEHICLE_LIVE_TTL_S`
     seconds without pings) and `last_seen` is updated (throttled).
 
-    After the 204 is sent, the collision pipeline runs in the background for this vehicle:
+    The answer says where to draw the vehicle (GPS fix held still while stopped, snapped onto its road
+    while driving on it — display.py), the road around it, and its current alert level.
+
+    After the answer is sent, the collision pipeline runs in the background for this vehicle:
     road-state map-matching → trajectory prediction → conflict assessment with nearby vehicles →
     alert engine (may notify on a NEW / ESCALATED alert, pushed at once on `WS /alerts/ws`). Failures
     there never affect the ping.
@@ -63,6 +91,7 @@ async def ping_vehicle(
     if vehicle is None:
         raise HTTPException(404, "Unknown vehicle_id — call /vehicles/register first")
 
+    previous = await vehicle_service.get_live(vehicle_id)
     await vehicle_service.record_ping(
         db, vehicle_id, vehicle.vehicle_type,
         body.latitude, body.longitude, body.speed_mps, body.heading, body.ts,
@@ -75,6 +104,19 @@ async def ping_vehicle(
     # warm without slowing down telemetry ingestion (Step 1's contract is
     # unchanged by this).
     background_tasks.add_task(_update_pipeline, vehicle_id, db)
+
+    shown = await display.update(vehicle_id, await vehicle_service.get_live(vehicle_id), previous)
+    alerts = [a for a in await alert_service.get_alerts(vehicle_id) if a.status != AlertLifecycleStatus.RESOLVED]
+    top = max(alerts, key=lambda a: _LEVEL_RANK.get(a.level.value, 0), default=None)
+    return PingAck(
+        display_latitude=shown["latitude"], display_longitude=shown["longitude"],
+        snapped=shown["snapped"], stationary=shown["stationary"],
+        road=display.round_road(shown["road"]), road_name=shown["road_name"],
+        alert_level=top.level.value if top and top.level.value != "SAFE" else None, alerts=len(alerts),
+    )
+
+
+_LEVEL_RANK = {"SAFE": 0, "MONITOR": 1, "WARNING": 2, "HIGH_WARNING": 3, "CRITICAL": 4}
 
 
 async def _update_pipeline(vehicle_id: str, db: AsyncSession) -> None:

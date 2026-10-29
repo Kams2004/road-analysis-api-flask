@@ -317,6 +317,8 @@ COLLISION_CONTEXT_STATEMENTS = [
     "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS plate VARCHAR",
     "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS driver_external_id VARCHAR",
     "CREATE INDEX IF NOT EXISTS ix_collision_feedback_updated_at ON collision_alert_feedback (updated_at)",
+    # Per-device secret of a vehicle (migrations/add_vehicle_device_secret.sql)
+    "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS device_secret_hash VARCHAR",
 ]
 _ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
 _CREATE_INDEX = re.compile(r"^\s*CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\s+(\w+)\b", re.I)

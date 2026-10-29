@@ -34,3 +34,6 @@ class Vehicle(Base):
     # the collision Context Risk Index (docs/COLLISION-PREVENTION.md).
     plate:              Mapped[str | None] = mapped_column(String, nullable=True)
     driver_external_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Hash of the owning device's secret (VehicleOut.device_secret, answered once): with an API key,
+    # calls about this vehicle need it in X-Device-Secret. Null for vehicles registered before it.
+    device_secret_hash: Mapped[str | None] = mapped_column(String, nullable=True)

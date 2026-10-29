@@ -48,7 +48,7 @@ def _staleness_key(vehicle_id: str) -> str:
     return f"road_state:ts_guard:{vehicle_id}"
 
 
-async def _load_cached(vehicle_id: str) -> Optional[RoadAwareVehicleState]:
+async def load_cached(vehicle_id: str) -> Optional[RoadAwareVehicleState]:
     r = get_redis()
     raw = await r.get(_cache_key(vehicle_id))
     if not raw:
@@ -124,7 +124,7 @@ async def compute_and_store(vehicle_id: str, db: AsyncSession, force: bool = Fal
         raise NoTelemetryError(f"vehicle {vehicle_id} has no live telemetry")
 
     telemetry = _telemetry_from_live(vehicle_id, live)
-    previous = None if force else await _load_cached(vehicle_id)
+    previous = None if force else await load_cached(vehicle_id)
 
     state = await map_matching.match_vehicle_to_road(telemetry, previous)
 
@@ -139,7 +139,7 @@ async def get_road_state(vehicle_id: str, db: AsyncSession, force: bool = False)
     by a background task on every ping — computing fresh only on a cache
     miss or when `force` bypasses the cache entirely."""
     if not force:
-        cached = await _load_cached(vehicle_id)
+        cached = await load_cached(vehicle_id)
         if cached is not None:
             return cached
     return await compute_and_store(vehicle_id, db, force=force)

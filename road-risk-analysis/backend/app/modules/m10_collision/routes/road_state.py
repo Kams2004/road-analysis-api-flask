@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db.session import get_db
-from app.modules.m10_collision import road_state_service
+from app.modules.m10_collision import device_auth, road_state_service
 from app.modules.m03_maps.osrm.models import RoadAwareVehicleState
 from app.api.openapi import errors, legacy
 
@@ -19,7 +19,7 @@ _NO_TELEMETRY = errors(legacy(404, "Vehicle 5d0c3b1e-8a5f-4b8e-9d2c-1f3e7a9b6c40
 # only on a cache miss. See app/modules/m10_collision/road_state_service.py for why.
 
 @router.get("/{vehicle_id}", response_model=RoadAwareVehicleState, summary="Get a vehicle's road context",
-            responses=_NO_TELEMETRY)
+            responses=_NO_TELEMETRY, dependencies=[Depends(device_auth.vehicle_owner)])
 async def get_vehicle_road_state(
     vehicle_id: str = _VEHICLE_ID,
     db: AsyncSession = Depends(get_db),
