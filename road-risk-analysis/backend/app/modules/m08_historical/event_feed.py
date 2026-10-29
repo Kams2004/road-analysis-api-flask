@@ -226,8 +226,12 @@ async def upsert(db: AsyncSession, events: list[dict], file_id: str) -> tuple[in
     import uuid
     inserted = updated = 0
     now = datetime.utcnow()
+    # One multi-row INSERT needs the same columns on every row: only the events new to the store are
+    # map-matched (_match), so a file overlapping one already imported mixes rows with and without
+    # matched_* — the others get NULL (never applied to existing rows: not in UPDATABLE).
+    keys = set().union(*(e.keys() for e in events)) if events else set()
     for i in range(0, len(events), UPSERT_CHUNK):
-        rows = [{**e, "id": str(uuid.uuid4()), "event_file_id": file_id, "imported_at": now}
+        rows = [{**dict.fromkeys(keys), **e, "id": str(uuid.uuid4()), "event_file_id": file_id, "imported_at": now}
                 for e in events[i:i + UPSERT_CHUNK]]
         flags = (await db.execute(upsert_statement(rows))).scalars().all()
         n = sum(1 for f in flags if f)

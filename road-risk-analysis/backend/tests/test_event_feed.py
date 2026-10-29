@@ -321,3 +321,21 @@ def test_a_day_is_complete_only_with_every_active_provider():
     days = ef.day_statuses(files, h["first_day"], h["due_until"], date(2026, 10, 20), date(2026, 10, 23))
     assert [d.status for d in days] == ["imported", "imported", "missing", "imported"]
     assert days[1].events == 10 and days[2].sources == {"besafe": "missing", "ymane": "imported"}
+
+
+async def test_a_file_overlapping_one_already_imported_is_upserted_in_one_batch():
+    # 2026-10-28_ymane.csv after 2026_10_28.csv: the known events are not map-matched again, the
+    # new ones are — one INSERT mixes rows with and without matched_* (was: "INSERT value for column
+    # historical_events.matched_latitude is explicitly rendered as a boundparameter").
+    from sqlalchemy.dialects import postgresql
+    base = {"source": "ymane", "event_type": "SPEEDING", "occurred_at": datetime(2026, 10, 28, 8),
+            "latitude": 4.05, "longitude": 9.7}
+    known = {**base, "source_event_id": "1"}
+    new = {**base, "source_event_id": "2", "matched_latitude": 4.0501, "matched_longitude": 9.7001,
+           "road_name": "Rue A", "road_segment_id": "s1", "match_confidence": 0.9}
+
+    class Db:
+        async def execute(self, stmt):
+            stmt.compile(dialect=postgresql.dialect())          # raised before the fix
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [False, True]))
+    assert await ef.upsert(Db(), [new, known], "file-1") == (1, 1)
