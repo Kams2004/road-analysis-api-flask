@@ -75,7 +75,7 @@ class VehicleConflict(BaseModel):
 
     # Encounter context (see detector.assess_conflict): why this pair is or
     # isn't a genuine conflict.
-    encounter: Optional[str] = Field(None, description="`head_on`, `crossing` or `same_direction`.")  # head_on | crossing | same_direction
+    encounter: Optional[str] = Field(None, description="`head_on`, `crossing`, `same_direction` or `stationary` (one vehicle stopped: its heading is ignored).")  # head_on | crossing | same_direction | stationary
     road_relation: Optional[str] = Field(None, description=(  # same_road | connected | unrelated | unknown
         "`same_road`, `connected`, `unrelated` or `unknown`."))
     lateral_separation_m: Optional[float] = Field(None, description=(  # lane separation estimated from raw GPS vs road centreline

@@ -208,6 +208,31 @@ async def test_fast_approach_on_a_stopped_queue_alerts(world):
     assert "stopped vehicle ahead" in alerts[0].reason
 
 
+@pytest.mark.parametrize("noisy_heading", [270.0, 160.0, 20.0])
+async def test_stopped_vehicle_with_noisy_heading_is_a_queue_not_a_head_on(world, noisy_heading):
+    # A parked phone reports any direction: approached gently, it must not read as "oncoming".
+    world.use(ew_road())
+    await world.ping("B", KAMBO, 0.3, noisy_heading, accuracy=15.0)    # stopped, GPS drift
+    await world.ping("A", east(-27), 4.0, 90.0, accuracy=5.0)          # rolling up at 14 km/h
+    assert await world.both("A", "B") == []
+
+
+async def test_fast_approach_on_a_stopped_vehicle_with_noisy_heading_alerts(world):
+    world.use(ew_road())
+    await world.ping("B", KAMBO, 0.3, 270.0, accuracy=15.0)
+    await world.ping("A", east(-25), 15.0, 90.0, accuracy=5.0)         # 54 km/h, 25 m behind
+    alerts = await world.both("A", "B")
+    assert [a.level for a in alerts] == [AlertLevel.HIGH_WARNING]
+    assert alerts[0].encounter == "stationary" and "stopped vehicle ahead" in alerts[0].reason
+
+
+async def test_vehicle_parked_beside_the_lane_does_not_alert(world):
+    world.use(ew_road())
+    await world.ping("B", north(6.0, KAMBO), 0.0, 180.0, accuracy=5.0)  # on the shoulder, 6 m from the lane
+    await world.ping("A", east(-30), 15.0, 90.0, accuracy=5.0)
+    assert await world.both("A", "B") == []
+
+
 async def test_parallel_road_does_not_alert(world):
     world.use(ew_road("Rue A"), ew_road("Rue B", offset_north_m=30.0))
     await world.ping("A", east(-30), 10.0, 90.0, accuracy=5.0)

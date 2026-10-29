@@ -39685,7 +39685,7 @@
               }
             ],
             "title": "Encounter",
-            "description": "`head_on`, `crossing` or `same_direction`."
+            "description": "`head_on`, `crossing`, `same_direction` or `stationary` (one vehicle stopped: its heading is ignored)."
           },
           "road_relation": {
             "anyOf": [
@@ -58858,7 +58858,7 @@
               }
             ],
             "title": "Encounter",
-            "description": "`head_on`, `crossing` or `same_direction`."
+            "description": "`head_on`, `crossing`, `same_direction` or `stationary` (one vehicle stopped: its heading is ignored)."
           },
           "road_relation": {
             "anyOf": [

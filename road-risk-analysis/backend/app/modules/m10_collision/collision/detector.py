@@ -462,8 +462,24 @@ def assess_conflict(
     stopped_a = speed_a <= cfg.stationary_speed_mps
     stopped_b = speed_b <= cfg.stationary_speed_mps
     required_decel = None
-    if stopped_a != stopped_b and encounter in ("same_direction", None):
-        required_decel = required_deceleration(speed_b if stopped_a else speed_a, d0, cfg.queue_safety_gap_m)
+    beside_path = False
+    if stopped_a != stopped_b:
+        # A stopped vehicle's heading is GPS noise (a parked phone reports any direction), so the
+        # encounter type (head-on / crossing) means nothing here: what matters is whether it stands
+        # IN the moving vehicle's path — within a lane of it, widened by the GPS uncertainty — and
+        # how hard the mover must brake to stop short of it. Beside the path (parked on the
+        # shoulder, other lane): nothing to warn about.
+        acc = [a if a is not None else cfg.assumed_accuracy_m
+               for a in (trajectory_a.gps_accuracy_m, trajectory_b.gps_accuracy_m)]
+        in_path_m = cfg.lateral_margin_m + min(acc) / 2
+        # Map matching snaps a car parked on the shoulder onto the centreline, so the raw-GPS lane
+        # separation decides when it is precise enough; otherwise the matched path gap.
+        offset = lateral if lateral is not None else gap
+        if offset is None or offset <= in_path_m:
+            required_decel = required_deceleration(speed_b if stopped_a else speed_a, d0, cfg.queue_safety_gap_m)
+        else:
+            beside_path = True
+        encounter = "stationary"
 
     reason = None
     clear_now = False
@@ -486,6 +502,10 @@ def assess_conflict(
     elif passing:
         risk, reason, clear_now = (
             ConflictRiskLevel.NONE, f"opposite-direction passing, lateral separation {lateral:.1f} m", True,
+        )
+    elif beside_path:
+        risk, reason, clear_now = (
+            ConflictRiskLevel.NONE, f"stopped vehicle beside the path ({offset:.0f} m from it)", True,
         )
     elif required_decel is not None:
         # Closing on a stopped vehicle: rated by the braking it takes, capped by physics.

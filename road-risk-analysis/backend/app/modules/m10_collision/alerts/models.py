@@ -96,7 +96,7 @@ class ConflictAlert(BaseModel):
         "Angle between the headings, degrees: 0 = same direction, ~90 = crossing, 180 = head-on."))
 
     road_type: Optional[str] = Field(None, description="Road class, best-effort (often null).")  # best-effort, often None — see Step 2
-    encounter: Optional[str] = Field(None, description="`head_on`, `crossing` or `same_direction`.")  # head_on | crossing | same_direction
+    encounter: Optional[str] = Field(None, description="`head_on`, `crossing`, `same_direction` or `stationary` (one vehicle stopped: its heading is ignored).")  # head_on | crossing | same_direction | stationary
     road_relation: Optional[str] = Field(None, description=(  # same_road | connected | unrelated | unknown
         "`same_road`, `connected`, `unrelated` or `unknown`."))
     same_current_segment: bool = Field(False, description="Both vehicles are on the same road segment now.")
