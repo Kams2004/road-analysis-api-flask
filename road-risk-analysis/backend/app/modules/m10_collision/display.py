@@ -2,15 +2,20 @@
 Where to DRAW a vehicle on the maps (its own app and the others'): the raw GPS fix cleaned of its
 uncertainty, kept in the live hash next to the raw fix (`display_*` fields).
 
-  stopped   speed ≤ HOLD_SPEED_MPS and the new fix within the GPS uncertainty
-            (max(HOLD_MIN_M, accuracy)) of the last drawn point → the point does not move: a
-            parked phone's GPS wanders by metres, the vehicle does not.
+  stopped   no trusted motion and the new fix within the GPS uncertainty (max(HOLD_MIN_M,
+            accuracy)) of the last drawn point → the point does not move: a parked phone's GPS
+            wanders by metres (indoors by 100 m, with fake speeds of several m/s), the vehicle
+            does not. The speed (and heading) is only trusted with an accuracy ≤
+            SPEED_TRUST_ACCURACY_M; with a poorer fix only a jump beyond the uncertainty counts as
+            motion. A held point is replaced by a much more precise fix (≤ IMPROVE × its
+            accuracy), so a parked position gets better, never stuck on a bad first fix.
   on a road the fix is projected onto the road it is map-matched to (previous pipeline run:
             road_state_service cache, ≤ ROAD_MAX_AGE_S old) when it lies within
             max(SNAP_MIN_M, 1.5 × accuracy) (≤ SNAP_MAX_M) of it and — when moving — the heading
             follows the road (≤ SNAP_MAX_HEADING_DIFF, either way on a two-way road).
   otherwise the raw fix (car park, yard, off the mapped roads, poor or no match): never forced
-            onto a road it is not on.
+            onto a road it is not on. No snapping either with an accuracy > SNAP_MAX_M: the fix
+            does not say which road.
 
 The ping answers the result with the road around the vehicle (`road`, ≤ ROAD_WINDOW_M each way)
 so the app snaps its own position at every GPS fix without waiting for the next ping.
@@ -30,6 +35,8 @@ LatLon = Tuple[float, float]
 
 HOLD_SPEED_MPS = 0.8
 HOLD_MIN_M = 8.0
+SPEED_TRUST_ACCURACY_M = 25.0
+IMPROVE = 0.7
 SNAP_MIN_M = 12.0
 SNAP_MAX_M = 35.0
 SNAP_MAX_HEADING_DIFF = 50.0
@@ -76,18 +83,23 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     raw = (live["latitude"], live["longitude"])
     acc = live.get("accuracy_m") or thresholds.current().assumed_accuracy_m
     speed = live.get("speed_mps")
-    heading = live.get("heading")
-    stopped = speed is not None and speed <= HOLD_SPEED_MPS
+    trusted = acc <= SPEED_TRUST_ACCURACY_M
+    moving = trusted and speed is not None and speed > HOLD_SPEED_MPS
+    heading = live.get("heading") if moving else None
 
-    out = {"latitude": raw[0], "longitude": raw[1], "snapped": False, "stationary": stopped,
-           "road": None, "road_name": None}
+    out = {"latitude": raw[0], "longitude": raw[1], "snapped": False, "stationary": not moving,
+           "road": None, "road_name": None, "accuracy": acc}
 
-    prev_pt = None
+    prev_pt, prev_acc = None, None
     if previous and previous.get("display_latitude") is not None:
         prev_pt = (previous["display_latitude"], previous["display_longitude"])
-    if stopped and prev_pt and geo.haversine_m(*raw, *prev_pt) <= max(HOLD_MIN_M, acc):
-        out.update(latitude=prev_pt[0], longitude=prev_pt[1], snapped=bool(previous.get("display_snapped")))
-    else:
+        prev_acc = previous.get("display_accuracy")
+    better = prev_acc is not None and acc <= IMPROVE * prev_acc
+    if (not moving and prev_pt and not better
+            and geo.haversine_m(*raw, *prev_pt) <= max(HOLD_MIN_M, acc)):
+        out.update(latitude=prev_pt[0], longitude=prev_pt[1], snapped=bool(previous.get("display_snapped")),
+                   accuracy=prev_acc or acc)
+    elif acc <= SNAP_MAX_M:
         state = await road_state_service.load_cached(vehicle_id)
         rc = state.road_context if state else None
         fresh = False
@@ -100,7 +112,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
             if hit:
                 p, d, along, road_brg = hit
                 limit = min(SNAP_MAX_M, max(SNAP_MIN_M, 1.5 * acc))
-                diff = 0.0 if heading is None or stopped else geo.heading_diff_deg(heading, road_brg)
+                diff = 0.0 if heading is None else geo.heading_diff_deg(heading, road_brg)
                 aligned = diff <= SNAP_MAX_HEADING_DIFF or diff >= 180 - SNAP_MAX_HEADING_DIFF
                 if d <= limit and aligned:
                     out.update(latitude=p[0], longitude=p[1], snapped=True)
@@ -110,7 +122,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     r = get_redis()
     await r.hset(_hash_key(vehicle_id), mapping={
         "display_latitude": out["latitude"], "display_longitude": out["longitude"],
-        "display_snapped": "1" if out["snapped"] else "",
+        "display_snapped": "1" if out["snapped"] else "", "display_accuracy": out["accuracy"],
     })
     return out
 
