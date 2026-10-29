@@ -303,6 +303,14 @@ async def match_vehicle_to_road(
     else:
         data = {"code": "NoHistory"}
 
+    if matched_point is not None and _classify_quality(
+            confidence, geo.haversine_m(telemetry.latitude, telemetry.longitude, *matched_point)) == MapMatchQuality.FAILED:
+        # A two-point trace of noisy fixes (zig-zag across the lane) often scores ~0 at /match even on
+        # a plain straight road: treat it like no match and snap to the nearest road (guarded below)
+        # instead of leaving the vehicle without road context for that ping.
+        matched_point = None
+        data = {"code": "LowConfidence"}
+
     if matched_point is None:
         # /match found nothing usable (isolated point, no road within radius,
         # or too little history) — fall back to a plain nearest-road snap so
@@ -326,6 +334,14 @@ async def match_vehicle_to_road(
             )
         wp = ndata["waypoints"][0]
         lon, lat = wp["location"]
+        if geo.haversine_m(telemetry.latitude, telemetry.longitude, lat, lon) > 2 * radiuses[-1]:
+            # The nearest road is farther than the GPS uncertainty allows: the vehicle is not on it.
+            return RoadAwareVehicleState(
+                vehicle_id=telemetry.vehicle_id, telemetry=telemetry, road_context=None,
+                match_quality=MapMatchQuality.FAILED,
+                match_error=f"nearest road beyond the GPS uncertainty (match={data.get('code')})",
+                osrm_latency_ms=total_latency_ms, computed_at=now,
+            )
         matched_point = (lat, lon)
         matched_name = wp.get("name") or None
         confidence = 0.2

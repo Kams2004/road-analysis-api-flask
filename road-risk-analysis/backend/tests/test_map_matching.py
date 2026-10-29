@@ -169,6 +169,32 @@ async def test_no_match_falls_back_to_nearest():
     assert len(client.nearest_calls) == 1
 
 
+async def test_low_confidence_trace_of_a_noisy_fix_falls_back_to_the_nearest_road():
+    # Two noisy fixes zig-zagging across the lane: /match answers but with ~0 confidence.
+    beside = geo.destination(*KAMBO, 0.0, 6.0)
+    route_resp, *_ = a_route_window(KAMBO, bearing=0.0)
+    client = FakeOSRMClient(
+        match_responses=[match_response(KAMBO, confidence=0.02)],
+        nearest_responses=[nearest_response(KAMBO, name="Route de Kambo")],
+        route_responses=[route_resp],
+    )
+    state = await match_vehicle_to_road(telemetry(lat=beside[0], lon=beside[1], accuracy_m=8.0),
+                                        previous=a_previous_state(), client=client)
+    assert state.match_quality == MapMatchQuality.DEGRADED and state.road_context is not None
+    assert len(client.nearest_calls) == 1
+
+
+async def test_nearest_road_beyond_the_gps_uncertainty_is_not_a_match():
+    yard = geo.destination(*KAMBO, 0.0, 60.0)          # 60 m from the road, ±8 m GPS
+    client = FakeOSRMClient(
+        match_responses=[match_response(KAMBO, code="NoMatch")],
+        nearest_responses=[nearest_response(KAMBO)],
+    )
+    state = await match_vehicle_to_road(telemetry(lat=yard[0], lon=yard[1], accuracy_m=8.0),
+                                        previous=a_previous_state(), client=client)
+    assert state.match_quality == MapMatchQuality.FAILED and state.road_context is None
+
+
 async def test_first_ping_with_no_history_uses_nearest_not_match():
     """A vehicle's very first ping has no previous point. /match needs at
     least two points, and duplicating the single point to satisfy that

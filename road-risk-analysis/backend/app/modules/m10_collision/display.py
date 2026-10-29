@@ -23,6 +23,7 @@ so the app snaps its own position at every GPS fix without waiting for the next 
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -78,6 +79,30 @@ def _window(coords: List[LatLon], along: float) -> List[LatLon]:
     return out
 
 
+def _last_road_key(vehicle_id: str) -> str:
+    return f"vehicle:display_road:{vehicle_id}"
+
+
+async def _current_road(vehicle_id: str) -> Optional[Tuple[List[LatLon], Optional[str]]]:
+    """The road the vehicle is matched to: the latest trusted match (≤ ROAD_MAX_AGE_S old), or the
+    last trusted one within that age when the latest match failed — one noisy ping must not make
+    the vehicle leave its road on the maps (the distance / heading checks still catch a real exit)."""
+    r = get_redis()
+    state = await road_state_service.load_cached(vehicle_id)
+    if state is not None and state.road_context is not None and state.match_quality.value in _TRUSTED:
+        age = (datetime.now(timezone.utc) - state.computed_at).total_seconds()
+        if age <= ROAD_MAX_AGE_S:
+            coords = _road_coords(state)
+            await r.set(_last_road_key(vehicle_id), json.dumps({"coords": coords, "name": state.road_context.road_name}),
+                        ex=int(ROAD_MAX_AGE_S))
+            return coords, state.road_context.road_name
+    raw = await r.get(_last_road_key(vehicle_id))
+    if raw:
+        last = json.loads(raw)
+        return [tuple(c) for c in last["coords"]], last.get("name")
+    return None
+
+
 async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     """Display position of the fix just recorded (`live`, vehicle_service._parse_hash shape) given the
     previous one (`previous`, same shape, None at the first ping); stored in the live hash."""
@@ -102,14 +127,9 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
         out.update(latitude=prev_pt[0], longitude=prev_pt[1], snapped=bool(previous.get("display_snapped")),
                    accuracy=prev_acc or acc)
     elif acc <= SNAP_MAX_M:
-        state = await road_state_service.load_cached(vehicle_id)
-        rc = state.road_context if state else None
-        fresh = False
-        if state is not None:
-            age = (datetime.now(timezone.utc) - state.computed_at).total_seconds()
-            fresh = age <= ROAD_MAX_AGE_S
-        if rc is not None and fresh and state.match_quality.value in _TRUSTED:
-            coords = _road_coords(state)
+        road = await _current_road(vehicle_id)
+        if road is not None:
+            coords, road_name = road
             hit = _project(raw, coords)
             if hit:
                 p, d, along, road_brg = hit
@@ -119,7 +139,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
                 if d <= limit and aligned:
                     out.update(latitude=p[0], longitude=p[1], snapped=True)
                 out["road"] = _window(coords, along)
-                out["road_name"] = rc.road_name
+                out["road_name"] = road_name
 
     r = get_redis()
     await r.hset(_hash_key(vehicle_id), mapping={
