@@ -56,8 +56,10 @@ Reliability of layer 1 (docs/COLLISION-PREVENTION.md):
                              stopped vehicles never alert; a vehicle closing
                              on a stopped one ahead (queue, red light) only
                              alerts when the deceleration it needs to stop
-                             queue_safety_gap_m short of it,
-                             v² / (2 · (gap − queue_safety_gap_m)), reaches
+                             queue_safety_gap_m short of it once the driver
+                             reacts (queue_reaction_time_s: alert delivery +
+                             reaction, travelled at full speed),
+                             v² / (2 · (gap − queue_safety_gap_m − v · t_react)), reaches
                              queue_comfort_decel_mps2 (WARNING),
                              queue_high_decel_mps2 (HIGH_WARNING),
                              queue_critical_decel_mps2 (CRITICAL)
@@ -140,6 +142,7 @@ class CollisionSettings(BaseModel):
     assumed_accuracy_m:        float = Field(10.0, gt=0, le=100)
     stationary_speed_mps:      float = Field(1.0, ge=0, le=5)
     queue_safety_gap_m:        float = Field(2.0, ge=0, le=20)
+    queue_reaction_time_s:     float = Field(1.5, ge=0, le=5)
     queue_comfort_decel_mps2:  float = Field(3.0, gt=0, le=15)
     queue_high_decel_mps2:     float = Field(4.5, gt=0, le=15)
     queue_critical_decel_mps2: float = Field(6.0, gt=0, le=15)

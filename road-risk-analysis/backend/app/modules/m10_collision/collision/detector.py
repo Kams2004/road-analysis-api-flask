@@ -271,12 +271,13 @@ def road_relation(
     return ("unrelated" if road_trusted else "unknown"), False
 
 
-def required_deceleration(speed_mps: float, gap_m: float, safety_gap_m: float) -> float:
+def required_deceleration(speed_mps: float, gap_m: float, safety_gap_m: float, reaction_s: float = 0.0) -> float:
     """Constant deceleration (m/s²) needed to stop from speed_mps `safety_gap_m` short of an
-    obstacle `gap_m` ahead: v² / (2·(gap − safety gap)); infinite when already inside it."""
+    obstacle `gap_m` ahead when braking starts `reaction_s` from now (alert delivery + driver
+    reaction, at full speed): v² / (2·(gap − safety gap − v·reaction)); infinite when it cannot."""
     if speed_mps <= 0:
         return 0.0
-    room = gap_m - safety_gap_m
+    room = gap_m - safety_gap_m - speed_mps * reaction_s
     if room <= 0.1:
         return float("inf")
     return speed_mps * speed_mps / (2.0 * room)
@@ -476,7 +477,8 @@ def assess_conflict(
         # separation decides when it is precise enough; otherwise the matched path gap.
         offset = lateral if lateral is not None else gap
         if offset is None or offset <= in_path_m:
-            required_decel = required_deceleration(speed_b if stopped_a else speed_a, d0, cfg.queue_safety_gap_m)
+            required_decel = required_deceleration(speed_b if stopped_a else speed_a, d0, cfg.queue_safety_gap_m,
+                                                   cfg.queue_reaction_time_s)
         else:
             beside_path = True
         encounter = "stationary"

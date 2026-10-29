@@ -89,7 +89,7 @@ These limits are scaled by `scenario_multipliers` (head-on / crossing / same dir
 
 | Rule | Why | Settings |
 |------|-----|----------|
-| **Stopped vehicle ahead** (one vehicle ≤ `stationary_speed_mps`, same direction). The level comes from the deceleration the follower needs to stop `queue_safety_gap_m` short of it: **a = v² / (2·(gap − safety gap))**. It is capped by the distance/time level. | A queue at a red light was CRITICAL: the CPA with a stopped car is always ~0 m. | `queue_comfort_decel_mps2` 3.0 (below: no alert; above: WARNING), `queue_high_decel_mps2` 4.5 (HIGH_WARNING), `queue_critical_decel_mps2` 6.0 (CRITICAL), `queue_safety_gap_m` 2 |
+| **Stopped vehicle in the path** (one vehicle ≤ `stationary_speed_mps` — or held still by the display layer: no trusted motion, inside its GPS uncertainty — its own heading ignored as GPS noise; encounter `stationary`). The level comes from the deceleration the mover needs to stop `queue_safety_gap_m` short of it once the alert is delivered and the driver reacts (`queue_reaction_time_s`, at full speed): **a = v² / (2·(gap − safety gap − v·t_react))**. A stopped vehicle beside the path (another lane, the shoulder) gives no alert. It is capped by the distance/time level. | A queue at a red light was CRITICAL: the CPA with a stopped car is always ~0 m. A parked phone's GPS heading made a gentle approach "head-on". Without the reaction time, 54 km/h towards a stopped car warned only ~45 m before it. | `queue_comfort_decel_mps2` 3.0 (below: no alert; above: WARNING), `queue_high_decel_mps2` 4.5 (HIGH_WARNING), `queue_critical_decel_mps2` 6.0 (CRITICAL), `queue_safety_gap_m` 2, `queue_reaction_time_s` 1.5 |
 | **Two stopped vehicles** never conflict. | Parked or queued cars with jittering GPS. | `stationary_speed_mps` 1.0 |
 | **Same road is geometric.** It needs predicted paths within `road_link_margin_m`, headings within `heading_tolerance_deg` of 0° or 180°, **and** a supporting signal: a shared matched segment, or the same road name (then paths may be up to `same_road_name_margin_m` apart). A name alone no longer counts. | Two streets with one name, or service roads. | `road_link_margin_m` 8, `heading_tolerance_deg` 30, `same_road_name_margin_m` 15 |
 | **Divided carriageway**: opposite headings on connected paths ≥ `divided_min_separation_m` apart → passing, no alert. | Dual carriageways (N3 …). | `divided_min_separation_m` 5 |
@@ -323,6 +323,7 @@ New keys (all validated; the earlier keys are unchanged):
 | `stationary_speed_mps` | 1.0 | 0–5 |
 | `queue_safety_gap_m` | 2 | 0–20 |
 | `queue_comfort_decel_mps2` / `queue_high_decel_mps2` / `queue_critical_decel_mps2` | 3 / 4.5 / 6 | increasing, ≤ 15 |
+| `queue_reaction_time_s` | 1.5 | 0 – 5 |
 | `heading_tolerance_deg` | 30 | 5–60 |
 | `same_road_name_margin_m` | 15 | 0–100 |
 | `divided_min_separation_m` | 5 | 1–100 |

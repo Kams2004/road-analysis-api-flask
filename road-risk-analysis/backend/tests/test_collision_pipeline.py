@@ -202,10 +202,21 @@ async def test_queue_at_a_red_light_does_not_alert(world):
 async def test_fast_approach_on_a_stopped_queue_alerts(world):
     world.use(ew_road())
     await world.ping("B", KAMBO, 0.0, 90.0, accuracy=5.0)
-    await world.ping("A", east(-25), 15.0, 90.0, accuracy=5.0)          # 54 km/h, 25 m behind: 4.9 m/s² needed
-    alerts = await world.both("A", "B")
-    assert [a.level for a in alerts] == [AlertLevel.HIGH_WARNING]
+    await world.ping("A", east(-25), 15.0, 90.0, accuracy=5.0)          # 54 km/h, 25 m behind: cannot stop
+    alerts = await world.both("A", "B")                                 # once the driver has reacted
+    assert [a.level for a in alerts] == [AlertLevel.CRITICAL]
     assert "stopped vehicle ahead" in alerts[0].reason
+
+
+@pytest.mark.parametrize("behind_m, level", [(80.0, None), (60.0, AlertLevel.WARNING), (45.0, AlertLevel.HIGH_WARNING)])
+async def test_a_stopped_vehicle_is_announced_early_enough_to_brake(world, behind_m, level):
+    # 54 km/h towards a stopped car: 1.5 s of delivery + reaction at full speed (22 m) come first,
+    # then comfortable braking — the first warning comes ~60 m before it, not at 25 m.
+    world.use(ew_road())
+    await world.ping("B", KAMBO, 0.0, 90.0, accuracy=5.0)
+    await world.ping("A", east(-behind_m), 15.0, 90.0, accuracy=5.0)
+    alerts = await world.both("A", "B")
+    assert [a.level for a in alerts] == ([level] if level else [])
 
 
 @pytest.mark.parametrize("noisy_heading", [270.0, 160.0, 20.0])
@@ -222,7 +233,7 @@ async def test_fast_approach_on_a_stopped_vehicle_with_noisy_heading_alerts(worl
     await world.ping("B", KAMBO, 0.3, 270.0, accuracy=15.0)
     await world.ping("A", east(-25), 15.0, 90.0, accuracy=5.0)         # 54 km/h, 25 m behind
     alerts = await world.both("A", "B")
-    assert [a.level for a in alerts] == [AlertLevel.HIGH_WARNING]
+    assert [a.level for a in alerts] == [AlertLevel.CRITICAL]
     assert alerts[0].encounter == "stationary" and "stopped vehicle ahead" in alerts[0].reason
 
 
