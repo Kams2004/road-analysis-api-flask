@@ -118,6 +118,11 @@ class ConnectionPatch(BaseModel):
                                                                             "raises an alert (default 10).")
     event_alert_emails: Optional[list[str]] = Field(None, max_length=10, description="Event sources: addresses also "
                                                                                      "warned by e-mail (`[]` = none).")
+    event_process_hour: Optional[int] = Field(None, ge=0, le=23, description="Event sources: hour (UTC) of the day "
+                                                                              "after D from which the day D files are "
+                                                                              "processed (default 4). Until then they "
+                                                                              "are scheduled; `…/event-files/process` "
+                                                                              "runs one at once.")
 
     @field_validator("event_alert_emails")
     @classmethod
@@ -201,6 +206,11 @@ class EventFeedOut(BaseModel):
     failed_days:    list[date] = Field(default_factory=list, description="Days whose file could not be imported.")
     alert_hour:     int = Field(10, description="Hour (UTC) after which a missing file raises an alert.")
     alert_emails:   list[str] = Field(default_factory=list, description="Also warned by e-mail.")
+    process_hour:   int = Field(4, description="Hour (UTC) of D+1 from which the day D files are processed.")
+    sources:        list[str] = Field(default_factory=list, description="Providers seen in the file names "
+                                                                       "(`2026-10-28_besafe.csv` → `besafe`).")
+    missing_sources: dict[str, list[str]] = Field(default_factory=dict, description=(
+        "Due days with a provider's file missing: `{\"2026-10-28\": [\"besafe\"]}`."))
 
 
 class ConnectionOut(BaseModel):
@@ -312,16 +322,25 @@ async def _feeds(db: AsyncSession, conns) -> dict[str, EventFeedOut]:
         last_file = (await db.execute(select(F.name).where(F.connection_id == cid, F.status == "imported")
                                       .order_by(F.day.desc()).limit(1))).scalar_one_or_none()
         c = by_id[cid]
-        h = event_feed.health(await event_feed.file_rows(db, cid), now, c.event_alert_hour)
+        files = await event_feed.file_rows(db, cid)
+        h = event_feed.health(files, now, c.event_alert_hour)
         out[cid] = EventFeedOut(files=n, imported=ok, failed=bad, events=int(events or 0), first_day=first,
                                 last_day=last, last_file=last_file, last_imported_at=at, due_until=h["due_until"],
                                 complete_until=h["complete_until"], missing=h["missing"], failed_days=h["failed"],
-                                alert_hour=_alert_hour(c), alert_emails=c.event_alert_emails or [])
+                                alert_hour=_alert_hour(c), alert_emails=c.event_alert_emails or [],
+                                process_hour=_process_hour(c),
+                                sources=sorted({event_feed._source(f) for f in files}),
+                                missing_sources=h["missing_sources"])
     for cid in ids:
         if cid not in out:
             c = by_id[cid]
-            out[cid] = EventFeedOut(alert_hour=_alert_hour(c), alert_emails=c.event_alert_emails or [])
+            out[cid] = EventFeedOut(alert_hour=_alert_hour(c), alert_emails=c.event_alert_emails or [],
+                                    process_hour=_process_hour(c))
     return out
+
+
+def _process_hour(c) -> int:
+    return event_feed.DEFAULT_PROCESS_HOUR if c.event_process_hour is None else c.event_process_hour
 
 
 def _alert_hour(c) -> int:
@@ -344,7 +363,8 @@ def _snapshot(c: CloudConnection) -> dict:
             "auto_import_models": c.auto_import_models, "auto_import_frame_skip": c.auto_import_frame_skip,
             "saved_folders": [f.get("name") for f in (c.saved_folders or []) if isinstance(f, dict)],
             "purpose": c.purpose or "videos", "event_alert_hour": getattr(c, "event_alert_hour", None),
-            "event_alert_emails": getattr(c, "event_alert_emails", None)}
+            "event_alert_emails": getattr(c, "event_alert_emails", None),
+            "event_process_hour": getattr(c, "event_process_hour", None)}
     if c.provider == "sftp":
         snap.update({"sftp_host": c.sftp_host, "sftp_port": c.sftp_port, "sftp_username": c.sftp_username,
                      "sftp_base_path": c.sftp_base_path, "sftp_password_key": c.sftp_password_key,
@@ -502,6 +522,8 @@ async def update_connection(connection_id: ConnectionId, body: ConnectionPatch, 
         conn.auto_import_frame_skip = data["auto_import_frame_skip"]
     if "event_alert_hour" in data:
         conn.event_alert_hour = data["event_alert_hour"]
+    if "event_process_hour" in data:
+        conn.event_process_hour = data["event_process_hour"]
     if body.event_alert_emails is not None:
         conn.event_alert_emails = body.event_alert_emails or None
     if body.saved_folders is not None:
@@ -1146,8 +1168,9 @@ async def clear_sftp_log(connection_id: ConnectionId, db: AsyncSession = Depends
 class EventFileOut(BaseModel):
     """One daily file of an `events` source."""
     id:          str
-    name:        str = Field(examples=["2026-10-27.csv"])
+    name:        str = Field(examples=["2026-10-27_ymane.csv"])
     day:         date = Field(description="Day the file covers.")
+    source:      Optional[str] = Field(None, description="Provider, from the name (`…_besafe.csv` → `besafe`).")
     size:        Optional[int] = None
     status:      Literal["pending", "imported", "failed"]
     rows:        int = Field(0, description="Data lines read.")
@@ -1191,7 +1214,107 @@ async def list_event_files(connection_id: ConnectionId, db: AsyncSession = Depen
     total = (await db.execute(select(func.count()).select_from(EventFile).where(*conds))).scalar_one()
     rows = (await db.execute(select(EventFile).where(*conds).order_by(EventFile.day.desc(), EventFile.name)
                              .offset(skip).limit(limit))).scalars().all()
-    return {"total": total, "items": [EventFileOut.model_validate(r, from_attributes=True) for r in rows]}
+    items = []
+    for r in rows:
+        o = EventFileOut.model_validate(r, from_attributes=True)
+        o.source = r.source or event_feed.source_of(r.name)
+        items.append(o)
+    return {"total": total, "items": items}
+
+
+class RemoteEventFileOut(BaseModel):
+    """A file in the folder of an `events` source, as the server lists it now."""
+    name:        str = Field(examples=["2026-10-28_besafe.csv"])
+    day:         date
+    source:      str = Field(description="Provider, from the name.")
+    size:        Optional[int] = None
+    modified_at: Optional[datetime] = Field(None, description="Modification time on the server (UTC).")
+    state:       Literal["imported", "scheduled", "queued", "failed", "changed"] = Field(description=(
+        "`imported` (and unchanged since), `scheduled` (its processing time has not come: `due_at`), `queued` "
+        "(due, imported at the next hourly check), `failed` (see `error`), `changed` (imported, then modified on "
+        "the server: imported again at the next check)."))
+    due_at:      datetime = Field(description="When it is processed: D+1 at the source's processing hour (UTC).")
+    file_id:     Optional[str] = Field(None, description="Event file id once seen by a check.")
+    events:      int = Field(0, description="Events imported from it (new + updated).")
+    imported_at: Optional[datetime] = None
+    error:       Optional[str] = None
+
+
+class RemoteEventFilesOut(BaseModel):
+    listed_at: datetime
+    process_hour: int
+    items: list[RemoteEventFileOut]
+
+
+@router.get("/{connection_id}/event-files/remote", response_model=RemoteEventFilesOut,
+            summary="List the files on the server of an event source",
+            responses=errors(E_NOT_FOUND, E_NOT_EVENTS, E_DISABLED,
+                             err(502, "sftp_error", "Could not list the server folder: …")))
+async def list_remote_event_files(connection_id: ConnectionId, db: AsyncSession = Depends(get_db)):
+    """Lists the source folder on the SFTP server now (one listing) — every daily file with what
+    happened to it: imported, scheduled for its processing time, queued for the next check, failed
+    or changed. `POST …/event-files/process` imports scheduled / queued / failed ones at once."""
+    conn = await _events_source(db, connection_id)
+    if not conn.enabled:
+        raise api_error(409, "connection_disabled", "Enable the connection first.")
+    from app.modules.m07_ingestion import cloud_providers, sftp_source
+    from app.modules.m07_ingestion.cloud_storage import CloudError
+    try:
+        target = sftp_source.SftpTarget.from_connection(conn, source="web")
+        remote = await asyncio.to_thread(cloud_providers.get_provider("sftp").run_session, target,
+                                         event_feed.list_files)
+    except CloudError as exc:
+        raise api_error(502, "sftp_error", f"Could not list the server folder: {exc}")
+    known = {f.name: f for f in (await db.execute(
+        select(EventFile).where(EventFile.connection_id == conn.id))).scalars().all()}
+    now = datetime.utcnow()
+    items = []
+    for f in sorted((f for f in remote if f.day), key=lambda f: (f.day, f.name), reverse=True):
+        k = known.get(f.name)
+        due = event_feed.due_at(f.day, conn.event_process_hour)
+        if k is not None and k.status == "imported":
+            state = "imported" if (k.size, k.mtime) == (f.size, f.mtime) else "changed"
+        elif k is not None and k.status == "failed":
+            state = "failed"
+        else:
+            state = "scheduled" if now < due else "queued"
+        items.append(RemoteEventFileOut(
+            name=f.name, day=f.day, source=f.source, size=f.size, modified_at=f.mtime, state=state, due_at=due,
+            file_id=k.id if k else None, events=((k.inserted or 0) + (k.updated or 0)) if k and k.status == "imported" else 0,
+            imported_at=k.imported_at if k else None, error=k.error if k and k.status == "failed" else None))
+    return RemoteEventFilesOut(listed_at=now, process_hour=_process_hour(conn), items=items)
+
+
+class ProcessEventFilesIn(BaseModel):
+    names: list[str] = Field(min_length=1, max_length=31, description="File names, as listed by "
+                                                                      "`…/event-files/remote`.",
+                             examples=[["2026-10-28_besafe.csv"]])
+
+
+@router.post("/{connection_id}/event-files/process", response_model=SyncQueuedOut, status_code=202,
+             summary="Process event files now",
+             responses=errors(E_NOT_FOUND, E_NOT_EVENTS, E_DISABLED,
+                              err(422, "invalid_file_name", "Not a daily event file name: …"),
+                              err(503, "queue_unavailable", "Could not queue the import: Connection refused")))
+async def process_event_files(connection_id: ConnectionId, body: ProcessEventFilesIn, request: Request,
+                              db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """Fetch and import these files now — before their processing time, or again (their events
+    are updated, never duplicated)."""
+    conn = await _events_source(db, connection_id)
+    if not conn.enabled:
+        raise api_error(409, "connection_disabled", "Enable the connection first.")
+    bad = [n for n in body.names if not event_feed.FILE_RE.match(n)]
+    if bad:
+        raise api_error(422, "invalid_file_name", f"Not a daily event file name: {', '.join(bad)[:200]}")
+    from app.workers.event_feed_tasks import sync_event_feed
+    try:
+        sync_event_feed.delay(conn.id, list(dict.fromkeys(body.names)))
+    except Exception as exc:
+        raise api_error(503, "queue_unavailable", f"Could not queue the import: {exc}")
+    audit.record(db, request, "cloud_connection.events_process", principal=principal, object_type="cloud_connection",
+                 object_id=conn.id, details={"files": body.names})
+    await db.commit()
+    return {"message": "Import queued."}
 
 
 @router.post("/{connection_id}/event-files/sync", response_model=SyncQueuedOut, status_code=202,
@@ -1251,6 +1374,9 @@ class EventDayOut(BaseModel):
     file: Optional[str] = None
     error: Optional[str] = None
     file_id: Optional[str] = Field(None, description="Event file id (`…/event-files/{file_id}/reimport`).")
+    sources: Optional[dict[str, str]] = Field(None, description=(
+        "Each provider expected that day → its file's status (`imported`, `failed`, `pending`, `missing`, `waiting`)."))
+    missing_sources: Optional[list[str]] = Field(None, description="Providers whose file of that day is missing.")
 
 
 class EventCalendarOut(BaseModel):

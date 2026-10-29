@@ -11116,6 +11116,400 @@
         "x-api-key": false
       }
     },
+    "/cloud-connections/{connection_id}/event-files/remote": {
+      "get": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "List the files on the server of an event source",
+        "description": "Lists the source folder on the SFTP server now (one listing) — every daily file with what\nhappened to it: imported, scheduled for its processing time, queued for the next check, failed\nor changed. `POST …/event-files/process` imports scheduled / queued / failed ones at once.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:view`",
+        "operationId": "list_remote_event_files",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteEventFilesOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `connection_disabled`, `not_an_event_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_an_event_source": {
+                    "summary": "not_an_event_source",
+                    "value": {
+                      "detail": {
+                        "code": "not_an_event_source",
+                        "message": "This source is not an event source."
+                      }
+                    }
+                  },
+                  "connection_disabled": {
+                    "summary": "connection_disabled",
+                    "value": {
+                      "detail": {
+                        "code": "connection_disabled",
+                        "message": "Enable the connection first."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream service failed — `sftp_error`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "sftp_error": {
+                    "summary": "sftp_error",
+                    "value": {
+                      "detail": {
+                        "code": "sftp_error",
+                        "message": "Could not list the server folder: …"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:view",
+        "x-api-key": false
+      }
+    },
+    "/cloud-connections/{connection_id}/event-files/process": {
+      "post": {
+        "tags": [
+          "Cloud connections"
+        ],
+        "summary": "Process event files now",
+        "description": "Fetch and import these files now — before their processing time, or again (their events\nare updated, never duplicated).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `jobs:add`",
+        "operationId": "process_event_files",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Cloud connection id (UUID).",
+              "title": "Connection Id"
+            },
+            "description": "Cloud connection id (UUID)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessEventFilesIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncQueuedOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks jobs:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "jobs",
+                        "action": "add"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyErrorResponse"
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Cloud connection not found",
+                    "value": {
+                      "detail": "Cloud connection not found"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — `connection_disabled`, `not_an_event_source`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_an_event_source": {
+                    "summary": "not_an_event_source",
+                    "value": {
+                      "detail": {
+                        "code": "not_an_event_source",
+                        "message": "This source is not an event source."
+                      }
+                    }
+                  },
+                  "connection_disabled": {
+                    "summary": "connection_disabled",
+                    "value": {
+                      "detail": {
+                        "code": "connection_disabled",
+                        "message": "Enable the connection first."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity — `invalid_file_name`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "invalid_file_name": {
+                    "summary": "invalid_file_name",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_file_name",
+                        "message": "Not a daily event file name: …"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable — `queue_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "queue_unavailable": {
+                    "summary": "queue_unavailable",
+                    "value": {
+                      "detail": {
+                        "code": "queue_unavailable",
+                        "message": "Could not queue the import: Connection refused"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "jobs:add",
+        "x-api-key": false
+      }
+    },
     "/cloud-connections/{connection_id}/event-files/sync": {
       "post": {
         "tags": [
@@ -40341,6 +40735,20 @@
             ],
             "title": "Event Alert Emails",
             "description": "Event sources: addresses also warned by e-mail (`[]` = none)."
+          },
+          "event_process_hour": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 23.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Process Hour",
+            "description": "Event sources: hour (UTC) of the day after D from which the day D files are processed (default 4). Until then they are scheduled; `…/event-files/process` runs one at once."
           }
         },
         "type": "object",
@@ -43569,6 +43977,36 @@
             ],
             "title": "File Id",
             "description": "Event file id (`…/event-files/{file_id}/reimport`)."
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources",
+            "description": "Each provider expected that day → its file's status (`imported`, `failed`, `pending`, `missing`, `waiting`)."
+          },
+          "missing_sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missing Sources",
+            "description": "Providers whose file of that day is missing."
           }
         },
         "type": "object",
@@ -43714,6 +44152,31 @@
             "type": "array",
             "title": "Alert Emails",
             "description": "Also warned by e-mail."
+          },
+          "process_hour": {
+            "type": "integer",
+            "title": "Process Hour",
+            "description": "Hour (UTC) of D+1 from which the day D files are processed.",
+            "default": 4
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources",
+            "description": "Providers seen in the file names (`2026-10-28_besafe.csv` → `besafe`)."
+          },
+          "missing_sources": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Missing Sources",
+            "description": "Due days with a provider's file missing: `{\"2026-10-28\": [\"besafe\"]}`."
           }
         },
         "type": "object",
@@ -43730,7 +44193,7 @@
             "type": "string",
             "title": "Name",
             "examples": [
-              "2026-10-27.csv"
+              "2026-10-27_ymane.csv"
             ]
           },
           "day": {
@@ -43738,6 +44201,18 @@
             "format": "date",
             "title": "Day",
             "description": "Day the file covers."
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "Provider, from the name (`…_besafe.csv` → `besafe`)."
           },
           "size": {
             "anyOf": [
@@ -50241,6 +50716,30 @@
         "title": "PointResolutionOut",
         "description": "Resolution of every type at a point (\"test a point\")."
       },
+      "ProcessEventFilesIn": {
+        "properties": {
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 31,
+            "minItems": 1,
+            "title": "Names",
+            "description": "File names, as listed by `…/event-files/remote`.",
+            "examples": [
+              [
+                "2026-10-28_besafe.csv"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "names"
+        ],
+        "title": "ProcessEventFilesIn"
+      },
       "ProfileOut": {
         "properties": {
           "default_radius_m": {
@@ -52089,6 +52588,147 @@
         "type": "object",
         "title": "RejectionReasonUpdate",
         "description": "Changes to a custom rejection reason (omitted fields are kept)."
+      },
+      "RemoteEventFileOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "2026-10-28_besafe.csv"
+            ]
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Provider, from the name."
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "modified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified At",
+            "description": "Modification time on the server (UTC)."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "imported",
+              "scheduled",
+              "queued",
+              "failed",
+              "changed"
+            ],
+            "title": "State",
+            "description": "`imported` (and unchanged since), `scheduled` (its processing time has not come: `due_at`), `queued` (due, imported at the next hourly check), `failed` (see `error`), `changed` (imported, then modified on the server: imported again at the next check)."
+          },
+          "due_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Due At",
+            "description": "When it is processed: D+1 at the source's processing hour (UTC)."
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id",
+            "description": "Event file id once seen by a check."
+          },
+          "events": {
+            "type": "integer",
+            "title": "Events",
+            "description": "Events imported from it (new + updated).",
+            "default": 0
+          },
+          "imported_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imported At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "day",
+          "source",
+          "state",
+          "due_at"
+        ],
+        "title": "RemoteEventFileOut",
+        "description": "A file in the folder of an `events` source, as the server lists it now."
+      },
+      "RemoteEventFilesOut": {
+        "properties": {
+          "listed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Listed At"
+          },
+          "process_hour": {
+            "type": "integer",
+            "title": "Process Hour"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteEventFileOut"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "listed_at",
+          "process_hour",
+          "items"
+        ],
+        "title": "RemoteEventFilesOut"
       },
       "ReopenIn": {
         "properties": {

@@ -134,7 +134,7 @@ async def test_ingest_archives_matches_only_new_events_and_skips_an_unchanged_fi
     archived, upserts, matched = [], [], []
     monkeypatch.setattr(ef, "_archive", lambda key, data: archived.append(key))
 
-    async def existing(db, ids):
+    async def existing(db, source, ids):
         return {"1"}
 
     async def upsert(db, events, file_id):
@@ -266,3 +266,42 @@ def test_alert_email_text():
     assert subject == "[VIASafe] Event data missing for Ymane (2026-10-26…)"
     assert "Missing (no file on the server): 2026-10-26" in text and "Could not be imported: 2026-10-23" in text
     assert "https://roadrisk.camtrack.net/cloud-sources?connection=c1" in text
+
+
+# ── several providers a day, processing hour ─────────────────────────────────
+
+def test_the_provider_is_read_from_the_file_name():
+    assert ef.source_of("2026-10-28_besafe.csv") == "besafe" and ef.source_of("2026-10-28_YMANE.csv") == "ymane"
+    assert ef.source_of("2026-10-28.csv") == "ymane" and ef.source_of("2026_10_28.csv") == "ymane"
+    assert ef.day_of("2026-10-28_besafe.csv") == date(2026, 10, 28)
+    for bad in ("2026-10-28_.csv", "2026-10-28_be safe.csv", "report_2026-10-28.csv", "2026-10-28_besafe.txt"):
+        assert ef.day_of(bad) is None
+
+
+def test_a_file_waits_for_its_processing_time_unless_processed_now():
+    remote = [ef.RemoteFile("2026-10-28_ymane.csv", "/in/2026-10-28_ymane.csv", 10, None),
+              ef.RemoteFile("2026-10-28_besafe.csv", "/in/2026-10-28_besafe.csv", 10, None),
+              ef.RemoteFile("2026-10-27_besafe.csv", "/in/2026-10-27_besafe.csv", 10, None)]
+    early = datetime(2026, 10, 29, 3, 30)                                  # before 04:00 UTC on D+1
+    assert [x.name for x in ef.plan(remote, {}, now=early)] == ["2026-10-27_besafe.csv"]
+    assert [x.name for x in ef.plan(remote, {}, now=datetime(2026, 10, 29, 4))] == [
+        "2026-10-27_besafe.csv", "2026-10-28_besafe.csv", "2026-10-28_ymane.csv"]
+    assert [x.name for x in ef.plan(remote, {}, force={"2026-10-28_besafe.csv"}, now=early)] == [
+        "2026-10-27_besafe.csv", "2026-10-28_besafe.csv"]
+    assert ef.due_at(date(2026, 10, 28), 6) == datetime(2026, 10, 29, 6)
+
+
+def test_a_day_is_complete_only_with_every_active_provider():
+    def g(day, source, status="imported"):
+        return SimpleNamespace(id=f"{day}{source}", day=day, source=source, status=status, inserted=5, updated=0,
+                               name=f"{day}_{source}.csv", error=None)
+    files = [g(date(2026, 10, 20), "ymane"),                                       # besafe not started yet
+             g(date(2026, 10, 21), "ymane"), g(date(2026, 10, 21), "besafe"),
+             g(date(2026, 10, 22), "ymane"),                                       # besafe missing
+             g(date(2026, 10, 23), "ymane"), g(date(2026, 10, 23), "besafe")]
+    h = ef.health(files, datetime(2026, 10, 24, 11), None)                       # due until the 23rd
+    assert h["missing"] == [date(2026, 10, 22)] and h["missing_sources"] == {"2026-10-22": ["besafe"]}
+    assert h["complete_until"] == date(2026, 10, 21)
+    days = ef.day_statuses(files, h["first_day"], h["due_until"], date(2026, 10, 20), date(2026, 10, 23))
+    assert [d.status for d in days] == ["imported", "imported", "missing", "imported"]
+    assert days[1].events == 10 and days[2].sources == {"besafe": "missing", "ymane": "imported"}

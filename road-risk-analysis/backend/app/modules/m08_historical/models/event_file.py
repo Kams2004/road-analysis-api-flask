@@ -20,9 +20,10 @@ class EventFile(Base):
     id:            Mapped[str]             = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     connection_id: Mapped[str]             = mapped_column(String, ForeignKey("cloud_connections.id", ondelete="CASCADE"),
                                                            index=True)
-    name:          Mapped[str]             = mapped_column(String)                  # 2026-10-27.csv
+    name:          Mapped[str]             = mapped_column(String)                  # 2026-10-27_ymane.csv
     path:          Mapped[str]             = mapped_column(String)                  # remote path
     day:           Mapped[date]            = mapped_column(Date, index=True)        # the day the file covers
+    source:        Mapped[str | None]      = mapped_column(String, nullable=True)   # provider: 2026-10-28_besafe.csv → besafe
     size:          Mapped[int | None]      = mapped_column(Integer, nullable=True)
     mtime:         Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sha256:        Mapped[str | None]      = mapped_column(String, nullable=True)

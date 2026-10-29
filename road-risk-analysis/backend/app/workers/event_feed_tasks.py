@@ -106,14 +106,20 @@ def purge_old_events():
 ALERT_TTL_S = 90 * 86400
 
 
-def alert_text(name: str, missing: list, failed: list, web_url: str, cid: str) -> tuple[str, str]:
-    """(subject, body) of the e-mail about the newly missing / failed days of a source."""
+def alert_text(name: str, missing: list, failed: list, web_url: str, cid: str,
+               missing_sources: dict | None = None) -> tuple[str, str]:
+    """(subject, body) of the e-mail about the newly missing / failed days of a source
+    (`missing_sources`: day ISO → providers whose file is missing)."""
     lines = [f"Daily event files of “{name}” (VIASafe):", ""]
+
+    def day(d) -> str:
+        who = (missing_sources or {}).get(d.isoformat())
+        return f"{d:%Y-%m-%d} ({', '.join(who)})" if who else f"{d:%Y-%m-%d}"
     if missing:
-        lines.append("Missing (no file on the server): " + ", ".join(f"{d:%Y-%m-%d}" for d in missing))
+        lines.append("Missing (no file on the server): " + ", ".join(day(d) for d in missing))
     if failed:
         lines.append("Could not be imported: " + ", ".join(f"{d:%Y-%m-%d}" for d in failed))
-    lines += ["", "Driver behaviour and historical analysis do not count these days until their file is imported.",
+    lines += ["", "Exception patterns and historical analysis do not count these days until their file is imported.",
               "Late files are imported automatically at the next hourly check.",
               f"Details: {web_url.rstrip('/')}/cloud-sources?connection={cid}"]
     days = missing + failed
@@ -143,7 +149,7 @@ def check_event_alerts():
             if not new["missing"] and not new["failed"]:
                 continue
             subject, text = alert_text(h["name"], new["missing"], new["failed"], settings.WEB_BASE_URL,
-                                       h["connection_id"])
+                                       h["connection_id"], h.get("missing_sources"))
             for to in h["emails"]:
                 try:
                     await send_email(db, to, subject, text)

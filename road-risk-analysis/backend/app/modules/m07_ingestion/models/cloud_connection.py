@@ -60,6 +60,7 @@ class CloudConnection(Base):
     purpose:                Mapped[str]              = mapped_column(String, default="videos", server_default="videos")
     # "events" sources: the day D file is late after D+1 at this hour (UTC) → alert; e-mails to warn too.
     event_alert_hour:       Mapped[int | None]       = mapped_column(Integer, nullable=True)   # None = 10
+    event_process_hour:     Mapped[int | None]       = mapped_column(Integer, nullable=True)   # None = 4 (event_feed.due_at)
     event_alert_emails:     Mapped[list | None]      = mapped_column(JSON, nullable=True)
     # Folders bookmarked in the browser ("Saved folders"): [{id, name, breadcrumbs, link}]
     saved_folders:          Mapped[list | None]      = mapped_column(JSON, nullable=True)

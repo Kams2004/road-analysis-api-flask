@@ -262,6 +262,9 @@ EVENT_FEED_COLUMNS = [
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS purpose VARCHAR NOT NULL DEFAULT 'videos'",
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_alert_hour INTEGER",
     "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_alert_emails JSON",
+    # several providers a day (2026-10-28_besafe.csv) and a processing hour (migrations/add_event_sources.sql)
+    "ALTER TABLE cloud_connections ADD COLUMN IF NOT EXISTS event_process_hour INTEGER",
+    "ALTER TABLE event_files ADD COLUMN IF NOT EXISTS source VARCHAR",
     "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS country VARCHAR",
     "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS transporter VARCHAR",
     "ALTER TABLE historical_events ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP",

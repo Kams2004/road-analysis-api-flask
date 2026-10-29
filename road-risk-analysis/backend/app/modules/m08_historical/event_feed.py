@@ -3,21 +3,28 @@ Daily event files of an "events" source (an SFTP server with purpose `events`) �
 `historical_events`, the store read by Historical analysis (Module 8) and Driver
 behaviour (Module 9).
 
-The fleet platform drops one CSV per day around 03:00 for the previous day,
-`YYYY-MM-DD.csv` (`YYYY_MM_DD.csv` accepted), and the files stay there. Every hour
+The fleet platforms drop their CSVs for the previous day around 03:00 —
+`YYYY-MM-DD_<source>.csv`, one per provider (`2026-10-28_ymane.csv`,
+`2026-10-28_besafe.csv` …; several a day), the part after the underscore naming the provider
+(`source_of`). Older names without it (`YYYY-MM-DD.csv`, `YYYY_MM_DD.csv`) are the `ymane`
+feed. The files stay there. A file of day D is processed from D+1 at the source's processing
+hour (`event_process_hour`, UTC, default DEFAULT_PROCESS_HOUR): until then it is *scheduled*
+— listed in the web console with its time, and "Process now" imports it at once. Every hour
 (beat task `sync_event_feeds`, app/workers/event_feed_tasks.py) — or on demand —
 `sync_connection`:
 
     1. lists the source folder (one SFTP listing: cheap) and compares with `event_files`:
-       a file is fetched when it is new, when its size / modification time changed
+       a file is fetched when it is due and new, when its size / modification time changed
        (regenerated) or when its last import failed (MAX_ATTEMPTS). At most
        MAX_FILES_PER_RUN per run, oldest day first — the first sync catches up on the
        history a few weeks at a time;
     2. archives each fetched file as received (gzip) in the private `events-raw` bucket:
        the SFTP server is not the only copy, everything can be re-imported from there;
-    3. parses it (sources/ymane_csv.py), places the new events on the grid and, when
+    3. parses it (sources/ymane_csv.py — every provider exports the same columns), stamps
+       its events with the file's source, places the new events on the grid and, when
        they lie on a road OSRM knows, on that road (matcher.py);
-    4. inserts or updates them in bulk (INSERT … ON CONFLICT on source + exceptionid): a
+    4. inserts or updates them in bulk (INSERT … ON CONFLICT on source + exceptionid — two
+       providers may reuse an id): a
        corrected file updates its events, never duplicates them. An unchanged file
        (same sha256) is not imported twice.
 """
@@ -47,7 +54,9 @@ from app.modules.m08_historical.sources import ymane_csv
 logger = logging.getLogger(__name__)
 
 PURPOSE = "events"
-FILE_RE = re.compile(r"^(\d{4})[-_](\d{2})[-_](\d{2})\.csv$", re.I)
+FILE_RE = re.compile(r"^(\d{4})[-_](\d{2})[-_](\d{2})(?:_([A-Za-z0-9][A-Za-z0-9-]{0,39}))?\.csv$", re.I)
+LEGACY_SOURCE = ymane_csv.SOURCE      # files named without a provider: the original (ymane) feed
+DEFAULT_PROCESS_HOUR = 4              # UTC: the day D files (made ~03:00 on D+1) are processed from D+1 04:00
 MAX_FILES_PER_RUN = 31
 MAX_FILE_BYTES = 200 * 1024 * 1024
 MAX_ATTEMPTS = 5
@@ -71,6 +80,10 @@ class RemoteFile:
     def day(self) -> Optional[date]:
         return day_of(self.name)
 
+    @property
+    def source(self) -> str:
+        return source_of(self.name)
+
 
 def day_of(name: str) -> Optional[date]:
     m = FILE_RE.match(name or "")
@@ -82,18 +95,35 @@ def day_of(name: str) -> Optional[date]:
         return None
 
 
+def source_of(name: str) -> str:
+    """Provider of a file: what follows the date (`2026-10-28_besafe.csv` → `besafe`), lower case;
+    LEGACY_SOURCE for a name without one."""
+    m = FILE_RE.match(name or "")
+    return (m.group(4) or LEGACY_SOURCE).lower() if m else LEGACY_SOURCE
+
+
+def due_at(day: date, process_hour: Optional[int]) -> datetime:
+    """When the day `day` file is processed (UTC): D+1 at the source's processing hour."""
+    hour = DEFAULT_PROCESS_HOUR if process_hour is None else process_hour
+    return datetime(day.year, day.month, day.day) + timedelta(days=1, hours=hour)
+
+
 def _mtime(v) -> Optional[datetime]:
     return datetime.utcfromtimestamp(int(v)) if v else None
 
 
-def plan(remote: Iterable[RemoteFile], known: dict[str, Any], force: Optional[set[str]] = None) -> list[RemoteFile]:
-    """Files to fetch this run, oldest day first: new, changed (size / mtime), pending, failed
-    with attempts left, or named in `force`."""
+def plan(remote: Iterable[RemoteFile], known: dict[str, Any], force: Optional[set[str]] = None,
+         now: Optional[datetime] = None, process_hour: Optional[int] = None) -> list[RemoteFile]:
+    """Files to fetch this run, oldest day first: those named in `force`, and — once due
+    (due_at) — new, changed (size / mtime), pending, or failed with attempts left."""
+    now = now or datetime.utcnow()
     out = []
     for f in sorted((f for f in remote if f.day), key=lambda f: (f.day, f.name)):
         k = known.get(f.name)
         if force and f.name in force:
             out.append(f)
+        elif now < due_at(f.day, process_hour):
+            continue                                       # scheduled: not its time yet
         elif k is None or k.status == "pending":
             out.append(f)
         elif k.status == "failed":
@@ -147,12 +177,12 @@ def _archive(key: str, data: bytes) -> None:
 
 # ── storage ──────────────────────────────────────────────────────────────────
 
-async def _existing_ids(db: AsyncSession, ids: list[str]) -> set[str]:
+async def _existing_ids(db: AsyncSession, source: str, ids: list[str]) -> set[str]:
     found: set[str] = set()
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         found.update((await db.execute(select(E.source_event_id).where(
-            E.source == ymane_csv.SOURCE, E.source_event_id.in_(chunk)))).scalars().all())
+            E.source == source, E.source_event_id.in_(chunk)))).scalars().all())
     return found
 
 
@@ -218,9 +248,11 @@ async def ingest(db: AsyncSession, conn_id: str, ef: EventFile, data: bytes,
     key = archive_key(conn_id, ef.day, ef.name)
     await asyncio.to_thread(_archive, key, data)
     cell_m = settings.HISTORICAL_GRID_CELL_SIZE_M
+    source = ef.source or source_of(ef.name)
     for e in result.events:
+        e["source"] = source
         e["grid_cell_id"] = grid_cell_id(e["latitude"], e["longitude"], cell_m)
-    known = await _existing_ids(db, [e["source_event_id"] for e in result.events])
+    known = await _existing_ids(db, source, [e["source_event_id"] for e in result.events])
     await _match([e for e in result.events if e["source_event_id"] not in known], matcher)
     inserted, updated = await upsert(db, result.events, ef.id)
     if touched is not None:
@@ -250,7 +282,7 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
 
     def op(session):
         remote = list_files(session)
-        todo = plan(remote, known, force)
+        todo = plan(remote, known, force, process_hour=conn.event_process_hour)
         got = []
         for f in todo:
             try:
@@ -276,19 +308,19 @@ async def sync_connection(db: AsyncSession, connection_id: str, force: Optional[
     fetching = {f.name for f, _ in got}
     for f in remote:
         if f.day and f.name not in known and f.name not in fetching:
-            pending = EventFile(connection_id=conn.id, name=f.name, path=f.path, day=f.day, size=f.size,
-                                mtime=f.mtime, status="pending", attempts=0, rows=0, inserted=0, updated=0,
-                                invalid=0)
+            pending = EventFile(connection_id=conn.id, name=f.name, path=f.path, day=f.day, source=f.source,
+                                size=f.size, mtime=f.mtime, status="pending", attempts=0, rows=0, inserted=0,
+                                updated=0, invalid=0)
             db.add(pending)
             known[f.name] = pending
     await db.commit()
     for f, data in got:
         ef = known.get(f.name)
         if ef is None:
-            ef = EventFile(connection_id=conn.id, name=f.name, path=f.path, day=f.day, status="pending",
-                           attempts=0, rows=0, inserted=0, updated=0, invalid=0)
+            ef = EventFile(connection_id=conn.id, name=f.name, path=f.path, day=f.day, source=f.source,
+                           status="pending", attempts=0, rows=0, inserted=0, updated=0, invalid=0)
             db.add(ef)
-        ef.path, ef.day, ef.size, ef.mtime = f.path, f.day, f.size, f.mtime
+        ef.path, ef.day, ef.size, ef.mtime, ef.source = f.path, f.day, f.size, f.mtime, f.source
         ef.attempts = (ef.attempts or 0) + 1
         await db.commit()                                  # the file row survives a failed import
         file_id = ef.id
@@ -341,6 +373,8 @@ class DayStatus:
     file: Optional[str] = None
     error: Optional[str] = None
     file_id: Optional[str] = None
+    sources: Optional[dict] = None        # provider → its status that day (imported, failed, pending, missing, waiting)
+    missing_sources: Optional[list] = None
 
 
 def expected_until(now: datetime, alert_hour: Optional[int]) -> date:
@@ -349,38 +383,83 @@ def expected_until(now: datetime, alert_hour: Optional[int]) -> date:
     return (now - timedelta(days=1, hours=hour)).date()
 
 
+SOURCE_ACTIVE_DAYS = 7           # a provider is expected on a day if it delivered within this many days of it
+
+
+def _day(v) -> date:
+    return v if isinstance(v, date) else date.fromisoformat(str(v))
+
+
+def _source(f) -> str:
+    return getattr(f, "source", None) or source_of(f.name)
+
+
 def day_statuses(files: Iterable[Any], first: Optional[date], due: date, start: date, end: date) -> list[DayStatus]:
-    """Status of every day of [start, end] from the source's file rows (day, status, inserted,
-    updated, name, error). Days before `first` (the feed's first file) are `none`, days after
-    `due` without a file `waiting`."""
-    by_day: dict[date, Any] = {}
+    """Status of every day of [start, end] from the source's file rows (day, source, status,
+    inserted, updated, name, error). Several providers deliver per day: a day is `imported` when
+    every provider expected that day (one that delivered within SOURCE_ACTIVE_DAYS of it) has an
+    imported file; `missing` when one of them has none and it is due (`missing_sources`), `failed`
+    / `pending` likewise. Days before `first` (the feed's first file) are `none`, days after `due`
+    without a file `waiting`."""
+    files = list(files)
+    by_day: dict[date, dict[str, Any]] = {}
+    seen: dict[str, list[date]] = {}
     for f in files:
-        d = f.day if isinstance(f.day, date) else date.fromisoformat(str(f.day))
-        prev = by_day.get(d)
+        d, src = _day(f.day), _source(f)
+        seen.setdefault(src, []).append(d)
+        prev = by_day.setdefault(d, {}).get(src)
         if prev is None or (prev.status != "imported" and f.status == "imported"):
-            by_day[d] = f
+            by_day[d][src] = f
+
+    def expected(d: date) -> list[str]:
+        win = timedelta(days=SOURCE_ACTIVE_DAYS)
+        return sorted(src for src, days in seen.items()
+                      if min(days) <= d and any(abs((x - d).days) <= win.days for x in days))
+
     out, d = [], start
     while d <= end:
-        f = by_day.get(d)
-        if f is not None:
-            out.append(DayStatus(d, f.status, (f.inserted or 0) + (f.updated or 0) if f.status == "imported" else 0,
-                                 f.name, f.error if f.status == "failed" else None, getattr(f, "id", None)))
-        elif first is None or d < first:
+        got = by_day.get(d, {})
+        if first is None or d < first:
             out.append(DayStatus(d, "none"))
-        else:
-            out.append(DayStatus(d, "missing" if d <= due else "waiting"))
+            d += timedelta(days=1)
+            continue
+        per: dict[str, str] = {}
+        for src in sorted(set(expected(d)) | set(got)):
+            f = got.get(src)
+            per[src] = f.status if f is not None else ("missing" if d <= due else "waiting")
+        if not got:
+            out.append(DayStatus(d, "missing" if d <= due else "waiting", sources=per or None,
+                                 missing_sources=sorted(per) if d <= due else None))
+            d += timedelta(days=1)
+            continue
+        states = set(per.values())
+        status = ("failed" if "failed" in states else "missing" if "missing" in states
+                  else "pending" if "pending" in states or "waiting" in states else "imported")
+        imported = [f for f in got.values() if f.status == "imported"]
+        failed = next((f for f in got.values() if f.status == "failed"), None)
+        main = failed or (imported[0] if imported else next(iter(got.values())))
+        out.append(DayStatus(
+            d, status,
+            sum((f.inserted or 0) + (f.updated or 0) for f in imported),
+            ", ".join(sorted(f.name for f in got.values())),
+            failed.error if failed is not None else None,
+            getattr(main, "id", None),
+            per, sorted(src for src, st in per.items() if st == "missing") or None,
+        ))
         d += timedelta(days=1)
     return out
 
 
 def health(files: list, now: datetime, alert_hour: Optional[int]) -> dict:
     """Completeness of a source: first day, `complete_until` (every day from the first one up to
-    it imported), missing / failed days due by now (last ALERT_WINDOW_DAYS days)."""
+    it imported, for every provider), missing / failed days due by now (last ALERT_WINDOW_DAYS
+    days; `missing_sources`: which providers' files are missing which day)."""
     due = expected_until(now, alert_hour)
-    days = [f.day if isinstance(f.day, date) else date.fromisoformat(str(f.day)) for f in files]
+    days = [_day(f.day) for f in files]
     first = min(days) if days else None
     if first is None:
-        return {"first_day": None, "due_until": due, "complete_until": None, "missing": [], "failed": []}
+        return {"first_day": None, "due_until": due, "complete_until": None, "missing": [], "failed": [],
+                "missing_sources": {}}
     start = max(first, due - timedelta(days=ALERT_WINDOW_DAYS - 1))
     st = day_statuses(files, first, due, first, due) if first <= due else []
     complete = None
@@ -391,14 +470,16 @@ def health(files: list, now: datetime, alert_hour: Optional[int]) -> dict:
     recent = [s for s in st if s.day >= start]
     return {"first_day": first, "due_until": due, "complete_until": complete,
             "missing": [s.day for s in recent if s.status == "missing"],
-            "failed": [s.day for s in recent if s.status == "failed"]}
+            "failed": [s.day for s in recent if s.status == "failed"],
+            "missing_sources": {s.day.isoformat(): s.missing_sources for s in recent
+                                if s.status == "missing" and s.missing_sources}}
 
 
 async def file_rows(db: AsyncSession, connection_id: str, since: Optional[date] = None) -> list:
-    q = select(EventFile.id, EventFile.day, EventFile.status, EventFile.inserted, EventFile.updated, EventFile.name,
-               EventFile.error).where(EventFile.connection_id == connection_id)
+    q = select(EventFile.id, EventFile.day, EventFile.source, EventFile.status, EventFile.inserted, EventFile.updated,
+               EventFile.name, EventFile.error).where(EventFile.connection_id == connection_id)
     if since is not None:
-        q = q.where(EventFile.day >= since)
+        q = q.where(EventFile.day >= since - timedelta(days=SOURCE_ACTIVE_DAYS))
     return (await db.execute(q)).all()
 
 
