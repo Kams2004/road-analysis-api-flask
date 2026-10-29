@@ -301,7 +301,7 @@ class Settings(BaseSettings):
     HISTORICAL_RISK_SATURATION_WEIGHT: float = 20.0
     # "Current risk" of the zones the mobile app gets (GET /historical/risk/zone, POST …/risk/route):
     # only the events of the last HISTORICAL_RISK_WINDOW_DAYS count, each weighted by its type,
-    # its severity (driver behaviour multipliers) and its age (halved every
+    # its severity (settings `driver_behaviour.severity_multipliers`) and its age (halved every
     # HISTORICAL_RISK_HALF_LIFE_DAYS) — old events fade instead of keeping every busy road at 100 %.
     HISTORICAL_RISK_WINDOW_DAYS: int = 365
     HISTORICAL_RISK_HALF_LIFE_DAYS: float = 90.0

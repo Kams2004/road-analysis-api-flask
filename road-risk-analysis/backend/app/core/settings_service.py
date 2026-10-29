@@ -9,7 +9,7 @@ distances, the collision-prevention thresholds and the predefined road
 sections (tronçons) offered by the route searches of the console and the
 global Cluster Configuration (`clustering`, app.modules.m06_hazards.clustering)
 and the dashcam overlay layouts (`osd`, app.modules.m05_ai_detection.osd_settings)
-and the driver behaviour scoring (`driver_behaviour`, app.modules.m09_driver_behaviour.settings).
+and the exception-pattern rules (`driver_behaviour` — key kept —, app.modules.m09_exception_patterns.settings).
 
 Each section is a validated pydantic model persisted as JSON in
 `system_settings`. Fields listed in SECRET_FIELDS are encrypted at rest and
@@ -30,7 +30,7 @@ from app.modules.m06_hazards.lifecycle.settings import HazardLifecycleSettings
 from app.modules.m05_ai_detection.parked_vehicle.settings import ParkedVehicleSettings
 from app.modules.m05_ai_detection.osd_settings import OsdSettings
 from app.modules.m06_hazards.clustering.settings import ClusteringSettings
-from app.modules.m09_driver_behaviour.settings import DriverBehaviourSettings
+from app.modules.m09_exception_patterns.settings import ExceptionPatternSettings
 
 # Cloudflare's documented always-pass Turnstile test keys. They make login
 # work out of the box in development; the Settings page shows a warning
@@ -411,7 +411,7 @@ SECTIONS: dict[str, type[BaseModel]] = {
     "parked_vehicle": ParkedVehicleSettings,
     "clustering": ClusteringSettings,
     "osd":        OsdSettings,
-    "driver_behaviour": DriverBehaviourSettings,
+    "driver_behaviour": ExceptionPatternSettings,      # Exception patterns (key kept for stored rows)
 }
 
 SECRET_FIELDS: dict[str, set[str]] = {
@@ -541,7 +541,7 @@ async def update_section(db: AsyncSession, section: str, patch: dict, actor: str
     from app.core import cache_bus
     cache_bus.publish(f"settings:{section}")      # the other API / worker processes, at once
     if section == "driver_behaviour":
-        # Weights change the points of cached answers; severity rules change the daily summaries
+        # Settings change cached answers (zones, time zone); severity rules change the daily summaries
         # (they are not used until rebuilt: app/modules/m08_historical/rollups.ready).
         from app.modules.m08_historical import agg_cache
         agg_cache.bump()

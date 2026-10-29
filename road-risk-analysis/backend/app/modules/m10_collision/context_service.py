@@ -16,20 +16,22 @@ import / summary rebuild — app/modules/m08_historical/agg_cache.py) changed:
   local speed limit  SPEEDING events grouped per square × limit (km/h) → median per cell
   hazards            validated (`active`) hazards of `hazard_types`
   community reports  visible reports (active, fresh, not merged) mapped to a reason kind
-  drivers / plates   behaviour score of the last driver_window_days (Module 5 formula)
+
+Nothing about a driver or a vehicle's identity: the context is the place, the live conditions
+and the parties' current trip (speed vs the local limit, GPS, data age) — the fleet events are
+anonymous (app/modules/m08_historical/anonymity.py).
 
 Only cells with data are written, at most `max_cells`.
 
 Redis keys (all JSON strings unless noted)
   collision:ctx:cell:{cell_id}   PlaceCell of one 150 m cell (grid_cell_id), TTL ≥ 2.5 refreshes
-  collision:ctx:drivers          hash  "plate:{REF}" / "driver:{REF}" → {"score", "high"}
-  collision:ctx:meta             {built_at, data_version, cells, drivers, tz, high_risk_score, duration_ms}
+  collision:ctx:meta             {built_at, data_version, cells, tz, duration_ms}
   collision:ctx:lock             build in progress (NX)
 
 Hot path — context_for_pair(…)  (collision_service, per conflicting pair)
 ────────────────────────────
-One GET of the conflict point's cell, one HMGET of the two parties' scores, the
-meta (time zone) cached in-process for a minute. Never touches PostgreSQL; any
+One GET of the conflict point's cell, the meta (time zone) cached in-process for a
+minute. Never touches PostgreSQL; any
 Redis trouble degrades to "no place context" (C from the live conditions only).
 """
 from __future__ import annotations
@@ -50,7 +52,7 @@ from app.modules.m10_collision.collision import thresholds
 logger = logging.getLogger(__name__)
 
 CELL_PREFIX = "collision:ctx:cell:"
-DRIVERS_KEY = "collision:ctx:drivers"
+LEGACY_DRIVERS_KEY = "collision:ctx:drivers"   # former per-plate / driver scores — deleted on every write
 META_KEY = "collision:ctx:meta"
 LOCK_KEY = "collision:ctx:lock"
 DATA_VERSION_KEY = "events:data_version"      # app.modules.m08_historical.agg_cache.VERSION_KEY
@@ -65,12 +67,6 @@ def cell_size_m() -> float:
 
 def cell_key(cell_id: str) -> str:
     return f"{CELL_PREFIX}{cell_id}"
-
-
-def norm_ref(value: Optional[str]) -> Optional[str]:
-    """Plate / driver id as compared across sources: upper case, no spaces or dashes."""
-    v = "".join(ch for ch in (value or "").upper() if ch.isalnum())
-    return v or None
 
 
 def cell_ttl_s(cfg) -> int:
@@ -111,34 +107,6 @@ async def place_at(r, lat: float, lon: float) -> Optional[ctx.PlaceCell]:
         return None
 
 
-async def driver_scores(r, refs: List[Tuple[Optional[str], Optional[str]]]) -> List[Tuple[Optional[float], bool, Optional[str]]]:
-    """[(score, high, ref)] per (plate, driver_id) — the riskier of the two ids of a party."""
-    fields: List[str] = []
-    for plate, driver in refs:
-        for kind, v in (("plate", plate), ("driver", driver)):
-            n = norm_ref(v)
-            fields.append(f"{kind}:{n}" if n else "")
-    wanted = [f for f in fields if f]
-    values: Dict[str, dict] = {}
-    if wanted:
-        got = await r.hmget(DRIVERS_KEY, wanted)
-        for f, raw in zip(wanted, got):
-            if raw:
-                try:
-                    values[f] = json.loads(raw)
-                except ValueError:
-                    pass
-    out = []
-    for i in range(len(refs)):
-        best: Tuple[Optional[float], bool, Optional[str]] = (None, False, None)
-        for f in fields[2 * i: 2 * i + 2]:
-            v = values.get(f)
-            if v and (best[0] is None or v.get("score", 0) > best[0]):
-                best = (float(v.get("score", 0)), bool(v.get("high")), f)
-        out.append(best)
-    return out
-
-
 async def context_for_pair(conflict, own_traj, other_traj, own_live: dict, other_live: dict,
                            now: Optional[datetime] = None) -> ctx.ContextResult:
     """Context Risk Index of a physically-rated conflict (Redis only)."""
@@ -146,29 +114,25 @@ async def context_for_pair(conflict, own_traj, other_traj, own_live: dict, other
     now = now or datetime.now(timezone.utc)
     point = conflict.conflict_point or (own_live["latitude"], own_live["longitude"])
     cell = None
-    scores = [(None, False, None), (None, False, None)]
     tz = DEFAULT_TZ
     try:
         r = get_redis()
         cell = await place_at(r, point[0], point[1])
         if cell is None and conflict.conflict_point is not None:
             cell = await place_at(r, own_live["latitude"], own_live["longitude"])
-        scores = await driver_scores(r, [(own_live.get("plate"), own_live.get("driver_external_id")),
-                                         (other_live.get("plate"), other_live.get("driver_external_id"))])
         tz = (await _meta(r)).get("tz") or DEFAULT_TZ
     except Exception:
-        logger.warning("[CONTEXT] Redis lookup failed — place / driver context skipped", exc_info=True)
+        logger.warning("[CONTEXT] Redis lookup failed — place context skipped", exc_info=True)
 
-    def party(traj, live, score):
+    def party(traj):
         ts = traj.telemetry_timestamp if traj.telemetry_timestamp.tzinfo else traj.telemetry_timestamp.replace(tzinfo=timezone.utc)
         return ctx.Party(
             vehicle_id=traj.vehicle_id, speed_mps=traj.initial_speed_mps,
             accuracy_m=None if traj.gps_accuracy_assumed else traj.gps_accuracy_m,
             telemetry_age_s=max(0.0, (now - ts).total_seconds()),
-            driver_score=score[0], driver_high=score[1], driver_ref=score[2],
         )
 
-    parties = [party(own_traj, own_live, scores[0]), party(other_traj, other_live, scores[1])]
+    parties = [party(own_traj), party(other_traj)]
     return ctx.compute_context(cell, point, parties, now, tz, cfg.fresh_after_s, cfg.context)
 
 
@@ -247,30 +211,8 @@ async def _reports(db, ccfg, now: datetime) -> List[tuple]:
     return out
 
 
-async def _driver_scores(db, dcfg, ccfg, now: datetime, use_rollups: bool) -> Dict[str, dict]:
-    from app.modules.m08_historical import aggregates as G
-    from app.modules.m09_driver_behaviour.analytics import score_from_points
-    from app.modules.m09_driver_behaviour.settings import BEHAVIOUR_TYPES
-    end = now.replace(tzinfo=None)
-    scope = G.Scope(end - timedelta(days=ccfg.driver_window_days), end, list(BEHAVIOUR_TYPES), None,
-                    rollups=use_rollups)
-    out: Dict[str, dict] = {}
-    for kind in ("vehicle", "driver"):
-        points: Dict[str, float] = defaultdict(float)
-        for r in await G.entity_rows(db, dcfg, scope, (kind, "event_type", "severity")):
-            ref = norm_ref(getattr(r, kind))
-            if ref:
-                points[ref] += dcfg.weight(r.event_type) * dcfg.multiplier(r.severity or "unknown") * int(r.n)
-        prefix = "plate" if kind == "vehicle" else "driver"
-        for ref, pts in points.items():
-            score = score_from_points(pts, dcfg)
-            if score > 0:
-                out[f"{prefix}:{ref}"] = {"score": score, "high": score >= dcfg.high_risk_score}
-    return out
-
-
 async def build(db, now: Optional[datetime] = None) -> dict:
-    """Everything the Redis map needs: {"cells": {cell_id: PlaceCell}, "drivers": {...}, "meta": {...}}."""
+    """Everything the Redis map needs: {"cells": {cell_id: PlaceCell}, "meta": {...}}."""
     from app.core import settings_service
     from app.modules.m08_historical import rollups as R
     now = now or datetime.now(timezone.utc)
@@ -285,32 +227,20 @@ async def build(db, now: Optional[datetime] = None) -> dict:
     hazards = ctx.spread_points(await _hazards(db, ccfg), ccfg.hazard_radius_m, size)
     reports = ctx.spread_points(await _reports(db, ccfg, now), ccfg.report_radius_m, size)
     cells = ctx.build_place_cells(history, limits, hazards, reports, ccfg)
-    drivers = await _driver_scores(db, dcfg, ccfg, now, use_rollups)
-    meta = {"built_at": now.isoformat(), "cells": len(cells), "drivers": len(drivers), "tz": dcfg.timezone,
-            "high_risk_score": dcfg.high_risk_score, "rollups": use_rollups}
-    return {"cells": cells, "drivers": drivers, "meta": meta}
+    meta = {"built_at": now.isoformat(), "cells": len(cells), "tz": dcfg.timezone, "rollups": use_rollups}
+    return {"cells": cells, "meta": meta}
 
 
 def write(r, data: dict, ttl_s: int) -> None:
-    """Write a build with the sync Redis client (pipelined, chunked). The drivers hash is
-    swapped in atomically (RENAME); stale cells simply expire."""
+    """Write a build with the sync Redis client (pipelined, chunked); stale cells simply expire.
+    The per-plate / driver scores of earlier versions are deleted."""
     items = list(data["cells"].items())
     for i in range(0, len(items), _WRITE_CHUNK):
         pipe = r.pipeline(transaction=False)
         for cid, cell in items[i:i + _WRITE_CHUNK]:
             pipe.set(cell_key(cid), cell.model_dump_json(), ex=ttl_s)
         pipe.execute()
-    drivers = data["drivers"]
-    if drivers:
-        tmp = f"{DRIVERS_KEY}:tmp"
-        r.delete(tmp)
-        keys = list(drivers)
-        for i in range(0, len(keys), _WRITE_CHUNK):
-            r.hset(tmp, mapping={k: json.dumps(drivers[k]) for k in keys[i:i + _WRITE_CHUNK]})
-        r.expire(tmp, ttl_s)
-        r.rename(tmp, DRIVERS_KEY)
-    else:
-        r.delete(DRIVERS_KEY)
+    r.delete(LEGACY_DRIVERS_KEY, f"{LEGACY_DRIVERS_KEY}:tmp")
     r.set(META_KEY, json.dumps(data["meta"]), ex=ttl_s)
 
 
@@ -342,8 +272,7 @@ async def refresh(db, r, force: bool = False) -> dict:
     data["meta"]["data_version"] = version
     data["meta"]["duration_ms"] = round((time.monotonic() - started) * 1000)
     write(r, data, cell_ttl_s(cfg.context))
-    logger.info("[CONTEXT] refreshed cells=%d drivers=%d in %dms", data["meta"]["cells"],
-                data["meta"]["drivers"], data["meta"]["duration_ms"])
+    logger.info("[CONTEXT] refreshed cells=%d in %dms", data["meta"]["cells"], data["meta"]["duration_ms"])
     return data["meta"]
 
 

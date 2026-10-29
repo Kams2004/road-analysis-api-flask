@@ -3,7 +3,7 @@
 The fleet platform exports the previous day's driving exceptions once a day (around 03:00)
 as one CSV file, `YYYY-MM-DD.csv`, on an SFTP server. The files stay on the server. VIASafe
 imports them into `historical_events`, the event store read by **Historical analysis** and
-**Driver behaviour**. This replaces the Ymane API sync: same event ids (`exceptionid`, source
+**Exception patterns**. This replaces the Ymane API sync: same event ids (`exceptionid`, source
 `ymane`), so the two never duplicate each other.
 
 ## Set it up
@@ -52,9 +52,14 @@ time (Redis lock), in `app/modules/m08_historical/event_feed.py`:
 | `vmax`, `threshold` | `speed_mps`, `speed_limit_mps` (km/h ÷ 3.6; the limit only for Speeding) |
 | `level` | `severity` (1 low, 2 medium, 3 high) |
 | `totalduration` (hours), `totaldistance` (km) | `duration_s`, `distance_km` |
-| `vehicledesc` (else `unitid`), `driver_name` | vehicle, driver (`UNKNOWN DRIVER` → none) |
-| `customer_affiliate_name`, `transporter_name` | `country` (upper case), `transporter` |
-| every non-empty column | `raw` |
+| `customer_affiliate_name`, `transporter_name` | `country` (upper case), `transporter` (the fleet operator company) |
+| the non-identifying columns (`anonymity.RAW_KEYS`) | `raw` |
+
+**Anonymous.** Nothing concerning a driver or a vehicle is read or stored: `vehicledesc`
+(plate), `driver_name`, `unitid`, `speedid` and `evidence` (they carry the unit id),
+`usercoments`, `restoreduserid` and `aidetectiondetails` are dropped, also from `raw`
+(`app/modules/m08_historical/anonymity.py`). The identifiers imported before were erased by the
+start-up upgrade (`migrations/anonymise_events.sql`).
 
 A line without `exceptionid`, with an invalid start time or with missing / invalid GPS is
 skipped. The file's row in the console shows how many lines were skipped and why (first 20).
@@ -74,28 +79,31 @@ keeps three small tables, built from `historical_events` with plain SQL:
 
 | Table | Per | Serves |
 |-------|-----|--------|
-| `event_daily` | day × source × country × transporter × driver × vehicle × type × severity | totals, by type, speed / limit / excess, drivers & vehicles ranking, trends |
-| `event_daily_hour` | day × country × type × hour (UTC) | hour-of-day / weekday patterns, peak hour |
-| `event_daily_cell` | day × country × ~110 m square × type × severity × road | heatmaps, zones, top roads, historical risk cells |
+| `event_rollup_day` | day × source × country × transporter × type × severity × speed band × excess band | totals, by type / provider / country / severity / speed band, speed / limit / excess, trends |
+| `event_rollup_hour` | day × source × country × type × severity × hour (UTC) | hour-of-day / weekday patterns, peak hour |
+| `event_rollup_cell` | day × source × country × ~110 m square × type × severity × road | heatmaps, zones, top roads, historical risk cells |
+
+No driver or vehicle dimension (they replaced `event_daily*`, which had one).
 
 - **Refreshed only where needed.** After each import (daily file, manual / API import) only the
   touched days are rebuilt. All of them are rebuilt when the severity rules change
-  (*Settings → Driver behaviour*) or on first start: worker task `rebuild_event_rollups`.
+  (*Platform settings → section `driver_behaviour`*, the Exception patterns rules), when their
+  dimensions change (`rollups.ROLLUP_VERSION`) or on first start: worker task `rebuild_event_rollups`.
 - **Never stale.** Until the rebuild is done, the screens read the raw events.
 - **Raw events only for bounded sets.** The screens read raw events when a filter the
-  summaries don't carry is used: a map area, or a driver / vehicle for hour and map patterns.
-  It is still a grouped SQL query, never every event in memory. One driver's or vehicle's
-  profile reads its own events.
+  summaries don't carry is used: a map area. It is still a grouped SQL query, never every
+  event in memory.
 - **Cache.** Answers are cached 10 minutes in Redis under a data version that every import or
   settings change bumps (`agg_cache.py`). A new day of events invalidates everything at once.
-- **Country filter.** `country` on every `/driver-behaviour/*` and `/historical/*` read
-  (repeat or comma-separate), plus `GET /driver-behaviour/countries`. The web pages have a
-  *Country* select (every country by default).
+- **Filters.** `country` on every `/exception-patterns/*` and `/historical/*` read (repeat or
+  comma-separate), plus `GET /exception-patterns/countries`; `/exception-patterns/*` also take
+  `source` (provider, `GET /exception-patterns/sources`), `severity` and `types`. The web pages
+  have a *Country* select (every country by default).
 - **Retention.** The nightly task `purge_old_events` deletes raw events older than
   `RAW_EVENT_RETENTION_DAYS` (3 years). Their daily summaries are kept without limit: a full
   rebuild never touches days older than the oldest raw event.
-- **Indexes:** `(event_type, occurred_at)`, `(country, occurred_at)`, driver, vehicle, file.
-  Summaries: `(driver, day)`, `(vehicle, day)`, `(country, day)`, squares.
+- **Indexes:** `(event_type, occurred_at)`, `(country, occurred_at)`, file.
+  Summaries: `(country, day)`, `(source, day)`, squares.
 
 ## Missing files
 
@@ -113,8 +121,8 @@ late files are imported by the hourly check):
 - **the source card** (orange line, orange dot when folded) and **its panel**: banner with the
   missing / failed days and *Data complete up to …*, and a **month calendar** (`GET …/event-calendar?month=YYYY-MM`).
   A missing or failed day can be re-checked / re-imported from it;
-- **Driver behaviour and Historical analysis**: *Event data complete up to …, missing: …*
-  (`GET /driver-behaviour/data-status`). A missing file never reads as a day without incidents;
+- **Exception patterns and Historical analysis**: *Event data complete up to …, missing: …*
+  (`GET /exception-patterns/data-status`). A missing file never reads as a day without incidents;
 - **e-mail** (optional): the addresses set in the source's panel, once per missing or failed day
   (hourly task `check_event_alerts`; needs SMTP in *Settings → Platform → E-mail*).
 

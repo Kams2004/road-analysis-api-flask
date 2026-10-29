@@ -58,7 +58,7 @@ TAG_STREAMS = "Streams"
 TAG_CLOUD = "Cloud connections"
 TAG_CLOUD_IMPORTS = "Cloud imports"
 TAG_HISTORICAL = "Historical risk"
-TAG_DRIVER_BEHAVIOUR = "Driver behaviour"
+TAG_EXCEPTION_PATTERNS = "Exception patterns"
 TAG_VEHICLES = "Vehicles & telemetry"
 TAG_ROAD_STATE = "Road state"
 TAG_TRAJECTORY = "Trajectory"
@@ -179,11 +179,13 @@ def _tags() -> list[dict[str, Any]]:
             "**Module 8** (functional Module 4, Historical Risk Analysis) — historical driving events "
             "imported into stable grid cells and turned into normalised 0–1 risk scores: zone, route and "
             "heatmap queries, top risk zones, risk trend over time, import history.")},
-        {"name": TAG_DRIVER_BEHAVIOUR, "description": (
-            "**Module 9** (functional Module 5, Driver Behaviour Analytics, RRAP-09) — speeding, harsh "
-            "braking, hard acceleration and harsh cornering events (stored in the historical event store): "
-            "KPIs per behaviour, driver / vehicle risk scores and rankings, heatmaps, time trends and "
-            "high-risk behaviour zones. Scores are event-based indicators, not accident probabilities.")},
+        {"name": TAG_EXCEPTION_PATTERNS, "description": (
+            "**Module 9** (functional Module 5, RRAP-09 — formerly Driver behaviour) — anonymous statistics "
+            "of the fleet exceptions (speeding, harsh braking, hard acceleration, harsh cornering …, stored in "
+            "the historical event store): KPIs per type, breakdowns by provider, country, severity and speed "
+            "band, time trends, hour-of-day / weekday patterns, heatmaps and the places where exceptions "
+            "concentrate. No driver or vehicle is stored, ranked or profiled. Counts are not accident "
+            "probabilities.")},
         {"name": TAG_VEHICLES, "description": (
             "**Module 10** — vehicle/device registration and live telemetry pings (WGS84, m/s). A ping feeds "
             "the road-state → trajectory → collision → alert pipeline.")},
@@ -234,7 +236,7 @@ the VIASafe mobile app, the vehicle simulator and approved integrations.
 | 6 | Hazard track & human validation | Detections · Hazards · Cluster areas · Rejection reasons |
 | 7 | Video/data ingestion & processing jobs | Jobs · Streams · Cloud connections |
 | 8 | Historical risk analysis | Historical risk |
-| 9 | Driver behaviour | *(uses Historical risk data)* |
+| 9 | Exception patterns (anonymous) | Exception patterns *(uses Historical risk data)* |
 | 10 | Connected vehicles & collision prevention | Vehicles & telemetry · Road state · Trajectory · Collisions · Alerts |
 | 11 | Community reporting | Community reports |
 | 12 | APIs & integration | API clients · Mobile configuration · this document |

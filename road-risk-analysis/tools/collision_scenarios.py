@@ -146,10 +146,8 @@ def vh(vid):
     return {**H, **({"X-Device-Secret": SECRETS[vid]} if vid in SECRETS else {})}
 
 
-async def register(c, vid, plate=None):
+async def register(c, vid):
     body = {"vehicle_id": vid, "vehicle_type": "private"}
-    if plate:
-        body["plate"] = plate
     r = await c.post(f"{API}/vehicles/register", headers=vh(vid), json=body)
     r.raise_for_status()
     if r.json().get("device_secret"):

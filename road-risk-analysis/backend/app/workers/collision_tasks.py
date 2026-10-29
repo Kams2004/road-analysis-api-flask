@@ -2,7 +2,7 @@
 Celery task of the collision-prevention context (app/modules/m10_collision/context_service.py):
 
   refresh_collision_context   beat, every minute: rebuilds the Redis context map (per-cell place
-                              context, driver / plate scores) when it is older than
+                              context) when it is older than
                               collision.context.refresh_interval_s (5 min by default) or when new
                               fleet events were imported (events:data_version changed) — so an
                               import is reflected within a minute. `force` rebuilds now.

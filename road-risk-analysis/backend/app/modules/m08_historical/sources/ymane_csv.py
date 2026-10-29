@@ -3,7 +3,7 @@ Daily Ymane exception file (one CSV per day, `YYYY-MM-DD.csv`, dropped on an SFT
 around 03:00 for the previous day) → rows of `historical_events`. Pure: no database, no
 network — app.modules.m08_historical.event_feed fetches, archives and stores.
 
-Columns used (the others are kept in `raw`):
+Columns used (`raw` keeps only the non-identifying columns — anonymity.RAW_KEYS):
 
     exceptionid                  → source_event_id (source "ymane": the same ids as the Ymane
                                    API, so both never duplicate each other)
@@ -14,10 +14,12 @@ Columns used (the others are kept in `raw`):
                                    "(49.15,-18.43)"
     vmax, threshold              → speed_mps, speed_limit_mps (km/h; the limit only for Speeding,
                                    for harsh events `threshold` / `maxvalue` are acceleration values)
-    level                        → severity ("1" low, "2" medium, "3" high — driver behaviour)
+    level                        → severity ("1" low, "2" medium, "3" high)
     totalduration (hours), totaldistance (km) → duration_s, distance_km
-    vehicledesc (else unitid), driver_name ("UNKNOWN DRIVER" → none)
     customer_affiliate_name      → country (upper case), transporter_name → transporter
+
+Never read: the driver and vehicle columns (driver_name, vehicledesc, unitid …) — the events are
+anonymous (app/modules/m08_historical/anonymity.py).
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from app.modules.m08_historical.anonymity import clean_raw
 from app.modules.m08_historical.domain import HistoricalEventType
 
 SOURCE = "ymane"
@@ -41,7 +44,6 @@ TYPES = {
     "harsh braking": HistoricalEventType.HARD_BRAKING,
     "harsh cornering": HistoricalEventType.HARSH_CORNERING,
 }
-UNKNOWN_DRIVERS = {"", "unknown driver", "unknown", "inconnu"}
 _GPS = re.compile(r"^\(?\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)?$")
 
 
@@ -150,7 +152,6 @@ def parse(data: bytes) -> ParseResult:
         hours = _num(row.get("totalduration"))
         vmax = _num(row.get("vmax"))
         threshold = _num(row.get("threshold"))
-        driver = _text(row.get("driver_name"))
         country = _text(row.get("customer_affiliate_name"))
         by_id[ev_id] = {
             "source": SOURCE,
@@ -160,8 +161,6 @@ def parse(data: bytes) -> ParseResult:
             "ended_at": end,
             "latitude": pos[0],
             "longitude": pos[1],
-            "vehicle_external_id": _text(row.get("vehicledesc")) or _text(row.get("unitid")),
-            "driver_external_id": None if (driver or "").lower() in UNKNOWN_DRIVERS else driver,
             "speed_mps": round(vmax / KMH, 3) if vmax is not None and vmax > 0 else None,
             "speed_limit_mps": (round(threshold / KMH, 3) if etype == HistoricalEventType.SPEEDING.value
                                 and threshold is not None and threshold > 0 else None),
@@ -171,7 +170,7 @@ def parse(data: bytes) -> ParseResult:
             "duration_s": (round(hours * 3600, 1) if hours is not None and hours >= 0
                            else (end - start).total_seconds() if end and end >= start else None),
             "distance_km": _num(row.get("totaldistance")),
-            "raw": {k: v for k, v in row.items() if k and v not in (None, "")},
+            "raw": clean_raw({k: v for k, v in row.items() if k}),
         }
     out.events = list(by_id.values())
     return out

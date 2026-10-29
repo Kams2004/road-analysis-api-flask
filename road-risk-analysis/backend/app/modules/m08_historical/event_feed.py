@@ -64,9 +64,9 @@ UPSERT_CHUNK = 500
 MATCH_CONCURRENCY = 8
 
 # Columns a re-imported (corrected) file may change; map matching of existing rows is kept.
-UPDATABLE = ("event_type", "occurred_at", "ended_at", "latitude", "longitude", "vehicle_external_id",
-             "driver_external_id", "speed_mps", "speed_limit_mps", "severity", "country", "transporter",
-             "duration_s", "distance_km", "grid_cell_id", "raw", "event_file_id")
+UPDATABLE = ("event_type", "occurred_at", "ended_at", "latitude", "longitude", "speed_mps", "speed_limit_mps",
+             "severity", "country", "transporter", "duration_s", "distance_km", "grid_cell_id", "raw",
+             "event_file_id")
 
 
 @dataclass

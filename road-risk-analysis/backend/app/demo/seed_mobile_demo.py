@@ -383,7 +383,6 @@ async def seed(db, routes, rng):
                 events.append(HistoricalEvent(
                     source="manual", source_event_id=f"{HIST_PREFIX}{eid:04d}", event_type=etype,
                     occurred_at=when, latitude=round(la, 6), longitude=round(lo, 6),
-                    vehicle_external_id=f"demo-veh-{rng.randint(1, 9)}",
                     speed_mps=round(speed, 1) if speed else None,
                     speed_limit_mps=13.9 if speed else None,  # 50 km/h urban limit
                     severity="high" if etype == "ACCIDENT" else "medium",

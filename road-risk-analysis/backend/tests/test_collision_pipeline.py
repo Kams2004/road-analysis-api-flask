@@ -134,9 +134,9 @@ def world(monkeypatch):
             self.roads = list(roads)
             monkeypatch.setattr(road_state_service.map_matching, "match_vehicle_to_road", fake_matcher(self.roads))
 
-        async def ping(self, vid, point, speed, heading, accuracy=None, ts=None, plate=None):
+        async def ping(self, vid, point, speed, heading, accuracy=None, ts=None):
             await vehicle_service.record_ping(self.db, vid, VehicleType.private, point[0], point[1], speed, heading,
-                                              ts or datetime.now(timezone.utc), accuracy, None, plate=plate)
+                                              ts or datetime.now(timezone.utc), accuracy, None)
 
         async def chain(self, vid):
             state = await road_state_service.compute_and_store(vid, self.db)
@@ -317,15 +317,22 @@ async def test_risky_cell_never_creates_an_alert(world):
     assert await world.both("A", "B") == []
 
 
-async def test_risky_driver_from_the_plate(world):
-    world.redis.hset(context_service.DRIVERS_KEY, mapping={"plate:LTTR995AR": json.dumps({"score": 82.0, "high": True})})
+async def test_a_legacy_plate_score_never_reaches_the_context(world):
+    # what an earlier version left in Redis (a plate's behaviour score, the plate in the live hash)
+    world.redis.hset(context_service.LEGACY_DRIVERS_KEY, mapping={"plate:LTTR995AR": json.dumps({"score": 82.0, "high": True})})
     world.use(ew_road())
-    await world.ping("A", east(-120), 10.0, 90.0, accuracy=5.0, plate="LTTR 995 AR")
+    await world.ping("A", east(-120), 10.0, 90.0, accuracy=5.0)
+    world.redis.hset("vehicle:live:A", mapping={"plate": "LTTR 995 AR"})
     await world.ping("B", east(120), 10.0, 270.0, accuracy=5.0)
     (a,) = await world.both("A", "B")
-    (r,) = [r for r in a.context_reasons if r.code == "RISKY_DRIVER"]
-    assert r.params["vehicle_id"] == "A" and r.params["score"] == 82.0
-    assert a.level == AlertLevel.WARNING                                # 0.25 × 0.82: widened, not boosted
+    assert not [r for r in a.context_reasons if r.code == "RISKY_DRIVER" or r.factor == "driver"]
+    live = await vehicle_service.get_live("A")
+    assert "plate" not in live and "driver_external_id" not in live
+    # start-up clean-up of what earlier versions left in Redis
+    assert await vehicle_service.forget_identities() == 1
+    assert "plate" not in world.redis.hgetall("vehicle:live:A") and world.redis.hgetall("vehicle:live:A")
+    assert world.redis.hgetall(context_service.LEGACY_DRIVERS_KEY) == {}
+    assert await vehicle_service.forget_identities() == 0                 # idempotent
 
 
 # ── pair evaluated once per pair of fixes ────────────────────────────────────

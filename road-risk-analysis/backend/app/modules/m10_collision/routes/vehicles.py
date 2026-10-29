@@ -34,9 +34,8 @@ async def register_vehicle(
     """
     **Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its
     `id`. Idempotent: resending a known `vehicle_id` keeps it (updating `vehicle_type`); an unknown
-    `vehicle_id` is created with that id, so a device survives a backend reset. Optional `plate` /
-    `driver_external_id` link the vehicle to its fleet driving-behaviour score (a high score raises
-    the collision context index — reason `RISKY_DRIVER`); null keeps the stored value, `""` clears it.
+    `vehicle_id` is created with that id, so a device survives a backend reset. Anonymous: no plate
+    or driver is stored (`plate` / `driver_external_id` sent by older app versions are ignored).
 
     A new vehicle (or one registered before device secrets) gets a `device_secret`, answered only
     this once: send it as `X-Device-Secret` from then on. With an API key, re-registering a vehicle
@@ -48,8 +47,7 @@ async def register_vehicle(
         if principal.kind == "client" and not device_auth.secret_matches(existing, request.headers.get(device_auth.HEADER)):
             raise api_error(403, "device_secret_invalid",
                             "This vehicle belongs to another device (missing or wrong X-Device-Secret).")
-    vehicle = await vehicle_service.register_vehicle(db, body.vehicle_id, body.vehicle_type,
-                                                     body.plate, body.driver_external_id)
+    vehicle = await vehicle_service.register_vehicle(db, body.vehicle_id, body.vehicle_type)
     secret = None
     if not vehicle.device_secret_hash:
         secret, vehicle.device_secret_hash = device_auth.new_secret()
@@ -96,7 +94,6 @@ async def ping_vehicle(
         db, vehicle_id, vehicle.vehicle_type,
         body.latitude, body.longitude, body.speed_mps, body.heading, body.ts,
         body.accuracy_m, body.acceleration_mps2,
-        plate=vehicle.plate, driver_external_id=vehicle.driver_external_id,
     )
 
     # Non-blocking: keep the road-aware state (Step 2), predicted trajectory

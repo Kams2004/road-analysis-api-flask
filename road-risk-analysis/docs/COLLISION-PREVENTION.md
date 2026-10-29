@@ -11,8 +11,8 @@ The engine has two layers:
    approach, how the two paths relate on the road, and the braking needed behind a stopped
    vehicle. It is exact and explainable, and it never looks at history.
 2. **Context only modulates.** A *Context Risk Index* C ∈ [0, 1] at the conflict point
-   (accident history of the place, speeding, potholes, reported accidents or roadwork, risky
-   drivers, night, GPS quality) makes alerts fire **earlier** (thresholds widen by up to
+   (accident history of the place, speeding, potholes, reported accidents or roadwork,
+   night, GPS quality — nothing about who drives: 3.4) makes alerts fire **earlier** (thresholds widen by up to
    +50 %) and, when C ≥ 0.7, **one level louder**. Context never creates an alert by
    itself and never lowers one.
 
@@ -111,13 +111,12 @@ The simulator now sends `accuracy_m: 5`.
 
 | Factor | Value | Reason codes | Default weight |
 |--------|-------|--------------|----------------|
-| `history` | Σ type weight × severity multiplier × recency × n / `history_saturation` (20). This is the place's *current risk* (Historical analysis), with **HARD_BRAKING and HARSH_CORNERING ×2**: `history_type_weights` ACCIDENT 5, HARD_BRAKING 3, HARSH_CORNERING 3, HARD_ACCELERATION 1.2, SPEEDING 1. It covers the last `history_window_days` (365), with a recency half-life of `history_half_life_days` (90) and the severity multipliers of `driver_behaviour`. | `HISTORY_HARSH_BRAKING`, `HISTORY_HARSH_CORNERING`, `HISTORY_ACCIDENTS`, `HISTORY_EVENTS` (dominant type) | 0.35 |
+| `history` | Σ type weight × severity multiplier × recency × n / `history_saturation` (20). This is the place's *current risk* (Historical analysis), with **HARD_BRAKING and HARSH_CORNERING ×2**: `history_type_weights` ACCIDENT 5, HARD_BRAKING 3, HARSH_CORNERING 3, HARD_ACCELERATION 1.2, SPEEDING 1. It covers the last `history_window_days` (365), with a recency half-life of `history_half_life_days` (90) and the severity multipliers of `driver_behaviour` (Exception patterns settings). | `HISTORY_HARSH_BRAKING`, `HISTORY_HARSH_CORNERING`, `HISTORY_ACCIDENTS`, `HISTORY_EVENTS` (dominant type) | 0.35 |
 | `habitual_speeding` | Recency- and severity-weighted SPEEDING events of the place / `speeding_saturation` (10) | `HABITUAL_SPEEDING` | 0.15 |
 | `vehicle_speeding` | Uses the **local limit**, which is the median `speed_limit_mps` of the place's SPEEDING events. When the cell has fewer than `speed_limit_min_events` (3), the cell and its 8 neighbours are pooled. A party faster than limit × (1 + `speeding_tolerance_pct` 10 %) scores 0.1 → 1 at +40 % (`speeding_full_excess_pct` 30). | `VEHICLE_SPEEDING` | 0.30 |
 | `hazards` | Validated (`active`) hazards of `hazard_types` (pothole, speed_bump) within `hazard_radius_m` (100 m) / `hazard_saturation` (2) | `POTHOLE_NEARBY`, `SPEED_BUMP_NEARBY` | 0.15 |
 | `reports` | Visible community reports (active, not expired, not merged) within `report_radius_m` (300 m). The sum of `report_kind_weights`: accident 1.0, travaux / route_fermee / voie_bloquee 0.8, inondation 0.8, embouteillage 0.6, other dangers 0.6 (`report_kinds` maps each report type). | `ACCIDENT_REPORTED`, `ROADWORK_REPORTED`, `FLOODING_REPORTED`, `CONGESTION_REPORTED`, `HAZARD_REPORTED` | 0.30 |
-| `driver` | Score / 100 of the riskier party, counted when ≥ `driver_behaviour.high_risk_score` (60). This is the Module 5 score over the last `driver_window_days` (90), looked up by the plate or driver id given at registration. | `RISKY_DRIVER` | 0.25 |
-| `night` | Local time (`driver_behaviour.timezone`, Africa/Douala) from `night_start_hour` (19) to `night_end_hour` (6) | `NIGHT` | 0.10 |
+| `night` | Local time (`driver_behaviour.timezone` — Exception patterns settings —, Africa/Douala) from `night_start_hour` (19) to `night_end_hour` (6) | `NIGHT` | 0.10 |
 | `poor_gps` | A party *reports* accuracy > `poor_gps_accuracy_m` (20 m); an assumed accuracy never counts | `POOR_GPS` | 0.10 |
 | `stale_data` | A party's fix is older than `collision.fresh_after_s` (4 s) | `STALE_DATA` | 0.10 |
 
@@ -154,7 +153,7 @@ summary rebuild, so new events are reflected within a minute. A Redis lock preve
 builds running at once.
 
 - Fleet exceptions are read one month at a time, grouped per ~110 m square × day × type ×
-  severity. The daily summaries (`event_daily_cell`) are used when they are built, the raw
+  severity. The daily summaries (`event_rollup_cell`) are used when they are built, the raw
   events otherwise. Each square goes to the 150 m cell (`HISTORICAL_GRID_CELL_SIZE_M`) of its
   mean position.
 - Local limits come from one grouped query (square × limit km/h). Hazards and reports are each
@@ -165,20 +164,23 @@ builds running at once.
 | Redis key | Content | TTL |
 |-----------|---------|-----|
 | `collision:ctx:cell:{150m:lat_idx:lon_idx}` | `PlaceCell` JSON: `history`, `history_counts`, `history_dominant`, `speeding`, `local_limit_mps`, `limit_samples`, `hazards [[type,lat,lon]]`, `reports [[type,kind,lat,lon]]`, `score` (place part at the cell centre), `reasons` | max(900 s, 2.5 × refresh) |
-| `collision:ctx:drivers` | hash `plate:{REF}` / `driver:{REF}` → `{"score", "high"}` (REF = upper case, letters and digits only: `LTTR 995 AR` → `LTTR995AR`) | same |
-| `collision:ctx:meta` | `{built_at, data_version, cells, drivers, tz, high_risk_score, rollups, duration_ms}` | same |
+| `collision:ctx:meta` | `{built_at, data_version, cells, tz, rollups, duration_ms}` | same |
 | `collision:ctx:lock` | build in progress | 600 s |
 
-**Hot path, per conflicting pair:** one `GET` of the cell, one `HMGET` of the two parties'
-scores, and the meta (cached in-process for 60 s). If Redis fails, the place and driver
-context are skipped and the physical level is kept.
+**Hot path, per conflicting pair:** one `GET` of the cell and the meta (cached in-process for
+60 s). If Redis fails, the place context is skipped and the physical level is kept.
 
-### 3.4 Driver link
+### 3.4 Anonymity
 
-`POST /vehicles/register` accepts optional `plate` (as in the fleet files, e.g. `LTTR 995 AR`)
-and `driver_external_id`. They are stored on the vehicle (`vehicles.plate`,
-`vehicles.driver_external_id`). A null value keeps the stored one; `""` clears it. Each ping
-copies them into the live hash, so the pipeline never reads PostgreSQL to find them.
+Nothing in the context identifies a driver or a vehicle. A party is its current trip only
+(speed against the local limit, GPS accuracy, data age); the place factors come from anonymous
+fleet exceptions (`app/modules/m08_historical/anonymity.py`). The former `driver` factor
+(`RISKY_DRIVER`: a phone's plate linked to a fleet behaviour score) was removed with the plate
+field of the app: `POST /vehicles/register` ignores the `plate` / `driver_external_id` sent by
+older app versions, `vehicles.plate` / `vehicles.driver_external_id` were erased and dropped
+(`app/core/db/upgrade.py`, `migrations/anonymise_events.sql`), and the API start-up removes the
+plate / driver id left in the live vehicle hashes and the `collision:ctx:drivers` hash. A stored
+`context.weights.driver` is ignored.
 
 ---
 
@@ -214,7 +216,6 @@ Example reason:
 | `HABITUAL_SPEEDING` | `events`, `local_limit_kmh` |
 | `VEHICLE_SPEEDING` | `vehicle_id`, `speed_kmh`, `local_limit_kmh`, `excess_pct` |
 | `POTHOLE_NEARBY` / `SPEED_BUMP_NEARBY` / `*_REPORTED` | `count`, `nearest_m`, `radius_m` |
-| `RISKY_DRIVER` | `vehicle_id`, `score`, `ref` |
 | `NIGHT` | `local_time` |
 | `POOR_GPS` | `vehicle_id`, `accuracy_m` |
 | `STALE_DATA` | `vehicle_id`, `age_s` |
@@ -227,7 +228,7 @@ The app should translate by `code`; `label` is an English default.
 
 | Endpoint | Who | What |
 |----------|-----|------|
-| `POST /vehicles/register` | API key | + optional `plate`, `driver_external_id` |
+| `POST /vehicles/register` | API key | Anonymous: no plate / driver (sent by older apps: ignored) |
 | `POST /vehicles/{id}/ping` | API key | Unchanged; send `accuracy_m` when known |
 | `GET /alerts/{vehicle_id}` | API key | Current alerts (polling fallback) |
 | `WS /alerts/ws` | API key, or user with `collisions:view` | Instant delivery (5.1) |
@@ -339,7 +340,6 @@ New keys (all validated; the earlier keys are unchanged):
 | `context.speeding_saturation` / `speed_limit_min_events` / `speeding_tolerance_pct` / `speeding_full_excess_pct` | 10 / 3 / 10 / 30 | |
 | `context.hazard_types` / `hazard_radius_m` / `hazard_saturation` | pothole, speed_bump / 100 / 2 | |
 | `context.report_radius_m` / `report_kinds` / `report_kind_weights` | 300 / see 3.1 | |
-| `context.driver_window_days` | 90 | |
 | `context.night_start_hour` / `night_end_hour` | 19 / 6 | |
 | `context.poor_gps_accuracy_m` | 20 | |
 | `context.refresh_interval_s` / `max_cells` | 300 / 200 000 | |
@@ -348,8 +348,9 @@ Saving a partial `context` changes only the keys it names; the nested dictionari
 key by key.
 
 Migration: `backend/migrations/add_collision_context.sql`, applied automatically at start-up
-by `app/core/db/upgrade.py`. It adds `vehicles.plate` and `vehicles.driver_external_id`; the
-`collision_alert_feedback` table comes from `create_all`.
+by `app/core/db/upgrade.py`; the `collision_alert_feedback` table comes from `create_all`. (The
+`vehicles.plate` / `vehicles.driver_external_id` columns it once added are erased and dropped by
+`migrations/anonymise_events.sql`.)
 
 ---
 

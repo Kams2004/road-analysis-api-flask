@@ -665,7 +665,6 @@ async def seed_zones(db, kambo: Route, douala: Route, rng, now: datetime) -> lis
                 events.append(HistoricalEvent(
                     source="manual", source_event_id=f"{HIST_PREFIX}{eid:04d}", event_type=etype,
                     occurred_at=when.replace(tzinfo=timezone.utc), latitude=round(la, 6), longitude=round(lo, 6),
-                    vehicle_external_id=f"demo-fleet-{rng.randint(1, 14)}",
                     speed_mps=round(spd, 1) if spd else None, speed_limit_mps=16.7 if spd else None,
                     severity="high" if etype == "ACCIDENT" else "medium",
                     raw={"demo": True, "seed": TAG, "zone": label},

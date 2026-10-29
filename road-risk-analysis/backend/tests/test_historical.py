@@ -152,8 +152,10 @@ def test_ymane_maps_real_field_names():
     assert mapped is not None
     assert mapped.latitude == pytest.approx(3.78508)
     assert mapped.longitude == pytest.approx(11.282333)
-    assert mapped.vehicle_external_id == "1611"
-    assert mapped.driver_external_id == "3439870"
+    # anonymous: no vehicle / driver / unit id, no evidence link — in no field and not in `raw`
+    assert not hasattr(mapped, "vehicle_external_id") and not hasattr(mapped, "driver_external_id")
+    assert not {"vehicleid", "driverid", "unitid", "speedid", "evidence", "restoreduserid"} & set(mapped.raw)
+    assert mapped.raw["exceptionid"] == 21790527 and mapped.raw["affiliateid"] == 107
     assert mapped.speed_mps == pytest.approx(75 / 3.6, abs=0.01)
     assert mapped.event_type == HistoricalEventType.SPEEDING
     assert mapped.source_event_id == "21790527"
@@ -331,7 +333,7 @@ def test_current_risk_weighs_severity_and_recency():
     from datetime import timedelta
     from types import SimpleNamespace as NS
     from app.modules.m08_historical.historical_service import current_profiles, recency
-    from app.modules.m09_driver_behaviour.settings import DriverBehaviourSettings
+    from app.modules.m09_exception_patterns.settings import ExceptionPatternSettings
     now = datetime(2026, 10, 28)
     cell = grid_cell_id(*KAMBO, 150.0)
 
@@ -339,7 +341,7 @@ def test_current_risk_weighs_severity_and_recency():
         return NS(grid_cell_id=cell, event_type=t, occurred_at=now - timedelta(days=days), latitude=KAMBO[0],
                   longitude=KAMBO[1], road_name="N3", severity=sev, speed_mps=None, speed_limit_mps=None)
 
-    cfg = DriverBehaviourSettings()
+    cfg = ExceptionPatternSettings()
     assert recency(now - timedelta(days=90), now, 90) == 0.5
     fresh_high = current_profiles([ev("HARD_BRAKING", 0, "3")] * 4, cfg, now)[0]
     old_low = current_profiles([ev("HARD_BRAKING", 180, "1")] * 4, cfg, now)[0]

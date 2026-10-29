@@ -55,7 +55,8 @@ class HistoricalEventType(str, enum.Enum):
 
 
 class HistoricalEvent(BaseModel):
-    """One driving event, in canonical form, before map-matching."""
+    """One driving event, in canonical form, before map-matching. Anonymous: no driver or
+    vehicle (app/modules/m08_historical/anonymity.py)."""
     source: str = Field(..., description="Source name, e.g. `manual` or `ymane`.",  # e.g. "ymane", "manual"
                         examples=["manual"])
     source_event_id: str = Field(..., description=(  # source's own id — used for idempotent re-import
@@ -69,17 +70,15 @@ class HistoricalEvent(BaseModel):
     latitude: float = Field(..., description="WGS84 latitude (degrees).", examples=[4.0511])
     longitude: float = Field(..., description="WGS84 longitude (degrees).", examples=[9.7679])
 
-    vehicle_external_id: Optional[str] = Field(None, description=(  # the SOURCE's vehicle identifier — not our Vehicle.id (Step 1)
-        "The source's vehicle identifier (not a platform vehicle id)."))
-    driver_external_id: Optional[str] = Field(None, description="The source's driver identifier.")
-
     speed_mps: Optional[float] = Field(None, description="Speed at the event, m/s.")
     speed_limit_mps: Optional[float] = Field(None, description="Speed limit at the event, m/s.")
     severity: Optional[str] = Field(None, description=(  # raw severity/level from the source, if any — not yet normalized
         "Raw severity from the source, not normalised."))
 
-    raw: Dict[str, Any] = Field({}, description=(  # untouched source payload for this event — forward-compatible, debuggable
-        "Untouched source payload, kept for reference."))
+    raw: Dict[str, Any] = Field({}, description=(  # source payload — only its non-identifying fields are stored
+        "Source payload, kept for reference. Events are anonymous: only the non-identifying fields are "
+        "stored (exception type / id, times, positions, speeds, thresholds, level, durations, distances, "
+        "country, transporter); driver and vehicle fields (plate, unit, driver name / id …) are dropped."))
 
 
 class MapMatchedHistoricalEvent(BaseModel):

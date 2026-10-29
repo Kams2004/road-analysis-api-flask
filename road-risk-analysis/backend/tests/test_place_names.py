@@ -74,7 +74,7 @@ async def test_fill_queued_first_then_busiest_within_budget(db, monkeypatch):
 
     monkeypatch.setattr(geocoding, "reverse_geocode_details", geo)
     for i, n in enumerate((5, 50, 20)):                  # three event squares, busiest = second
-        db.add(EventDailyCell(day=date(2026, 10, 27), country="CAMEROUN", k_lat=4000 + i, k_lon=9000,
+        db.add(EventDailyCell(day=date(2026, 10, 27), source="ymane", country="CAMEROUN", k_lat=4000 + i, k_lon=9000,
                               event_type="SPEEDING", severity="low", road_name="", n=n,
                               lat_sum=(4.0 + i / 1000) * n, lon_sum=9.0 * n,
                               first_at=datetime(2026, 10, 27), last_at=datetime(2026, 10, 27)))

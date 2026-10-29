@@ -314,11 +314,9 @@ OBJECT_POSITION_STATEMENTS = [
 ]
 
 # ── Collision prevention context (migrations/add_collision_context.sql,
-# docs/COLLISION-PREVENTION.md) — optional plate / driver id of a vehicle; the
-# feedback table itself is created by create_all.
+# docs/COLLISION-PREVENTION.md) — the feedback table itself is created by create_all.
+# (The plate / driver id columns it once added are erased and dropped: ANONYMISE_* below.)
 COLLISION_CONTEXT_STATEMENTS = [
-    "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS plate VARCHAR",
-    "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS driver_external_id VARCHAR",
     "CREATE INDEX IF NOT EXISTS ix_collision_feedback_updated_at ON collision_alert_feedback (updated_at)",
     # Per-device secret of a vehicle (migrations/add_vehicle_device_secret.sql)
     "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS device_secret_hash VARCHAR",
@@ -336,19 +334,74 @@ SCALE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_signalements_lat_lon ON signalements (latitude, longitude)",
     "CREATE INDEX IF NOT EXISTS ix_historical_events_lat_lon ON historical_events (latitude, longitude)",
 ]
-# ── Driver behaviour analytics (Module 5 reads historical_events by type,
-# period, driver and vehicle — migrations/add_driver_behaviour.sql) ──────────
+# ── Exception patterns (Module 9, formerly Driver behaviour) reads historical_events by
+# type and period — migrations/add_driver_behaviour.sql) ─────────────────────────────
 DRIVER_BEHAVIOUR_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_historical_events_type_occurred ON historical_events (event_type, occurred_at)",
-    "CREATE INDEX IF NOT EXISTS ix_historical_events_driver ON historical_events (driver_external_id)",
-    "CREATE INDEX IF NOT EXISTS ix_historical_events_vehicle ON historical_events (vehicle_external_id)",
 ]
+
+# ── Anonymity (migrations/anonymise_events.sql, app/modules/m08_historical/anonymity.py) ──
+# Nothing about a driver or a vehicle is kept. Erased once, in the start-up transaction:
+#   historical_events  `raw` reduced to the whitelisted non-identifying fields (RAW_KEYS), then
+#                      driver_external_id / vehicle_external_id set to NULL and dropped — only
+#                      while one of these columns still exists, so it runs exactly once;
+#   vehicles           plate / driver_external_id set to NULL and dropped (same rule);
+#   event_daily*       the old daily summaries (driver / vehicle in their key) dropped — the new
+#                      ones (event_rollup_*) come from create_all and are rebuilt from the events
+#                      (rollups.ROLLUP_VERSION changed: rollups.ready is false → full rebuild queued
+#                      at start-up, app/main.py).
+# Values are overwritten before the columns are dropped (DROP COLUMN alone leaves them in the rows).
+ANONYMISE_ROLLUPS = [
+    "DROP TABLE IF EXISTS event_daily",
+    "DROP TABLE IF EXISTS event_daily_hour",
+    "DROP TABLE IF EXISTS event_daily_cell",
+]
+IDENTITY_COLUMNS = {
+    "historical_events": ("driver_external_id", "vehicle_external_id"),
+    "vehicles": ("plate", "driver_external_id"),
+}
+
+
+def anonymise_raw_sql(raw_type: str = "json") -> str:
+    """UPDATE keeping only the whitelisted keys of every event's `raw` (any JSON shape: a
+    non-object becomes {}). `raw_type`: the column's type (json, or jsonb for tables made by
+    migrations/add_historical_events.sql)."""
+    from app.modules.m08_historical.anonymity import RAW_KEYS
+    keys = ", ".join(f"'{k}'" for k in RAW_KEYS)
+    cast = "jsonb" if raw_type.lower() == "jsonb" else "json"
+    return ("UPDATE historical_events SET raw = COALESCE(("
+            "SELECT jsonb_object_agg(lower(j.key), j.value) FROM jsonb_each("
+            "CASE WHEN jsonb_typeof(raw::jsonb) = 'object' THEN raw::jsonb ELSE '{}'::jsonb END) AS j "
+            f"WHERE lower(j.key) IN ({keys})), '{{}}'::jsonb)::{cast}")
+
+
+def anonymise_statements(existing: set[tuple[str, str]], raw_type: str = "json") -> list[str]:
+    """The erasure still to do on this database (empty once done: idempotent)."""
+    out: list[str] = []
+    for table, cols in IDENTITY_COLUMNS.items():
+        present = [c for c in cols if (table, c) in existing]
+        if not present:
+            continue
+        if table == "historical_events":
+            out.append(anonymise_raw_sql(raw_type))
+        out.append(f"UPDATE {table} SET " + ", ".join(f"{c} = NULL" for c in present)
+                   + " WHERE " + " OR ".join(f"{c} IS NOT NULL" for c in present))
+        out += [f"ALTER TABLE {table} DROP COLUMN IF EXISTS {c}" for c in present]
+    return out + ANONYMISE_ROLLUPS
 
 
 async def _existing_columns(conn) -> set[tuple[str, str]]:
     rows = await conn.exec_driver_sql(
         "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()")
     return {(t, c) for t, c in rows.all()}
+
+
+async def _column_type(conn, table: str, column: str) -> str:
+    rows = await conn.exec_driver_sql(
+        "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() "
+        f"AND table_name = '{table}' AND column_name = '{column}'")
+    row = rows.first()
+    return row[0] if row else "json"
 
 
 async def _existing_indexes(conn) -> set[str]:
@@ -384,4 +437,9 @@ async def run(engine: AsyncEngine) -> None:
                 skipped += 1
                 continue
             await conn.exec_driver_sql(stmt)
+        erase = anonymise_statements(existing, await _column_type(conn, "historical_events", "raw"))
+        for stmt in erase:
+            await conn.exec_driver_sql(stmt)
+        if len(erase) > len(ANONYMISE_ROLLUPS):
+            logger.warning("Anonymity: driver / vehicle identifiers erased from historical_events / vehicles")
     logger.info("Schema upgrade checked (%d existing columns / indexes skipped)", skipped)

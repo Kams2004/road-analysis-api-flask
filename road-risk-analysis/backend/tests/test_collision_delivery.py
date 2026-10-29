@@ -1,8 +1,8 @@
 """
 Collision prevention — delivery and data: the WebSocket /alerts/ws (snapshot, transitions pushed
 from Redis pub/sub, keepalive, authentication errors), driver feedback (idempotent) and the
-metrics endpoint, and the Redis context map precomputed from fleet events, hazards, community
-reports and driver scores (SQLite — the same portable SQL as PostgreSQL), plus the calibration.
+metrics endpoint, and the Redis context map precomputed from fleet events, hazards and community
+reports (SQLite — the same portable SQL as PostgreSQL), plus the calibration.
 """
 import json
 import os
@@ -224,12 +224,11 @@ async def _seed(db, now):
     naive = now.replace(tzinfo=None)
     n = 0
 
-    def ev(t, pos, days, vehicle="LTTR 995 AR", speed=None, limit=None, severity="2"):
+    def ev(t, pos, days, speed=None, limit=None, severity="2"):
         nonlocal n
         n += 1
         db.add(E(source="ymane", source_event_id=f"e{n}", event_type=t, occurred_at=naive - timedelta(days=days),
-                 latitude=pos[0], longitude=pos[1], vehicle_external_id=vehicle, driver_external_id=None,
-                 speed_mps=speed, speed_limit_mps=limit, severity=severity, grid_cell_id="x", raw={}))
+                 latitude=pos[0], longitude=pos[1], speed_mps=speed, speed_limit_mps=limit, severity=severity, grid_cell_id="x", raw={}))
     hot = DOUALA
     calm = geo.destination(*DOUALA, 90.0, 2000.0)
     for i in range(12):
@@ -237,7 +236,7 @@ async def _seed(db, now):
     for i in range(6):
         ev("SPEEDING", hot, 3 + i, speed=19.0, limit=50 / 3.6, severity=None)
     ev("SPEEDING", hot, 4, speed=25.0, limit=80 / 3.6, severity=None)
-    ev("HARD_ACCELERATION", calm, 10, vehicle="CALM 1")
+    ev("HARD_ACCELERATION", calm, 10)
     db.add(Hazard(id="h1", number=1, code="HZ-000001", type="pothole", status="active",
                   latitude=geo.destination(*hot, 0.0, 50.0)[0], longitude=hot[1], radius_m=10.0))
     db.add(Hazard(id="h2", number=2, code="HZ-000002", type="pothole", status="resolved",
@@ -267,10 +266,9 @@ async def test_precomputed_context_map_round_trip(db, fake, fresh_thresholds):
     calm_cell = await context_service.place_at(fake.aio, *calm)
     assert calm_cell.history < cell.history
 
-    scores = await context_service.driver_scores(fake.aio, [("lttr-995 ar", None), ("CALM 1", None), (None, None)])
-    assert scores[0][0] > scores[1][0] and scores[2] == (None, False, None)
+    assert "drivers" not in data and fake.get(context_service.LEGACY_DRIVERS_KEY) is None
     meta = json.loads(fake.get(context_service.META_KEY))
-    assert meta["tz"] == "Africa/Douala" and meta["cells"] == len(data["cells"])
+    assert meta["tz"] == "Africa/Douala" and meta["cells"] == len(data["cells"]) and "high_risk_score" not in meta
 
 
 async def test_refresh_runs_when_due_or_when_events_changed(db, fake, fresh_thresholds):
@@ -348,14 +346,13 @@ async def test_authorize_ws_uses_the_rest_credentials(monkeypatch):
 
 async def test_precomputation_reads_the_daily_summaries_the_same_way(db, fake, fresh_thresholds):
     from app.modules.m08_historical import rollups
-    from app.modules.m09_driver_behaviour.settings import DriverBehaviourSettings
+    from app.modules.m09_exception_patterns.settings import ExceptionPatternSettings
     hot, _ = await _seed(db, NOW)
     raw = await context_service.build(db, NOW)
     assert raw["meta"]["rollups"] is False
-    await rollups.rebuild(db, DriverBehaviourSettings())
+    await rollups.rebuild(db, ExceptionPatternSettings())
     summed = await context_service.build(db, NOW)
     assert summed["meta"]["rollups"] is True
     cid = grid_cell_id(*hot, context_service.cell_size_m())
     a, b = raw["cells"][cid], summed["cells"][cid]
     assert a.history_counts == b.history_counts and a.history == pytest.approx(b.history, abs=0.02)
-    assert raw["drivers"] == summed["drivers"]

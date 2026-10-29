@@ -30,6 +30,8 @@ user's own machine — see conversation history):
       (both "lat,lon" as a single comma-joined string, not separate
       fields), vmax (observed value, km/h in every sample seen),
       unitid, evidence (a JSON-encoded string with photo/video links).
+    Only the non-identifying ones are kept (anonymity.RAW_KEYS): the
+    vehicle / driver / unit ids and the evidence links are dropped.
 
 STILL NOT CONFIRMED:
   - What each `exceptiontype` numeric code actually means. Ymane's own
@@ -55,6 +57,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
+from app.modules.m08_historical.anonymity import clean_raw
 from app.modules.m08_historical.domain import HistoricalEvent, HistoricalEventType
 from app.modules.m08_historical.sources.base import HistoricalEventSource
 
@@ -129,15 +132,13 @@ def _map_raw_event_fields(raw: Dict[str, Any], source: str = "ymane") -> Optiona
         occurred_at=occurred_at,
         latitude=lat,
         longitude=lon,
-        vehicle_external_id=_stringify(raw.get("vehicleid")),
-        driver_external_id=_stringify(raw.get("driverid")),
         speed_mps=_to_mps(vmax),
         # 0.0 shows up on every sample seen for fields that don't apply to
         # that exception — treat it as "not present" rather than a real
         # zero-valued speed limit.
         speed_limit_mps=_to_mps(threshold) if threshold else None,
         severity=_stringify(raw.get("level")),
-        raw=raw,
+        raw=clean_raw(raw),          # anonymous: no vehicleid / driverid / unitid / evidence
     )
 
 

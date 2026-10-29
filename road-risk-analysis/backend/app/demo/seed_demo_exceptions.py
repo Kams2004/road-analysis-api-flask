@@ -150,7 +150,6 @@ def build_events():
                     "occurred_at": occurred.isoformat(),
                     "latitude": round(lat, 6),
                     "longitude": round(lon, 6),
-                    "vehicle_external_id": f"demo-veh-{random.randint(1, 6)}",
                     "speed_mps": round(speed, 1) if speed else None,
                     "speed_limit_mps": 22.2 if speed else None,  # ~80 km/h highway limit
                     "severity": {"light": "low", "moderate": "low", "high": "medium", "critical": "high"}[tier],

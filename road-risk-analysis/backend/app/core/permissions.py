@@ -34,7 +34,7 @@ MODULES: tuple[Module, ...] = (
     Module("collisions",       "Collision prevention",             "Risk"),
     Module("road_risk",        "Road risk assessment (ARR)",       "Risk"),
     Module("historical",       "Historical risk analysis",         "Risk"),
-    Module("driver_behaviour", "Driver behaviour",                 "Risk"),
+    Module("driver_behaviour", "Exception patterns",               "Risk"),   # key kept (stored in roles)
     Module("reports",          "Reports & exports",                "Risk"),
     Module("settings",         "Platform settings",                "Administration"),
     Module("users",            "Users",                            "Administration"),

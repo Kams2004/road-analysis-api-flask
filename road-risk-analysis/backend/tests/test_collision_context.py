@@ -83,15 +83,18 @@ def test_vehicle_speeding_needs_more_than_tolerance():
     assert fast.factors["vehicle_speeding"] == pytest.approx(1.0)      # 40 % = tolerance 10 + full 30
 
 
-def test_driver_factor_only_for_high_risk_scores():
-    parties = [ctx.Party("A", driver_score=45.0, driver_high=False), ctx.Party("B", driver_score=80.0, driver_high=True,
-                                                                               driver_ref="plate:LTTR995AR")]
-    res = ctx.compute_context(None, DOUALA, parties, NOW, "UTC", 4.0, CFG)
-    (r,) = res.reasons
-    assert r.code == "RISKY_DRIVER" and r.params["vehicle_id"] == "B"
-    assert res.index == pytest.approx(0.25 * 0.8, abs=1e-3)
-    calm = ctx.compute_context(None, DOUALA, parties[:1], NOW, "UTC", 4.0, CFG)
-    assert calm.index == 0.0
+def test_no_driver_factor_and_a_stored_driver_weight_is_ignored():
+    # anonymous: a party is its current trip only — no plate, no driver, no behaviour score
+    assert "driver" not in ctx.Party.__dataclass_fields__ and not [f for f in ctx.Party.__dataclass_fields__
+                                                                   if "driver" in f or "plate" in f]
+    res = ctx.compute_context(None, DOUALA, [ctx.Party("A", 10.0), ctx.Party("B", 10.0)], NOW, "UTC", 4.0, CFG)
+    assert "driver" not in res.factors and res.index == 0.0 and res.reasons == []
+    # settings saved before (web console sent every factor) still load
+    old = ContextSettings(weights={"history": 0.4, "driver": 0.25}, driver_window_days=90)
+    assert "driver" not in old.weights and old.weights["history"] == 0.4
+    merged = thresholds.CollisionSettings.merge_patch(
+        {"context": {"weights": {"driver": 0.25}}}, {"context": {"weights": {"night": 0.2}}})
+    assert "driver" not in thresholds.CollisionSettings(**merged).context.weights
 
 
 @pytest.mark.parametrize("utc_hour,night", [(17, False), (18, True), (4, True), (5, False), (12, False)])
@@ -117,7 +120,7 @@ def test_combination_is_capped_and_sorted():
     cell = cell_at(DOUALA, history=1.0, history_events=40, history_counts={"ACCIDENT": 5}, history_dominant="ACCIDENT",
                    speeding=1.0, speeding_events=30, local_limit_mps=10.0,
                    hazards=[("pothole", *p), ("pothole", *p)], reports=[("accident", "ACCIDENT_REPORTED", *p)])
-    res = ctx.compute_context(cell, DOUALA, [ctx.Party("A", 20.0, 40.0, 9.0, 90.0, True)], NOW.replace(hour=20),
+    res = ctx.compute_context(cell, DOUALA, [ctx.Party("A", 20.0, 40.0, 9.0)], NOW.replace(hour=20),
                               "UTC", 4.0, CFG)
     assert res.index == 1.0
     contributions = [r.contribution for r in res.reasons]

@@ -239,7 +239,7 @@ class ConnectionOut(BaseModel):
     sftp:                 Optional[SftpInfoOut] = Field(None, description="SFTP server profile (provider `sftp`).")
     purpose:              Purpose = Field("videos", description="`videos` (browse / import → processing jobs) or "
                                                                 "`events` (daily driving-event CSV files → historical "
-                                                                "analysis and driver behaviour).")
+                                                                "analysis and exception patterns).")
     event_feed:           Optional[EventFeedOut] = Field(None, description="Daily files (purpose `events`).")
     saved_folders:        list[SavedFolder] = Field(default_factory=list, description="Folders bookmarked in "
                                                                                      "the browser.")

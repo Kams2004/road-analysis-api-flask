@@ -12,7 +12,9 @@ SPEED_MPS_CEILING = 100.0
 # ─── Vehicle telemetry schemas ────────────────────────────────────────────────
 
 class VehicleRegisterIn(BaseModel):
-    """Register (or re-register) a vehicle/device for live telemetry."""
+    """Register (or re-register) a vehicle/device for live telemetry. Anonymous: nothing identifies
+    the vehicle or its driver — the `plate` / `driver_external_id` sent by older app versions are
+    accepted and ignored."""
     vehicle_id:   Optional[str] = Field(None, description=(  # client resends its stored id to re-register after reinstall/backend reset
         "Id previously issued to this device — resend it to re-register after a reinstall or a backend "
         "reset (the same id is kept, created if unknown). Omit to get a new UUID."),
@@ -20,12 +22,6 @@ class VehicleRegisterIn(BaseModel):
     vehicle_type: VehicleType = Field(VehicleType.private, description=(
         "Kind of vehicle (`bus`, `taxi`, `truck`, `private`, `moto`); updated on re-registration."),
         examples=["taxi"])
-    plate:        Optional[str] = Field(None, max_length=32, description=(
-        "Licence plate as written in the fleet exception files (e.g. `LTTR 995 AR`) — links the vehicle to "
-        "its driving-behaviour score (collision context factor `RISKY_DRIVER`). Omitted / null keeps the "
-        "stored value on re-registration; an empty string clears it."), examples=["LTTR 995 AR"])
-    driver_external_id: Optional[str] = Field(None, max_length=64, description=(
-        "Fleet id of the driver, when known (same rule as `plate`)."), examples=["DRV-0042"])
 
 
 class VehicleOut(BaseModel):
@@ -35,8 +31,6 @@ class VehicleOut(BaseModel):
     created_at:   datetime = Field(..., description="Registration time (UTC).")
     last_seen:    Optional[datetime] = Field(description=(
         "Last ping time (UTC), updated at most every `VEHICLE_LAST_SEEN_THROTTLE_S` seconds; null if never pinged."))
-    plate:        Optional[str] = Field(None, description="Licence plate, if registered.")
-    driver_external_id: Optional[str] = Field(None, description="Fleet driver id, if registered.")
     device_secret: Optional[str] = Field(None, description=(
         "Secret of the device that owns the vehicle — answered ONCE, when the vehicle is created (or a "
         "vehicle registered before device secrets is claimed). Send it as `X-Device-Secret` on every call "

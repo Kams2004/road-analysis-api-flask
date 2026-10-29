@@ -19,8 +19,7 @@ Factors (each 0 … 1):
                      1 at speeding_tolerance_pct + speeding_full_excess_pct
   hazards            validated hazards (`hazard_types`) within hazard_radius_m / hazard_saturation
   reports            visible community reports within report_radius_m, Σ report_kind_weights
-  driver             behaviour score / 100 of the riskiest party when ≥ driver_behaviour.high_risk_score
-  night              local time (driver_behaviour.timezone) in [night_start_hour, night_end_hour)
+  night              local time (settings `driver_behaviour.timezone`) in [night_start_hour, night_end_hour)
   poor_gps           a party's GPS accuracy > poor_gps_accuracy_m
   stale_data         a party's telemetry older than collision.fresh_after_s
 """
@@ -28,8 +27,11 @@ from typing import Dict, List
 
 from pydantic import BaseModel, Field, model_validator
 
-FACTORS = ("history", "habitual_speeding", "vehicle_speeding", "hazards", "reports", "driver",
+FACTORS = ("history", "habitual_speeding", "vehicle_speeding", "hazards", "reports",
            "night", "poor_gps", "stale_data")
+# Former factors, ignored when found in stored settings: `driver` (a phone's plate linked to a
+# fleet behaviour score) — removed, nothing identifies a driver or a vehicle any more.
+RETIRED_FACTORS = ("driver",)
 
 # Community report type (app.modules.m11_community.models.signalement.SignalementType) → reason kind.
 DEFAULT_REPORT_KINDS: Dict[str, str] = {
@@ -53,7 +55,7 @@ REPORT_REASON_KINDS = ("ACCIDENT_REPORTED", "ROADWORK_REPORTED", "FLOODING_REPOR
 
 def _default_weights() -> Dict[str, float]:
     return {"history": 0.35, "habitual_speeding": 0.15, "vehicle_speeding": 0.30, "hazards": 0.15,
-            "reports": 0.30, "driver": 0.25, "night": 0.10, "poor_gps": 0.10, "stale_data": 0.10}
+            "reports": 0.30, "night": 0.10, "poor_gps": 0.10, "stale_data": 0.10}
 
 
 class ContextSettings(BaseModel):
@@ -84,8 +86,6 @@ class ContextSettings(BaseModel):
     report_kind_weights: Dict[str, float] = Field(default_factory=lambda: {
         "ACCIDENT_REPORTED": 1.0, "ROADWORK_REPORTED": 0.8, "FLOODING_REPORTED": 0.8,
         "CONGESTION_REPORTED": 0.6, "HAZARD_REPORTED": 0.6})
-    # parties
-    driver_window_days:  int   = Field(90, ge=1, le=3650)
     # conditions
     night_start_hour:    int   = Field(19, ge=0, le=23)
     night_end_hour:      int   = Field(6, ge=0, le=23)
@@ -93,6 +93,13 @@ class ContextSettings(BaseModel):
     # precomputation (beat task app.workers.collision_tasks.refresh_collision_context)
     refresh_interval_s:  int   = Field(300, ge=60, le=86_400)
     max_cells:           int   = Field(200_000, ge=100, le=5_000_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired(cls, data):
+        if isinstance(data, dict) and isinstance(data.get("weights"), dict):
+            data = {**data, "weights": {k: v for k, v in data["weights"].items() if k not in RETIRED_FACTORS}}
+        return data
 
     @model_validator(mode="after")
     def _check(self):

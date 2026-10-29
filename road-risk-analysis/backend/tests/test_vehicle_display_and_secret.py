@@ -150,6 +150,17 @@ async def test_the_device_secret_is_given_once_and_required_after(api):
     assert mine.status_code == 200 and mine.json()["device_secret"] is None     # never answered twice
 
 
+async def test_an_old_app_sending_a_plate_is_accepted_and_nothing_is_stored(api):
+    body = {"vehicle_id": "old-app", "vehicle_type": "taxi", "plate": "LTTR 995 AR", "driver_external_id": "D-42"}
+    r = await api.post("/vehicles/register", json=body)
+    assert r.status_code == 200, r.text
+    assert "plate" not in r.json() and "driver_external_id" not in r.json()
+    secret = r.json()["device_secret"]
+    assert (await api.post("/vehicles/old-app/ping", json=PING, headers={"X-Device-Secret": secret})).status_code == 200
+    from app.modules.m10_collision.models.vehicle import Vehicle
+    assert not [c for c in Vehicle.__table__.columns if c.name in ("plate", "driver_external_id")]
+
+
 async def test_a_vehicle_registered_before_secrets_is_claimed_once(api):
     from app.modules.m10_collision.models.vehicle import Vehicle, VehicleType
     db = api._transport.app.dependency_overrides[get_db]

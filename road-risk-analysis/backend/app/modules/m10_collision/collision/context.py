@@ -60,12 +60,12 @@ class ContextReason(BaseModel):
         "Stable code: `HISTORY_HARSH_BRAKING`, `HISTORY_HARSH_CORNERING`, `HISTORY_ACCIDENTS`, "
         "`HISTORY_EVENTS`, `HABITUAL_SPEEDING`, `VEHICLE_SPEEDING`, `POTHOLE_NEARBY`, `SPEED_BUMP_NEARBY`, "
         "`HAZARD_NEARBY`, `ACCIDENT_REPORTED`, `ROADWORK_REPORTED`, `FLOODING_REPORTED`, "
-        "`CONGESTION_REPORTED`, `HAZARD_REPORTED`, `RISKY_DRIVER`, `NIGHT`, `POOR_GPS`, `STALE_DATA`."),
+        "`CONGESTION_REPORTED`, `HAZARD_REPORTED`, `NIGHT`, `POOR_GPS`, `STALE_DATA`."),
         examples=["HISTORY_HARSH_BRAKING"])
     label: str = Field(..., description="English explanation.", examples=["Frequent harsh braking at this place"])
     factor: str = Field(..., description=(
         "Factor of the index: `history`, `habitual_speeding`, `vehicle_speeding`, `hazards`, `reports`, "
-        "`driver`, `night`, `poor_gps`, `stale_data`."))
+        "`night`, `poor_gps`, `stale_data`."))
     value: float = Field(..., description="Value of the factor, 0–1.")
     contribution: float = Field(..., description="Share of the index this reason accounts for (weight × value).")
     params: Dict[str, Any] = Field(default_factory=dict, description=(
@@ -91,14 +91,12 @@ class PlaceCell(BaseModel):
 
 @dataclass
 class Party:
-    """What the index needs to know about one vehicle of the pair."""
+    """What the index needs to know about one vehicle of the pair — its current trip only,
+    never who drives it (no plate, no driver id, no behaviour score)."""
     vehicle_id: str
     speed_mps: Optional[float] = None
     accuracy_m: Optional[float] = None         # as reported (None = not reported, never "poor")
     telemetry_age_s: float = 0.0
-    driver_score: Optional[float] = None       # 0..100, behaviour score of its driver / plate
-    driver_high: bool = False                  # score ≥ driver_behaviour.high_risk_score
-    driver_ref: Optional[str] = None
 
 
 class ContextResult(BaseModel):
@@ -335,16 +333,6 @@ def vehicle_speeding_factor(parties: List[Party], local_limit_mps: Optional[floa
     return best
 
 
-def driver_factor(parties: List[Party]) -> _Factor:
-    risky = [p for p in parties if p.driver_high and p.driver_score is not None]
-    if not risky:
-        return _Factor()
-    p = max(risky, key=lambda x: x.driver_score)
-    return _Factor(min(1.0, p.driver_score / 100.0), [(
-        "RISKY_DRIVER", f"High-risk driving behaviour score ({p.driver_score:.0f}/100)",
-        {"vehicle_id": p.vehicle_id, "score": p.driver_score, "ref": p.driver_ref}, 1.0)])
-
-
 def is_night(local_hour: int, cfg: ContextSettings) -> bool:
     s, e = cfg.night_start_hour, cfg.night_end_hour
     return (local_hour >= s or local_hour < e) if s > e else (s <= local_hour < e)
@@ -402,7 +390,6 @@ def compute_context(cell: Optional[PlaceCell], point: LatLon, parties: List[Part
         return ContextResult()
     factors = place_factors(cell, point, cfg)
     factors["vehicle_speeding"] = vehicle_speeding_factor(parties, cell.local_limit_mps if cell else None, cfg)
-    factors["driver"] = driver_factor(parties)
     factors.update(condition_factors(now, tz_name, parties, fresh_after_s, cfg))
     return combine(factors, cfg)
 

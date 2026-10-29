@@ -14,7 +14,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from app.modules.m09_driver_behaviour.analytics import resolve_window
+from app.modules.m09_exception_patterns.analytics import resolve_window
 from app.modules.m14_reports import collectors, pathfilter, pdf
 from app.modules.m14_reports.i18n import translator
 
@@ -170,8 +170,7 @@ async def client(monkeypatch):
     async with Session() as s:
         for i, (lat, t) in enumerate([(4.02, "HARD_BRAKING"), (4.06, "SPEEDING"), (4.30, "SPEEDING")]):
             s.add(E(source="pytest", source_event_id=f"r{i}", event_type=t, occurred_at=now - timedelta(days=1),
-                    latitude=lat, longitude=9.7001, driver_external_id="D1", vehicle_external_id="V1",
-                    grid_cell_id="c", road_name="N5", raw={}))
+                    latitude=lat, longitude=9.7001, grid_cell_id="c", road_name="N5", raw={}))
         await s.commit()
     settings_service.clear_cache()
 
@@ -200,7 +199,7 @@ async def test_generate_list_download_delete(client):
     rep = r.json()
     assert rep["status"] == "ready" and rep["page_count"] >= 1 and rep["summary"]["items"] == 2   # 4.30 is off-path
     assert rep["filters"]["resolved_path"]["name"] == "Test path" and rep["title"].endswith("Test path")
-    assert rep["methodology"]["driver_behaviour"] == "dba-1"
+    assert rep["methodology"]["driver_behaviour"] == "exp-1"
     assert len(store) == 1
 
     lst = (await c.get("/reports/")).json()
@@ -208,7 +207,9 @@ async def test_generate_list_download_delete(client):
     d = await c.get(f"/reports/{rep['id']}/download")
     assert d.status_code == 200 and d.headers["content-type"] == "application/pdf"
     assert d.content.startswith(b"%PDF") and "attachment" in d.headers["content-disposition"]
-    assert "Driver behaviour report" in _text(d.content)
+    text = _text(d.content)
+    assert "Exception patterns report" in text and "Exceptions by source / provider" in text
+    assert "Driver" not in text and "Vehicle" not in text and "ranking" not in text.lower()
 
     assert (await c.delete(f"/reports/{rep['id']}")).status_code == 204
     assert store == {} and (await c.get(f"/reports/{rep['id']}")).status_code == 404

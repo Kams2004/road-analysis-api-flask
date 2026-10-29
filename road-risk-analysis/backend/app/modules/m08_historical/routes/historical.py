@@ -176,21 +176,21 @@ async def route_preview(
 
 
 # ── Module 4 dashboard (web "Historical Risk Analysis"): overview, heatmap,
-#    risk zones, trend, import history — overall risk only; per-behaviour
-#    analytics live in /driver-behaviour (Module 5). ───────────────────────────
+#    risk zones, trend, import history — overall risk only; the anonymous
+#    exception statistics live in /exception-patterns (Module 9). ─────────────
 
 from datetime import datetime as _dt  # noqa: E402
 from typing import Any, Dict  # noqa: E402
 
-from app.modules.m09_driver_behaviour.analytics import bucket_unit, resolve_window  # noqa: E402
-from app.modules.m09_driver_behaviour.routes.driver_behaviour import WindowOut, parse_bbox  # noqa: E402
+from app.modules.m09_exception_patterns.analytics import bucket_unit, resolve_window  # noqa: E402
+from app.modules.m09_exception_patterns.routes.exception_patterns import WindowOut, parse_bbox  # noqa: E402
 
 _PERIOD_Q = Query("all", description="`7d`, `30d`, `90d`, `12m` or `all` (default). Ignored with dates.")
 _FROM_Q = Query(None, description="First day (inclusive, UTC).")
 _TO_Q = Query(None, description="Last day (inclusive, UTC).")
 _BBOX_Q = Query(None, description="Only inside `south,west,north,east` (WGS84 degrees).")
 _COUNTRY_Q = Query(None, description="Only these countries (repeat or comma-separate), e.g. `CAMEROUN` "
-                                     "(list: `GET /driver-behaviour/countries`).")
+                                     "(list: `GET /exception-patterns/countries`).")
 _PERIOD_ERR = errors(legacy(422, "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all", summary="unknown period"),
                      legacy(422, "'bbox' must be 'south,west,north,east'", summary="malformed bbox"))
 
@@ -213,10 +213,10 @@ def _cells(profiles) -> List[CellOut]:
 
 
 async def _scope(db: AsyncSession, win, bbox, country):
-    """(behaviour settings — severity rules of the summaries —, scope over every event type)."""
+    """(exception-pattern settings — severity rules of the summaries —, scope over every event type)."""
     from app.modules.m08_historical import aggregates as G, rollups
-    from app.modules.m09_driver_behaviour import service as behaviour
-    cfg = await behaviour.get_settings(db)
+    from app.modules.m09_exception_patterns import service as patterns
+    cfg = await patterns.get_settings(db)
     use = await rollups.ready(db, cfg)
     return cfg, G.Scope(win.start, win.end, None, G.clean_countries(country), bbox=parse_bbox(bbox), rollups=use)
 

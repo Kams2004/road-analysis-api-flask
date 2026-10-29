@@ -20,16 +20,18 @@ class HistoricalEventRecord(Base):
     training (Step 6.2+) and must survive independently of any one vehicle's
     live session — the opposite data-lifetime characteristic, the opposite
     storage choice, for the same reasons Step 2 documented the other way.
+
+    Anonymous: no driver or vehicle column, and `raw` keeps only the
+    non-identifying source fields (app/modules/m08_historical/anonymity.py;
+    the identifiers stored before were erased by app/core/db/upgrade.py).
     """
     __tablename__ = "historical_events"
     __table_args__ = (
         UniqueConstraint("source", "source_event_id", name="uq_historical_event_source"),
         Index("ix_historical_events_grid_cell", "grid_cell_id"),
         Index("ix_historical_events_occurred_at", "occurred_at"),
-        # Module 5 (driver behaviour) filters
+        # Exception patterns (Module 9) filters
         Index("ix_historical_events_type_occurred", "event_type", "occurred_at"),
-        Index("ix_historical_events_driver", "driver_external_id"),
-        Index("ix_historical_events_vehicle", "vehicle_external_id"),
         Index("ix_historical_events_country_occurred", "country", "occurred_at"),
         Index("ix_historical_events_file", "event_file_id"),
     )
@@ -45,9 +47,6 @@ class HistoricalEventRecord(Base):
     latitude:  Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
 
-    vehicle_external_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    driver_external_id:  Mapped[str | None] = mapped_column(String, nullable=True)
-
     speed_mps:       Mapped[float | None] = mapped_column(Float, nullable=True)
     speed_limit_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
     severity:        Mapped[str | None]   = mapped_column(String, nullable=True)
@@ -62,12 +61,12 @@ class HistoricalEventRecord(Base):
 
     # Fleet context (daily event files — app/modules/m08_historical/sources/ymane_csv.py)
     country:      Mapped[str | None]      = mapped_column(String, nullable=True)   # customer affiliate, e.g. CAMEROUN
-    transporter:  Mapped[str | None]      = mapped_column(String, nullable=True)
+    transporter:  Mapped[str | None]      = mapped_column(String, nullable=True)   # fleet operator (a company)
     ended_at:     Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_s:   Mapped[float | None]    = mapped_column(Float, nullable=True)
     distance_km:  Mapped[float | None]    = mapped_column(Float, nullable=True)
     event_file_id: Mapped[str | None]     = mapped_column(String, nullable=True)   # event_files.id it came from
 
-    raw: Mapped[dict] = mapped_column(JSON, default=dict)  # untouched source payload — forward-compatible, debuggable
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)  # non-identifying source fields (anonymity.RAW_KEYS)
 
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

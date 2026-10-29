@@ -90,7 +90,7 @@ async def _startup() -> None:
         await _asyncio.to_thread(get_minio)
     except Exception:  # MinIO down must not keep the API down
         logging.getLogger(__name__).exception("MinIO not reachable at start-up")
-    # Daily event summaries (Historical analysis / Driver behaviour) never built, or built for other
+    # Daily event summaries (Historical analysis / Exception patterns) never built, or built for other
     # severity rules: one full rebuild in the worker (the screens read raw events meanwhile).
     if await _claim("event_rollups_check", 600):
         try:
@@ -102,6 +102,14 @@ async def _startup() -> None:
                     rebuild_event_rollups.delay()
         except Exception:
             logging.getLogger(__name__).exception("event summaries check failed")
+    # Anonymity: plate / driver id that earlier versions left in the live vehicle hashes and the
+    # collision context (Postgres is cleaned by app/core/db/upgrade.py). Idempotent.
+    if await _claim("forget_vehicle_identities", 600):
+        try:
+            from app.modules.m10_collision import vehicle_service as _vs
+            await _vs.forget_identities()
+        except Exception:
+            logging.getLogger(__name__).exception("live vehicle identities not cleaned")
     # Training-data objects left unwritten before a restart (docs/TRAINING-DATA.md; SKIP LOCKED)
     from app.modules.m06_hazards.training_data import sync as training_sync
     training_sync.kick(delay_s=15)

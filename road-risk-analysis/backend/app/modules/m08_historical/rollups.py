@@ -7,9 +7,9 @@ are made of. Both are portable SQL (PostgreSQL in production, SQLite in tests).
     ready(db, cfg)                summaries complete for the current severity rules?
 
 app/modules/m08_historical/aggregates.py reads the summaries when `ready`, the raw events
-otherwise (or when a filter the summaries do not carry is used: map area, driver / vehicle for
-hour and map patterns). The same per-event columns feed both paths, so they give the same
-numbers.
+otherwise (or when a filter the summaries do not carry is used: map area). The same per-event
+columns feed both paths, so they give the same numbers. No driver / vehicle dimension: the
+events and their summaries are anonymous (anonymity.py).
 """
 from __future__ import annotations
 
@@ -28,15 +28,41 @@ from app.modules.m08_historical.models.historical_event import HistoricalEventRe
 
 logger = logging.getLogger(__name__)
 
-ENTITY_KEYS = ("day", "source", "country", "transporter", "driver", "vehicle", "event_type", "severity")
+ENTITY_KEYS = ("day", "source", "country", "transporter", "event_type", "severity", "speed_band", "excess_band")
 ENTITY_SUMS = ("n", "speed_sum", "speed_n", "limit_sum", "limit_n", "excess_sum", "excess_n")
-HOUR_KEYS = ("day", "country", "event_type", "hour")
-CELL_KEYS = ("day", "country", "k_lat", "k_lon", "event_type", "severity", "road_name")
+HOUR_KEYS = ("day", "source", "country", "event_type", "severity", "hour")
+CELL_KEYS = ("day", "source", "country", "k_lat", "k_lon", "event_type", "severity", "road_name")
 CELL_SUMS = ("n", "lat_sum", "lon_sum")
+
+# Bands of the recorded speed (km/h) and of the excess over the limit (% of the limit): lower
+# bounds of each band after the first. Labels "0-30" … "110+"; '' when the speed / limit is unknown.
+SPEED_BANDS_KMH = (30, 50, 70, 90, 110)
+EXCESS_BANDS_PCT = (10, 20, 30, 50)
+ROLLUP_VERSION = "v2"          # dimensions of the summaries; a new value makes `ready` false → full rebuild
+
+
+def band_labels(bounds: Iterable[float]) -> list[str]:
+    b = [0, *bounds]
+    return [f"{b[i]:g}-{b[i + 1]:g}" for i in range(len(b) - 1)] + [f"{b[-1]:g}+"]
+
+
+SPEED_BANDS = band_labels(SPEED_BANDS_KMH)
+EXCESS_BANDS = band_labels(EXCESS_BANDS_PCT)
+
+
+def band_of(value: Optional[float], bounds: Iterable[float]) -> str:
+    """Python twin of _band_expr (tests, per-event reads)."""
+    if value is None:
+        return ""
+    labels = band_labels(bounds)
+    for i, b in enumerate(bounds):
+        if value < b:
+            return labels[i]
+    return labels[-1]
 
 
 def _synonyms():
-    from app.modules.m09_driver_behaviour.analytics import _SEVERITY_SYNONYMS
+    from app.modules.m09_exception_patterns.analytics import _SEVERITY_SYNONYMS
     out: dict[str, list[str]] = {"low": [], "medium": [], "high": []}
     for k, v in _SEVERITY_SYNONYMS.items():
         out[v].append(k)
@@ -58,7 +84,7 @@ def severity_expr(cfg):
 
 
 def rules_hash(cfg) -> str:
-    key = f"v1|{cfg.speeding_medium_excess_pct}|{cfg.speeding_high_excess_pct}"
+    key = f"{ROLLUP_VERSION}|{cfg.speeding_medium_excess_pct}|{cfg.speeding_high_excess_pct}"
     return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
@@ -78,6 +104,22 @@ def day_expr():
     return func.date(E.occurred_at)
 
 
+def _band_expr(value, known, bounds: Iterable[float]):
+    bounds = list(bounds)
+    labels = band_labels(bounds)
+    whens = [(and_(known, value < b), literal_column(f"'{labels[i]}'")) for i, b in enumerate(bounds)]
+    return case(*whens, (known, literal_column(f"'{labels[-1]}'")), else_=EMPTY)
+
+
+def speed_band_expr():
+    return _band_expr(E.speed_mps * 3.6, E.speed_mps.isnot(None), SPEED_BANDS_KMH)
+
+
+def excess_band_expr():
+    known = and_(E.speed_mps.isnot(None), E.speed_limit_mps > 0)
+    return _band_expr((E.speed_mps - E.speed_limit_mps) / E.speed_limit_mps * 100.0, known, EXCESS_BANDS_PCT)
+
+
 # ── per-event columns (one row per event, named like the summary columns) ────
 
 def entity_columns(cfg) -> list:
@@ -86,9 +128,9 @@ def entity_columns(cfg) -> list:
     excess = (E.speed_mps - E.speed_limit_mps) / E.speed_limit_mps * 100.0
     return [
         day_expr().label("day"), E.source.label("source"), _k(E.country).label("country"),
-        _k(E.transporter).label("transporter"), _k(E.driver_external_id).label("driver"),
-        _k(E.vehicle_external_id).label("vehicle"), E.event_type.label("event_type"),
-        severity_expr(cfg).label("severity"), literal(1).label("n"),
+        _k(E.transporter).label("transporter"), E.event_type.label("event_type"),
+        severity_expr(cfg).label("severity"), speed_band_expr().label("speed_band"),
+        excess_band_expr().label("excess_band"), literal(1).label("n"),
         case((has_speed, E.speed_mps), else_=0.0).label("speed_sum"),
         case((has_speed, 1), else_=0).label("speed_n"), E.speed_mps.label("speed_max"),
         case((has_limit, E.speed_limit_mps), else_=0.0).label("limit_sum"),
@@ -99,14 +141,15 @@ def entity_columns(cfg) -> list:
     ]
 
 
-def hour_columns() -> list:
-    return [day_expr().label("day"), _k(E.country).label("country"), E.event_type.label("event_type"),
+def hour_columns(cfg) -> list:
+    return [day_expr().label("day"), E.source.label("source"), _k(E.country).label("country"),
+            E.event_type.label("event_type"), severity_expr(cfg).label("severity"),
             cast(extract("hour", E.occurred_at), Integer).label("hour"), literal(1).label("n")]
 
 
 def cell_columns(cfg) -> list:
     return [
-        day_expr().label("day"), _k(E.country).label("country"),
+        day_expr().label("day"), E.source.label("source"), _k(E.country).label("country"),
         cast(E.latitude * 1000, Integer).label("k_lat"), cast(E.longitude * 1000, Integer).label("k_lon"),
         E.event_type.label("event_type"), severity_expr(cfg).label("severity"), _k(E.road_name).label("road_name"),
         literal(1).label("n"), E.latitude.label("lat_sum"), E.longitude.label("lon_sum"),
@@ -157,7 +200,7 @@ async def _insert(db: AsyncSession, cfg, where: list) -> None:
     q = grouped(sub, ENTITY_KEYS, ENTITY_SUMS, _entity_extra(sub))
     await db.execute(insert(EventDaily).from_select(list(ENTITY_KEYS) + list(ENTITY_SUMS)
                                                     + ["speed_max", "first_at", "last_at"], q))
-    sub = select(*hour_columns()).where(*where).subquery()
+    sub = select(*hour_columns(cfg)).where(*where).subquery()
     await db.execute(insert(EventDailyHour).from_select(list(HOUR_KEYS) + ["n"], grouped(sub, HOUR_KEYS, ["n"])))
     sub = select(*cell_columns(cfg)).where(*where).subquery()
     await db.execute(insert(EventDailyCell).from_select(list(CELL_KEYS) + list(CELL_SUMS) + ["first_at", "last_at"],

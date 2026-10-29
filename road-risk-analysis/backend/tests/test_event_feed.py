@@ -42,12 +42,28 @@ def test_reads_both_gps_formats_longitude_first_types_units_and_context():
     assert cm["speed_mps"] == round(41 / 3.6, 3) and cm["speed_limit_mps"] == round(30 / 3.6, 3)
     assert cm["occurred_at"] == datetime(2026, 10, 27, 5, 1, 38) and cm["duration_s"] == 38.0
     assert (cm["country"], cm["transporter"], cm["severity"]) == ("CAMEROUN", "SODITRANS-GIE", "1")
-    assert mg["event_type"] == "HARD_BRAKING" and mg["driver_external_id"] is None
+    assert mg["event_type"] == "HARD_BRAKING"
     assert mg["speed_limit_mps"] is None                      # threshold of a harsh event is not a speed
     assert corner["event_type"] == "HARSH_CORNERING" and corner["country"] == "MADAGASIKARA"
     assert corner["ended_at"] is None and corner["duration_s"] is None
     assert r.by_type() == {"SPEEDING": 1, "HARD_BRAKING": 1, "HARSH_CORNERING": 1}
-    assert cm["raw"]["evidence"] == '{"a": 1}' and "usercoments" not in cm["raw"]
+    assert cm["raw"]["exception_type_name"] == "Speeding" and cm["raw"]["transporter_name"] == "SODITRANS-GIE"
+
+
+def test_no_driver_or_vehicle_is_kept_not_even_in_raw():
+    for e in ymane_csv.parse(csv(ROW_CM, ROW_MG, ROW_CORNER)).events:
+        assert not [k for k in e if "driver" in k or "vehicle" in k]
+        assert not {"vehicledesc", "driver_name", "unitid", "evidence", "speedid", "usercoments"} & set(e["raw"])
+        flat = repr(e)
+        for identity in ("LTTR 995 AR", "CLE.SODITRANS", "TEMCM168", "8214 TCC", "TMSA033", "0775 AK", "Jean"):
+            assert identity not in flat
+    # a full export header (every provider column) keeps only the whitelisted ones
+    from app.modules.m08_historical.anonymity import RAW_KEYS, clean_raw
+    full = {"exceptionid": "1", "vehicledesc": "LTTR 995 AR", "driver_name": "X", "unitid": "U", "speedid": "S_U",
+            "evidence": "{}", "usercoments": "call Paul", "restoreduserid": "42", "aidetectiondetails": "{}",
+            "vmax": "41", "transporter_name": "T", "Level": "2", "empty": ""}
+    assert clean_raw(full) == {"exceptionid": "1", "vmax": "41", "transporter_name": "T", "level": "2"}
+    assert "vehicledesc" not in RAW_KEYS and "driver_name" not in RAW_KEYS
 
 
 def test_bad_lines_are_skipped_with_a_reason_and_duplicates_kept_once():
@@ -67,9 +83,9 @@ def test_not_an_export_is_refused():
 
 
 def test_latin1_file_and_utc_offsets():
-    data = csv(ROW_CM.replace("CLE.SODITRANS", "Léon").replace("2026-10-27T05:01:38", "2026-10-27T06:01:38+01:00"))
+    data = csv(ROW_CM.replace("SODITRANS-GIE", "SOCIÉTÉ").replace("2026-10-27T05:01:38", "2026-10-27T06:01:38+01:00"))
     e = ymane_csv.parse(data.decode().encode("latin-1")).events[0]
-    assert e["driver_external_id"] == "Léon" and e["occurred_at"] == datetime(2026, 10, 27, 5, 1, 38)
+    assert e["transporter"] == "SOCIÉTÉ" and e["occurred_at"] == datetime(2026, 10, 27, 5, 1, 38)
 
 
 # ── which files a check fetches ──────────────────────────────────────────────

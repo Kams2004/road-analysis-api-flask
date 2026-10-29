@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.modules.m08_historical.models.historical_event import HistoricalEventRecord
 from app.modules.m08_historical import matcher
+from app.modules.m08_historical.anonymity import clean_raw
 from app.modules.m08_historical.grid import (
     grid_cell_center, grid_cell_id, grid_cell_ids_along_route, grid_cell_ids_in_radius,
 )
@@ -83,8 +84,6 @@ async def import_events(source: HistoricalEventSource, start: date, end: date, d
                 occurred_at=event.occurred_at.replace(tzinfo=None),
                 latitude=event.latitude,
                 longitude=event.longitude,
-                vehicle_external_id=event.vehicle_external_id,
-                driver_external_id=event.driver_external_id,
                 speed_mps=event.speed_mps,
                 speed_limit_mps=event.speed_limit_mps,
                 severity=event.severity,
@@ -94,7 +93,7 @@ async def import_events(source: HistoricalEventSource, start: date, end: date, d
                 road_name=matched.road_name,
                 road_segment_id=matched.road_segment_id,
                 match_confidence=matched.match_confidence,
-                raw=event.raw,
+                raw=clean_raw(event.raw),      # anonymous: identifying fields dropped
             ))
             inserted += 1
         except Exception as e:
@@ -251,7 +250,7 @@ def recency(occurred_at: datetime, now: datetime, half_life_days: float) -> floa
 
 def current_profiles(rows, cfg, now: datetime) -> List[ZoneRiskProfile]:
     """Per cell: score = min(1, Σ type weight × severity multiplier × recency / saturation)."""
-    from app.modules.m09_driver_behaviour.analytics import normalize_severity
+    from app.modules.m09_exception_patterns.analytics import normalize_severity
     half = settings.HISTORICAL_RISK_HALF_LIFE_DAYS
     recent_since = now - timedelta(days=90)
     by_cell: Dict[str, dict] = {}
@@ -328,8 +327,8 @@ def risk_points(rows) -> float:
 def trend_series(rows, start, end, unit: str) -> List[dict]:
     """Risk evolution: per bucket, events, weighted risk points, accidents and
     the number of distinct grid cells with events (Module 4 — overall risk,
-    not per behaviour: that is Module 5)."""
-    from app.modules.m09_driver_behaviour.analytics import bucket_floor, bucket_starts
+    not per exception type: that is Module 9, Exception patterns)."""
+    from app.modules.m09_exception_patterns.analytics import bucket_floor, bucket_starts
     buckets = {b: [] for b in bucket_starts(start, end, unit)}
     for r in rows:
         b = bucket_floor(r.occurred_at, unit)
@@ -403,7 +402,7 @@ def trend_from_days(day_rows, squares: Dict, start, end, unit: str) -> List[dict
     """Per bucket: events, weighted risk points, accidents (from (day, event_type, n) rows) and
     the distinct ~110 m squares with events (`squares`: {bucket: n})."""
     from app.modules.m08_historical.aggregates import as_date
-    from app.modules.m09_driver_behaviour.analytics import bucket_floor, bucket_starts
+    from app.modules.m09_exception_patterns.analytics import bucket_floor, bucket_starts
     w = weights()
     buckets = {b: {"bucket": b, "events": 0, "risk_points": 0.0, "accidents": 0, "cells": 0}
                for b in bucket_starts(start, end, unit)}

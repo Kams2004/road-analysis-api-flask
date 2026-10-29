@@ -1,7 +1,7 @@
 """
-Cache of the Historical analysis / Driver behaviour answers (Redis, 10 minutes). The key
+Cache of the Historical analysis / Exception patterns answers (Redis, 10 minutes). The key
 carries a data version bumped whenever events or their summaries change (import, summary
-rebuild, behaviour settings saved): a new day of events makes every cached answer obsolete at
+rebuild, exception-pattern settings saved): a new day of events makes every cached answer obsolete at
 once, without listing keys. Without Redis the answer is simply computed.
 """
 from __future__ import annotations

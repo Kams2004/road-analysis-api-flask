@@ -3,7 +3,7 @@
   "info": {
     "title": "VIASafe Road Risk Analysis Platform API",
     "summary": "Road hazard detection, validation, connected-vehicle collision prevention and community reporting.",
-    "description": "REST/JSON API of the **VIASafe Road Risk Analysis Platform** (CAMTRACK). It serves the web console,\nthe VIASafe mobile app, the vehicle simulator and approved integrations.\n\n## Platform modules\n\n| # | Module | Tags |\n|---|---|---|\n| 1 | Security, users & roles | Authentication · Users · Roles & permissions · API clients |\n| 2 | Dashboard | Dashboard & statistics |\n| 3 | Maps, routes & geospatial | Map configuration · Routes & geocoding |\n| 4 | Preliminary road-risk assessment (ARR) | *(web console — no dedicated endpoints yet)* |\n| 5 | AI hazard detection | Detections · Datasets · AI models |\n| 6 | Hazard track & human validation | Detections · Hazards · Cluster areas · Rejection reasons |\n| 7 | Video/data ingestion & processing jobs | Jobs · Streams · Cloud connections |\n| 8 | Historical risk analysis | Historical risk |\n| 9 | Driver behaviour | *(uses Historical risk data)* |\n| 10 | Connected vehicles & collision prevention | Vehicles & telemetry · Road state · Trajectory · Collisions · Alerts |\n| 11 | Community reporting | Community reports |\n| 12 | APIs & integration | API clients · Mobile configuration · this document |\n| 13 | Configuration, audit & reporting | Platform settings · Audit trail · AI models |\n\n## Authentication\n\nEvery operation lists the credentials it accepts (padlock icon) and, below its description, the\n**Permission** it needs as `module:action` (actions: `view`, `add`, `edit`, `delete`; see\n`GET /roles/modules`). A user's permissions are the union of their active roles.\n\n### Users — session token (`BearerAuth`)\n\n1. `POST /auth/login` with `{identifier, password, captcha_token}` (identifier = e-mail or username).\n2. The answer's `status` is one of:\n   * `ok` — `token` is an opaque session token valid until `expires_at`;\n   * `mfa_required` — send the authenticator code with the returned `challenge_token` to\n     `POST /auth/mfa/verify` (the challenge is valid a few minutes);\n   * `mfa_setup_required` — the user's role requires MFA: call `POST /auth/mfa/setup` then\n     `POST /auth/mfa/enable` with the `challenge_token`; enabling completes the sign-in.\n3. Send `Authorization: Bearer <token>` on every call. `POST /auth/logout`, a password change/reset or\n   deactivation revokes the session immediately (`401 session_expired` afterwards).\n\nFailed sign-ins count towards a lockout (`423 account_locked`, `locked_until` in the error).\n\n### Mobile app & integrations — API key (`ApiKeyAuth`)\n\nKeys are issued in *Administration → API clients* and sent as `X-API-Key: <key>`. A key only reaches\nan explicit allow-list of endpoints (operations showing *API key* in their security); any other call\ngets `403 forbidden`. The mobile app signs users in with `POST /auth/mobile/login`,\n`POST /auth/mobile/register` or `POST /auth/google` and then sends **both** headers — the key never\ngains the user's permissions; the user's token only identifies them (`/auth/me`, votes, reports).\n\n### Development mode\n\nWhen the server runs with `AUTH_ENFORCED=false` (demo stack) the permission checks of the module\nrouters are skipped and anonymous calls are accepted; user-administration endpoints still require a\nsigned-in user. API-key allow-lists always apply.\n\n## Errors\n\nErrors use HTTP status codes and a JSON body `{\"detail\": {\"code\": \"<code>\", \"message\": \"<text>\", …}}`\n(model `ErrorResponse`). `code` is stable and meant for programs; `message` is for people; some errors\nadd fields (e.g. `module`/`action` on `forbidden`, `locked_until`, `requirements`, `errors`).\nA few older endpoints still answer `{\"detail\": \"<text>\"}` (model `LegacyErrorResponse`), and request\nvalidation errors use FastAPI's `{\"detail\": [{\"loc\", \"msg\", \"type\"}]}` (model `HTTPValidationError`).\n\n| Status | Common codes |\n|---|---|\n| 400 | `captcha_failed`, `invalid_code`, `invalid_password`, `invalid_reset_token`, `mfa_not_started`, `google_not_configured`, `smtp_not_configured`, `cloud_not_configured`, `invalid_state`, `state_expired` |\n| 401 | `not_authenticated`, `session_expired`, `invalid_api_key`, `api_key_required`, `invalid_credentials`, `challenge_expired`, `invalid_google_token` |\n| 403 | `forbidden`, `account_inactive`, `mfa_required_by_role` |\n| 404 | `not_found` |\n| 409 | `invalid_transition`, `email_taken`, `username_taken`, `last_admin`, `role_in_use`, `system_role`, `signalement_inactive`, `not_authorized`, `connection_disabled` |\n| 422 | `weak_password`, `invalid_sort`, `invalid_status`, `invalid_filter`, `invalid_reason`, `invalid_location`, `invalid_settings`, `unknown_role`, `device_id_required` |\n| 423 | `account_locked` |\n| 429 | `rate_limited` |\n| 502 | `geocoding_failed`, `smtp_failed`, `google_failed`, `oauth_failed`, `cloud_failed` |\n| 503 | `captcha_unavailable`, `google_unavailable`, `queue_unavailable` |\n\n## Conventions\n\n* **Pagination** — list endpoints take `skip` (offset, ≥ 0) and `limit` (page size; the maximum is\n  given on each endpoint, typically 200, 500 for detection lists) and answer `{\"total\": n, \"items\": […]}`\n  where `total` counts every match before paging.\n* **Rate limits** — `POST /auth/mobile/register`: `MOBILE_REGISTER_PER_HOUR` attempts per client IP\n  per hour (default 5) → `429 rate_limited`. Forgot-password requests send at most one e-mail per\n  account per minute (the answer is identical either way). Geocoding is throttled upstream to one\n  request per second (cached).\n* **Time** — timestamps are ISO 8601 in **UTC**; naive values (no offset) are UTC.\n* **Units** — distances and radii in **metres**, speeds in **m/s** (`speed_kmh` fields are km/h),\n  accelerations in m/s², headings/bearings in degrees clockwise from north (0–360), durations in\n  seconds unless the field name says otherwise.\n* **Coordinates** — WGS84 decimal degrees, `latitude` ∈ [-90, 90], `longitude` ∈ [-180, 180].\n* **Identifiers** — UUID strings unless stated otherwise.\n* **Runtime settings** — distances and thresholds used by the endpoints (visibility radius, route\n  corridor, vote distance, validation thresholds, collision levels …) come from *Platform settings*\n  sections (`mobile`, `community`, `validation`, `collision`, `routes`, `security` …), editable at run time\n  via `PUT /platform-settings/{section}` and published to the app by `GET /mobile-config/`.\n\n## Interactive use\n\nClick **Authorize**, paste a session token (from `POST /auth/login`) and/or an API key, then use\n**Try it out**. Authorizations persist across page reloads in this browser. The same document is\nserved as JSON at `/openapi.json` and rendered by ReDoc at `/redoc`; a copy is committed in\n`docs/openapi.json` (`python -m app.export_openapi`).\n\n---\nVersion `1.0.0` · build `dev`",
+    "description": "REST/JSON API of the **VIASafe Road Risk Analysis Platform** (CAMTRACK). It serves the web console,\nthe VIASafe mobile app, the vehicle simulator and approved integrations.\n\n## Platform modules\n\n| # | Module | Tags |\n|---|---|---|\n| 1 | Security, users & roles | Authentication · Users · Roles & permissions · API clients |\n| 2 | Dashboard | Dashboard & statistics |\n| 3 | Maps, routes & geospatial | Map configuration · Routes & geocoding |\n| 4 | Preliminary road-risk assessment (ARR) | *(web console — no dedicated endpoints yet)* |\n| 5 | AI hazard detection | Detections · Datasets · AI models |\n| 6 | Hazard track & human validation | Detections · Hazards · Cluster areas · Rejection reasons |\n| 7 | Video/data ingestion & processing jobs | Jobs · Streams · Cloud connections |\n| 8 | Historical risk analysis | Historical risk |\n| 9 | Exception patterns (anonymous) | Exception patterns *(uses Historical risk data)* |\n| 10 | Connected vehicles & collision prevention | Vehicles & telemetry · Road state · Trajectory · Collisions · Alerts |\n| 11 | Community reporting | Community reports |\n| 12 | APIs & integration | API clients · Mobile configuration · this document |\n| 13 | Configuration, audit & reporting | Platform settings · Audit trail · AI models |\n\n## Authentication\n\nEvery operation lists the credentials it accepts (padlock icon) and, below its description, the\n**Permission** it needs as `module:action` (actions: `view`, `add`, `edit`, `delete`; see\n`GET /roles/modules`). A user's permissions are the union of their active roles.\n\n### Users — session token (`BearerAuth`)\n\n1. `POST /auth/login` with `{identifier, password, captcha_token}` (identifier = e-mail or username).\n2. The answer's `status` is one of:\n   * `ok` — `token` is an opaque session token valid until `expires_at`;\n   * `mfa_required` — send the authenticator code with the returned `challenge_token` to\n     `POST /auth/mfa/verify` (the challenge is valid a few minutes);\n   * `mfa_setup_required` — the user's role requires MFA: call `POST /auth/mfa/setup` then\n     `POST /auth/mfa/enable` with the `challenge_token`; enabling completes the sign-in.\n3. Send `Authorization: Bearer <token>` on every call. `POST /auth/logout`, a password change/reset or\n   deactivation revokes the session immediately (`401 session_expired` afterwards).\n\nFailed sign-ins count towards a lockout (`423 account_locked`, `locked_until` in the error).\n\n### Mobile app & integrations — API key (`ApiKeyAuth`)\n\nKeys are issued in *Administration → API clients* and sent as `X-API-Key: <key>`. A key only reaches\nan explicit allow-list of endpoints (operations showing *API key* in their security); any other call\ngets `403 forbidden`. The mobile app signs users in with `POST /auth/mobile/login`,\n`POST /auth/mobile/register` or `POST /auth/google` and then sends **both** headers — the key never\ngains the user's permissions; the user's token only identifies them (`/auth/me`, votes, reports).\n\n### Development mode\n\nWhen the server runs with `AUTH_ENFORCED=false` (demo stack) the permission checks of the module\nrouters are skipped and anonymous calls are accepted; user-administration endpoints still require a\nsigned-in user. API-key allow-lists always apply.\n\n## Errors\n\nErrors use HTTP status codes and a JSON body `{\"detail\": {\"code\": \"<code>\", \"message\": \"<text>\", …}}`\n(model `ErrorResponse`). `code` is stable and meant for programs; `message` is for people; some errors\nadd fields (e.g. `module`/`action` on `forbidden`, `locked_until`, `requirements`, `errors`).\nA few older endpoints still answer `{\"detail\": \"<text>\"}` (model `LegacyErrorResponse`), and request\nvalidation errors use FastAPI's `{\"detail\": [{\"loc\", \"msg\", \"type\"}]}` (model `HTTPValidationError`).\n\n| Status | Common codes |\n|---|---|\n| 400 | `captcha_failed`, `invalid_code`, `invalid_password`, `invalid_reset_token`, `mfa_not_started`, `google_not_configured`, `smtp_not_configured`, `cloud_not_configured`, `invalid_state`, `state_expired` |\n| 401 | `not_authenticated`, `session_expired`, `invalid_api_key`, `api_key_required`, `invalid_credentials`, `challenge_expired`, `invalid_google_token` |\n| 403 | `forbidden`, `account_inactive`, `mfa_required_by_role` |\n| 404 | `not_found` |\n| 409 | `invalid_transition`, `email_taken`, `username_taken`, `last_admin`, `role_in_use`, `system_role`, `signalement_inactive`, `not_authorized`, `connection_disabled` |\n| 422 | `weak_password`, `invalid_sort`, `invalid_status`, `invalid_filter`, `invalid_reason`, `invalid_location`, `invalid_settings`, `unknown_role`, `device_id_required` |\n| 423 | `account_locked` |\n| 429 | `rate_limited` |\n| 502 | `geocoding_failed`, `smtp_failed`, `google_failed`, `oauth_failed`, `cloud_failed` |\n| 503 | `captcha_unavailable`, `google_unavailable`, `queue_unavailable` |\n\n## Conventions\n\n* **Pagination** — list endpoints take `skip` (offset, ≥ 0) and `limit` (page size; the maximum is\n  given on each endpoint, typically 200, 500 for detection lists) and answer `{\"total\": n, \"items\": […]}`\n  where `total` counts every match before paging.\n* **Rate limits** — `POST /auth/mobile/register`: `MOBILE_REGISTER_PER_HOUR` attempts per client IP\n  per hour (default 5) → `429 rate_limited`. Forgot-password requests send at most one e-mail per\n  account per minute (the answer is identical either way). Geocoding is throttled upstream to one\n  request per second (cached).\n* **Time** — timestamps are ISO 8601 in **UTC**; naive values (no offset) are UTC.\n* **Units** — distances and radii in **metres**, speeds in **m/s** (`speed_kmh` fields are km/h),\n  accelerations in m/s², headings/bearings in degrees clockwise from north (0–360), durations in\n  seconds unless the field name says otherwise.\n* **Coordinates** — WGS84 decimal degrees, `latitude` ∈ [-90, 90], `longitude` ∈ [-180, 180].\n* **Identifiers** — UUID strings unless stated otherwise.\n* **Runtime settings** — distances and thresholds used by the endpoints (visibility radius, route\n  corridor, vote distance, validation thresholds, collision levels …) come from *Platform settings*\n  sections (`mobile`, `community`, `validation`, `collision`, `routes`, `security` …), editable at run time\n  via `PUT /platform-settings/{section}` and published to the app by `GET /mobile-config/`.\n\n## Interactive use\n\nClick **Authorize**, paste a session token (from `POST /auth/login`) and/or an API key, then use\n**Try it out**. Authorizations persist across page reloads in this browser. The same document is\nserved as JSON at `/openapi.json` and rendered by ReDoc at `/redoc`; a copy is committed in\n`docs/openapi.json` (`python -m app.export_openapi`).\n\n---\nVersion `1.0.0` · build `dev`",
     "termsOfService": "https://viasafe.example.com/terms",
     "contact": {
       "name": "CAMTRACK — Information Technology & Innovation"
@@ -28356,7 +28356,7 @@
           "Vehicles & telemetry"
         ],
         "summary": "Register a vehicle for live telemetry",
-        "description": "**Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its\n`id`. Idempotent: resending a known `vehicle_id` keeps it (updating `vehicle_type`); an unknown\n`vehicle_id` is created with that id, so a device survives a backend reset. Optional `plate` /\n`driver_external_id` link the vehicle to its fleet driving-behaviour score (a high score raises\nthe collision context index — reason `RISKY_DRIVER`); null keeps the stored value, `\"\"` clears it.\n\nA new vehicle (or one registered before device secrets) gets a `device_secret`, answered only\nthis once: send it as `X-Device-Secret` from then on. With an API key, re-registering a vehicle\nthat has a secret needs it too (403 `device_secret_invalid`) — a device cannot take over another\ndevice's vehicle.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:edit`",
+        "description": "**Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its\n`id`. Idempotent: resending a known `vehicle_id` keeps it (updating `vehicle_type`); an unknown\n`vehicle_id` is created with that id, so a device survives a backend reset. Anonymous: no plate\nor driver is stored (`plate` / `driver_external_id` sent by older app versions are ignored).\n\nA new vehicle (or one registered before device secrets) gets a `device_secret`, answered only\nthis once: send it as `X-Device-Secret` from then on. With an API key, re-registering a vehicle\nthat has a secret needs it too (403 `device_secret_invalid`) — a device cannot take over another\ndevice's vehicle.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:edit`",
         "operationId": "register_vehicle",
         "requestBody": {
           "content": {
@@ -31721,10 +31721,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`).",
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`)."
           }
         ],
         "responses": {
@@ -31934,10 +31934,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`).",
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`)."
           }
         ],
         "responses": {
@@ -32179,10 +32179,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`).",
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`)."
           }
         ],
         "responses": {
@@ -32414,10 +32414,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`).",
+              "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`).",
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /driver-behaviour/countries`)."
+            "description": "Only these countries (repeat or comma-separate), e.g. `CAMEROUN` (list: `GET /exception-patterns/countries`)."
           }
         ],
         "responses": {
@@ -32655,13 +32655,13 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/overview": {
+    "/exception-patterns/overview": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
         ],
-        "summary": "Get driver behaviour KPIs",
-        "description": "Speeding, harsh braking, hard acceleration and harsh cornering over the period: counts,\nseverity mix, speed vs limit, peak hour, main roads, distinct drivers / vehicles, and the change\nagainst the previous period of the same length.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "summary": "Get exception KPIs",
+        "description": "Exceptions of the period: counts per type, severity mix, speed vs limit, peak hour, main roads,\nspread (places, sources, countries) and the change against the previous period of the same length.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
         "operationId": "overview",
         "parameters": [
           {
@@ -32739,7 +32739,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
+              "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all.",
               "examples": [
                 [
                   "SPEEDING"
@@ -32747,7 +32747,7 @@
               ],
               "title": "Types"
             },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+            "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all."
           },
           {
             "name": "country",
@@ -32765,7 +32765,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`.",
               "examples": [
                 [
                   "CAMEROUN"
@@ -32773,43 +32773,59 @@
               ],
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`."
           },
           {
-            "name": "driver",
+            "name": "source",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
+              "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`.",
+              "examples": [
+                [
+                  "ymane"
+                ]
+              ],
+              "title": "Source"
             },
-            "description": "Only this driver (source driver id)."
+            "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`."
           },
           {
-            "name": "vehicle",
+            "name": "severity",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
+              "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`.",
+              "examples": [
+                [
+                  "high"
+                ]
+              ],
+              "title": "Severity"
             },
-            "description": "Only this vehicle (source vehicle id)."
+            "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`."
           },
           {
             "name": "bbox",
@@ -32925,6 +32941,12 @@
                     "value": {
                       "detail": "'bbox' must be 'south,west,north,east'"
                     }
+                  },
+                  "legacy_3": {
+                    "summary": "unknown severity",
+                    "value": {
+                      "detail": "'severity' must be low, medium, high or unknown"
+                    }
                   }
                 }
               }
@@ -32940,17 +32962,17 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/events": {
+    "/exception-patterns/breakdowns": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
         ],
-        "summary": "List driver behaviour events",
-        "description": "Behaviour events with their location, speed / limit, normalised severity and weighted points, newest first.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "list_events",
+        "summary": "Get exceptions by provider, country, severity and speed",
+        "description": "Exceptions per source / provider, country, normalised severity, band of recorded speed and —\nfor speeding with a known limit — band of excess over the limit, each with its type mix.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "operationId": "breakdowns",
         "parameters": [
           {
-            "name": "search",
+            "name": "period",
             "in": "query",
             "required": false,
             "schema": {
@@ -32962,10 +32984,129 @@
                   "type": "null"
                 }
               ],
-              "description": "Text in road name, driver, vehicle or source event id.",
-              "title": "Search"
+              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
+              "examples": [
+                "90d"
+              ],
+              "title": "Period"
             },
-            "description": "Text in road name, driver, vehicle or source event id."
+            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First day (inclusive, UTC).",
+              "title": "Date From"
+            },
+            "description": "First day (inclusive, UTC)."
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last day (inclusive, UTC).",
+              "title": "Date To"
+            },
+            "description": "Last day (inclusive, UTC)."
+          },
+          {
+            "name": "types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all.",
+              "examples": [
+                [
+                  "SPEEDING"
+                ]
+              ],
+              "title": "Types"
+            },
+            "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`."
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`.",
+              "examples": [
+                [
+                  "ymane"
+                ]
+              ],
+              "title": "Source"
+            },
+            "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`."
           },
           {
             "name": "severity",
@@ -32974,202 +33115,24 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this normalised severity (`low`, `medium`, `high`, `unknown`).",
+              "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`.",
+              "examples": [
+                [
+                  "high"
+                ]
+              ],
               "title": "Severity"
             },
-            "description": "Only this normalised severity (`low`, `medium`, `high`, `unknown`)."
-          },
-          {
-            "name": "sort",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "description": "`-occurred_at` (default), `occurred_at`, `-speed`, `event_type`.",
-              "default": "-occurred_at",
-              "title": "Sort"
-            },
-            "description": "`-occurred_at` (default), `occurred_at`, `-speed`, `event_type`."
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Rows to skip.",
-              "default": 0,
-              "title": "Offset"
-            },
-            "description": "Rows to skip."
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 500,
-              "minimum": 1,
-              "description": "Page size.",
-              "default": 50,
-              "title": "Limit"
-            },
-            "description": "Page size."
-          },
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
+            "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`."
           },
           {
             "name": "bbox",
@@ -33199,297 +33162,9 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EventListOut"
+                  "$ref": "#/components/schemas/BreakdownsOut"
                 }
               }
-            }
-          },
-          "401": {
-            "description": "Not authenticated — `not_authenticated`, `session_expired`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "not_authenticated": {
-                    "summary": "not_authenticated — no credentials",
-                    "value": {
-                      "detail": {
-                        "code": "not_authenticated",
-                        "message": "Please sign in."
-                      }
-                    }
-                  },
-                  "session_expired": {
-                    "summary": "session_expired — token unknown, expired or revoked",
-                    "value": {
-                      "detail": {
-                        "code": "session_expired",
-                        "message": "Your session has expired. Please sign in again."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — `forbidden`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "forbidden — user lacks driver_behaviour:view",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "You do not have permission for this action.",
-                        "module": "driver_behaviour",
-                        "action": "view"
-                      }
-                    }
-                  },
-                  "forbidden_2": {
-                    "summary": "forbidden — API key not allowed on this endpoint",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "This API key is not allowed to call this endpoint."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable entity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HTTPValidationError"
-                    }
-                  ]
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "unknown period",
-                    "value": {
-                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
-                    }
-                  },
-                  "legacy_2": {
-                    "summary": "malformed bbox",
-                    "value": {
-                      "detail": "'bbox' must be 'south,west,north,east'"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "x-permission": "driver_behaviour:view",
-        "x-api-key": false
-      }
-    },
-    "/driver-behaviour/events/export": {
-      "get": {
-        "tags": [
-          "Driver behaviour"
-        ],
-        "summary": "Export driver behaviour events as CSV",
-        "description": "The filtered events as a CSV file (RRAP-09-012), oldest first.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "export_events",
-        "parameters": [
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
-          },
-          {
-            "name": "bbox",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
-              "examples": [
-                "3.9,9.6,4.2,9.9"
-              ],
-              "title": "Bbox"
-            },
-            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "CSV file.",
-            "content": {
-              "text/csv": {}
             }
           },
           "401": {
@@ -33573,324 +33248,11 @@
                     "value": {
                       "detail": "'bbox' must be 'south,west,north,east'"
                     }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "x-permission": "driver_behaviour:view",
-        "x-api-key": false
-      }
-    },
-    "/driver-behaviour/drivers": {
-      "get": {
-        "tags": [
-          "Driver behaviour"
-        ],
-        "summary": "Rank drivers by behaviour risk",
-        "description": "Drivers ranked by behaviour risk score (0–100, weighted and normalised — see\n`GET /driver-behaviour/methodology`) with the trend against the previous period. Only events\ncarrying a driver id are attributed (RRAP-09-004).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "drivers",
-        "parameters": [
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Rows to skip.",
-              "default": 0,
-              "title": "Offset"
-            },
-            "description": "Rows to skip."
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 500,
-              "minimum": 1,
-              "description": "Page size.",
-              "default": 50,
-              "title": "Limit"
-            },
-            "description": "Page size."
-          },
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
-          },
-          {
-            "name": "bbox",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
-              "examples": [
-                "3.9,9.6,4.2,9.9"
-              ],
-              "title": "Bbox"
-            },
-            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EntityListOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated — `not_authenticated`, `session_expired`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "not_authenticated": {
-                    "summary": "not_authenticated — no credentials",
-                    "value": {
-                      "detail": {
-                        "code": "not_authenticated",
-                        "message": "Please sign in."
-                      }
-                    }
                   },
-                  "session_expired": {
-                    "summary": "session_expired — token unknown, expired or revoked",
+                  "legacy_3": {
+                    "summary": "unknown severity",
                     "value": {
-                      "detail": {
-                        "code": "session_expired",
-                        "message": "Your session has expired. Please sign in again."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — `forbidden`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "forbidden — user lacks driver_behaviour:view",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "You do not have permission for this action.",
-                        "module": "driver_behaviour",
-                        "action": "view"
-                      }
-                    }
-                  },
-                  "forbidden_2": {
-                    "summary": "forbidden — API key not allowed on this endpoint",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "This API key is not allowed to call this endpoint."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable entity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HTTPValidationError"
-                    }
-                  ]
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "unknown period",
-                    "value": {
-                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
-                    }
-                  },
-                  "legacy_2": {
-                    "summary": "malformed bbox",
-                    "value": {
-                      "detail": "'bbox' must be 'south,west,north,east'"
+                      "detail": "'severity' must be low, medium, high or unknown"
                     }
                   }
                 }
@@ -33907,1282 +33269,13 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/vehicles": {
+    "/exception-patterns/trends": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
         ],
-        "summary": "Rank vehicles by behaviour risk",
-        "description": "Vehicles ranked by behaviour risk score, as `GET /driver-behaviour/drivers`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "vehicles",
-        "parameters": [
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Rows to skip.",
-              "default": 0,
-              "title": "Offset"
-            },
-            "description": "Rows to skip."
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 500,
-              "minimum": 1,
-              "description": "Page size.",
-              "default": 50,
-              "title": "Limit"
-            },
-            "description": "Page size."
-          },
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
-          },
-          {
-            "name": "bbox",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
-              "examples": [
-                "3.9,9.6,4.2,9.9"
-              ],
-              "title": "Bbox"
-            },
-            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EntityListOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated — `not_authenticated`, `session_expired`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "not_authenticated": {
-                    "summary": "not_authenticated — no credentials",
-                    "value": {
-                      "detail": {
-                        "code": "not_authenticated",
-                        "message": "Please sign in."
-                      }
-                    }
-                  },
-                  "session_expired": {
-                    "summary": "session_expired — token unknown, expired or revoked",
-                    "value": {
-                      "detail": {
-                        "code": "session_expired",
-                        "message": "Your session has expired. Please sign in again."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — `forbidden`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "forbidden — user lacks driver_behaviour:view",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "You do not have permission for this action.",
-                        "module": "driver_behaviour",
-                        "action": "view"
-                      }
-                    }
-                  },
-                  "forbidden_2": {
-                    "summary": "forbidden — API key not allowed on this endpoint",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "This API key is not allowed to call this endpoint."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable entity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HTTPValidationError"
-                    }
-                  ]
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "unknown period",
-                    "value": {
-                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
-                    }
-                  },
-                  "legacy_2": {
-                    "summary": "malformed bbox",
-                    "value": {
-                      "detail": "'bbox' must be 'south,west,north,east'"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "x-permission": "driver_behaviour:view",
-        "x-api-key": false
-      }
-    },
-    "/driver-behaviour/drivers/{driver_id}": {
-      "get": {
-        "tags": [
-          "Driver behaviour"
-        ],
-        "summary": "Get a driver's behaviour profile",
-        "description": "Score and trend, counts per behaviour type, time patterns, locations and recent events of one driver.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "driver_detail",
-        "parameters": [
-          {
-            "name": "driver_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Driver Id"
-            }
-          },
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
-          },
-          {
-            "name": "bbox",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
-              "examples": [
-                "3.9,9.6,4.2,9.9"
-              ],
-              "title": "Bbox"
-            },
-            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EntityDetailOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated — `not_authenticated`, `session_expired`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "not_authenticated": {
-                    "summary": "not_authenticated — no credentials",
-                    "value": {
-                      "detail": {
-                        "code": "not_authenticated",
-                        "message": "Please sign in."
-                      }
-                    }
-                  },
-                  "session_expired": {
-                    "summary": "session_expired — token unknown, expired or revoked",
-                    "value": {
-                      "detail": {
-                        "code": "session_expired",
-                        "message": "Your session has expired. Please sign in again."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — `forbidden`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "forbidden — user lacks driver_behaviour:view",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "You do not have permission for this action.",
-                        "module": "driver_behaviour",
-                        "action": "view"
-                      }
-                    }
-                  },
-                  "forbidden_2": {
-                    "summary": "forbidden — API key not allowed on this endpoint",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "This API key is not allowed to call this endpoint."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LegacyErrorResponse"
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "No behaviour events for driver 'D-17'.",
-                    "value": {
-                      "detail": "No behaviour events for driver 'D-17'."
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable entity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HTTPValidationError"
-                    }
-                  ]
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "unknown period",
-                    "value": {
-                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
-                    }
-                  },
-                  "legacy_2": {
-                    "summary": "malformed bbox",
-                    "value": {
-                      "detail": "'bbox' must be 'south,west,north,east'"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "x-permission": "driver_behaviour:view",
-        "x-api-key": false
-      }
-    },
-    "/driver-behaviour/vehicles/{vehicle_id}": {
-      "get": {
-        "tags": [
-          "Driver behaviour"
-        ],
-        "summary": "Get a vehicle's behaviour profile",
-        "description": "Score and trend, counts per behaviour type, time patterns, locations and recent events of one vehicle.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "vehicle_detail",
-        "parameters": [
-          {
-            "name": "vehicle_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Vehicle Id"
-            }
-          },
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
-          },
-          {
-            "name": "bbox",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
-              "examples": [
-                "3.9,9.6,4.2,9.9"
-              ],
-              "title": "Bbox"
-            },
-            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EntityDetailOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated — `not_authenticated`, `session_expired`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "not_authenticated": {
-                    "summary": "not_authenticated — no credentials",
-                    "value": {
-                      "detail": {
-                        "code": "not_authenticated",
-                        "message": "Please sign in."
-                      }
-                    }
-                  },
-                  "session_expired": {
-                    "summary": "session_expired — token unknown, expired or revoked",
-                    "value": {
-                      "detail": {
-                        "code": "session_expired",
-                        "message": "Your session has expired. Please sign in again."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — `forbidden`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "forbidden — user lacks driver_behaviour:view",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "You do not have permission for this action.",
-                        "module": "driver_behaviour",
-                        "action": "view"
-                      }
-                    }
-                  },
-                  "forbidden_2": {
-                    "summary": "forbidden — API key not allowed on this endpoint",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "This API key is not allowed to call this endpoint."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LegacyErrorResponse"
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "No behaviour events for vehicle 'LT-458'.",
-                    "value": {
-                      "detail": "No behaviour events for vehicle 'LT-458'."
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable entity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HTTPValidationError"
-                    }
-                  ]
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "unknown period",
-                    "value": {
-                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
-                    }
-                  },
-                  "legacy_2": {
-                    "summary": "malformed bbox",
-                    "value": {
-                      "detail": "'bbox' must be 'south,west,north,east'"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "x-permission": "driver_behaviour:view",
-        "x-api-key": false
-      }
-    },
-    "/driver-behaviour/heatmap": {
-      "get": {
-        "tags": [
-          "Driver behaviour"
-        ],
-        "summary": "Get the driver behaviour heatmap",
-        "description": "Concentration of the selected behaviour types per grid cell. The intensity is an event count\n(and weighted points), not an accident probability (RRAP-09-008).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
-        "operationId": "heatmap",
-        "parameters": [
-          {
-            "name": "cell_size_m",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "maximum": 5000,
-                  "minimum": 25
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Cell size, metres (default settings `zone_cell_size_m`).",
-              "title": "Cell Size M"
-            },
-            "description": "Cell size, metres (default settings `zone_cell_size_m`)."
-          },
-          {
-            "name": "period",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
-              "examples": [
-                "90d"
-              ],
-              "title": "Period"
-            },
-            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
-          },
-          {
-            "name": "date_from",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "First day (inclusive, UTC).",
-              "title": "Date From"
-            },
-            "description": "First day (inclusive, UTC)."
-          },
-          {
-            "name": "date_to",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "format": "date"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Last day (inclusive, UTC).",
-              "title": "Date To"
-            },
-            "description": "Last day (inclusive, UTC)."
-          },
-          {
-            "name": "types",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
-              "examples": [
-                [
-                  "SPEEDING"
-                ]
-              ],
-              "title": "Types"
-            },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
-          },
-          {
-            "name": "country",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
-              "examples": [
-                [
-                  "CAMEROUN"
-                ]
-              ],
-              "title": "Country"
-            },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
-          },
-          {
-            "name": "driver",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
-            },
-            "description": "Only this driver (source driver id)."
-          },
-          {
-            "name": "vehicle",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
-            },
-            "description": "Only this vehicle (source vehicle id)."
-          },
-          {
-            "name": "bbox",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
-              "examples": [
-                "3.9,9.6,4.2,9.9"
-              ],
-              "title": "Bbox"
-            },
-            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HeatmapOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated — `not_authenticated`, `session_expired`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "not_authenticated": {
-                    "summary": "not_authenticated — no credentials",
-                    "value": {
-                      "detail": {
-                        "code": "not_authenticated",
-                        "message": "Please sign in."
-                      }
-                    }
-                  },
-                  "session_expired": {
-                    "summary": "session_expired — token unknown, expired or revoked",
-                    "value": {
-                      "detail": {
-                        "code": "session_expired",
-                        "message": "Your session has expired. Please sign in again."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — `forbidden`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                },
-                "examples": {
-                  "forbidden": {
-                    "summary": "forbidden — user lacks driver_behaviour:view",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "You do not have permission for this action.",
-                        "module": "driver_behaviour",
-                        "action": "view"
-                      }
-                    }
-                  },
-                  "forbidden_2": {
-                    "summary": "forbidden — API key not allowed on this endpoint",
-                    "value": {
-                      "detail": {
-                        "code": "forbidden",
-                        "message": "This API key is not allowed to call this endpoint."
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable entity",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LegacyErrorResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/HTTPValidationError"
-                    }
-                  ]
-                },
-                "examples": {
-                  "legacy": {
-                    "summary": "unknown period",
-                    "value": {
-                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
-                    }
-                  },
-                  "legacy_2": {
-                    "summary": "malformed bbox",
-                    "value": {
-                      "detail": "'bbox' must be 'south,west,north,east'"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "BearerAuth": []
-          }
-        ],
-        "x-permission": "driver_behaviour:view",
-        "x-api-key": false
-      }
-    },
-    "/driver-behaviour/trends": {
-      "get": {
-        "tags": [
-          "Driver behaviour"
-        ],
-        "summary": "Get driver behaviour trends",
-        "description": "Events per day / week / month and type, and the hour-of-day and weekday patterns (local time).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "summary": "Get exception trends and time patterns",
+        "description": "Exceptions per day / week / month and type, and the hour-of-day and weekday patterns (local time).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
         "operationId": "trends",
         "parameters": [
           {
@@ -35278,7 +33371,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
+              "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all.",
               "examples": [
                 [
                   "SPEEDING"
@@ -35286,7 +33379,7 @@
               ],
               "title": "Types"
             },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+            "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all."
           },
           {
             "name": "country",
@@ -35304,7 +33397,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`.",
               "examples": [
                 [
                   "CAMEROUN"
@@ -35312,43 +33405,59 @@
               ],
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`."
           },
           {
-            "name": "driver",
+            "name": "source",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
+              "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`.",
+              "examples": [
+                [
+                  "ymane"
+                ]
+              ],
+              "title": "Source"
             },
-            "description": "Only this driver (source driver id)."
+            "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`."
           },
           {
-            "name": "vehicle",
+            "name": "severity",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
+              "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`.",
+              "examples": [
+                [
+                  "high"
+                ]
+              ],
+              "title": "Severity"
             },
-            "description": "Only this vehicle (source vehicle id)."
+            "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`."
           },
           {
             "name": "bbox",
@@ -35471,6 +33580,12 @@
                     "value": {
                       "detail": "'bbox' must be 'south,west,north,east'"
                     }
+                  },
+                  "legacy_3": {
+                    "summary": "unknown severity",
+                    "value": {
+                      "detail": "'severity' must be low, medium, high or unknown"
+                    }
                   }
                 }
               }
@@ -35486,13 +33601,347 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/zones": {
+    "/exception-patterns/heatmap": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
         ],
-        "summary": "List high-risk behaviour zones",
-        "description": "Areas where unsafe behaviours repeat: grid cells with at least `zone_min_events` events of the\nselected types (and `zone_min_drivers` distinct drivers when identities exist). A zone is a\npattern worth investigating, not a confirmed accident hotspot. Module 4 (`/historical`) gives the\noverall historical risk score of the same place.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "summary": "Get the exception heatmap",
+        "description": "Concentration of the selected exceptions per grid cell. The intensity is an exception count,\nnot an accident probability (RRAP-09-008).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "operationId": "heatmap",
+        "parameters": [
+          {
+            "name": "cell_size_m",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 5000,
+                  "minimum": 25
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Cell size, metres (default settings `zone_cell_size_m`).",
+              "title": "Cell Size M"
+            },
+            "description": "Cell size, metres (default settings `zone_cell_size_m`)."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given.",
+              "examples": [
+                "90d"
+              ],
+              "title": "Period"
+            },
+            "description": "`7d`, `30d`, `90d`, `12m` or `all` (default: settings `driver_behaviour.default_period`). Ignored when `date_from` / `date_to` are given."
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First day (inclusive, UTC).",
+              "title": "Date From"
+            },
+            "description": "First day (inclusive, UTC)."
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last day (inclusive, UTC).",
+              "title": "Date To"
+            },
+            "description": "Last day (inclusive, UTC)."
+          },
+          {
+            "name": "types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all.",
+              "examples": [
+                [
+                  "SPEEDING"
+                ]
+              ],
+              "title": "Types"
+            },
+            "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all."
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`.",
+              "examples": [
+                [
+                  "CAMEROUN"
+                ]
+              ],
+              "title": "Country"
+            },
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`."
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`.",
+              "examples": [
+                [
+                  "ymane"
+                ]
+              ],
+              "title": "Source"
+            },
+            "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`."
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`.",
+              "examples": [
+                [
+                  "high"
+                ]
+              ],
+              "title": "Severity"
+            },
+            "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`."
+          },
+          {
+            "name": "bbox",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only inside `south,west,north,east` (WGS84 degrees).",
+              "examples": [
+                "3.9,9.6,4.2,9.9"
+              ],
+              "title": "Bbox"
+            },
+            "description": "Only inside `south,west,north,east` (WGS84 degrees)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeatmapOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks driver_behaviour:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "driver_behaviour",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LegacyErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "unknown period",
+                    "value": {
+                      "detail": "Unknown period '5d' — expected 7d, 30d, 90d, 12m or all"
+                    }
+                  },
+                  "legacy_2": {
+                    "summary": "malformed bbox",
+                    "value": {
+                      "detail": "'bbox' must be 'south,west,north,east'"
+                    }
+                  },
+                  "legacy_3": {
+                    "summary": "unknown severity",
+                    "value": {
+                      "detail": "'severity' must be low, medium, high or unknown"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "driver_behaviour:view",
+        "x-api-key": false
+      }
+    },
+    "/exception-patterns/zones": {
+      "get": {
+        "tags": [
+          "Exception patterns"
+        ],
+        "summary": "List the places where exceptions concentrate",
+        "description": "Grid cells of `zone_cell_size_m` with at least `zone_min_events` exceptions of the selected\ntypes, most exceptions first, with their place name, main road and type mix. A zone is a\npattern worth investigating, not a confirmed accident hotspot; Module 4 (`/historical`) gives\nthe overall historical risk score of the same place.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
         "operationId": "zones",
         "parameters": [
           {
@@ -35504,7 +33953,7 @@
               "maximum": 1000,
               "minimum": 1,
               "description": "Maximum zones.",
-              "default": 100,
+              "default": 50,
               "title": "Limit"
             },
             "description": "Maximum zones."
@@ -35584,7 +34033,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four.",
+              "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all.",
               "examples": [
                 [
                   "SPEEDING"
@@ -35592,7 +34041,7 @@
               ],
               "title": "Types"
             },
-            "description": "Behaviour types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`. Default: all four."
+            "description": "Exception types (repeat or comma-separate): `SPEEDING`, `HARD_BRAKING`, `HARD_ACCELERATION`, `HARSH_CORNERING`, `ACCIDENT`, `IDLE_VIOLATION`, `OTHER`. Default: all."
           },
           {
             "name": "country",
@@ -35610,7 +34059,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`.",
+              "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`.",
               "examples": [
                 [
                   "CAMEROUN"
@@ -35618,43 +34067,59 @@
               ],
               "title": "Country"
             },
-            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /driver-behaviour/countries`."
+            "description": "Only these countries (repeat or comma-separate), as sent by the source, e.g. `CAMEROUN`. List: `GET /exception-patterns/countries`."
           },
           {
-            "name": "driver",
+            "name": "source",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this driver (source driver id).",
-              "title": "Driver"
+              "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`.",
+              "examples": [
+                [
+                  "ymane"
+                ]
+              ],
+              "title": "Source"
             },
-            "description": "Only this driver (source driver id)."
+            "description": "Only these sources / providers (repeat or comma-separate), e.g. `ymane`, `besafe`. List: `GET /exception-patterns/sources`."
           },
           {
-            "name": "vehicle",
+            "name": "severity",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only this vehicle (source vehicle id).",
-              "title": "Vehicle"
+              "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`.",
+              "examples": [
+                [
+                  "high"
+                ]
+              ],
+              "title": "Severity"
             },
-            "description": "Only this vehicle (source vehicle id)."
+            "description": "Only these normalised severities (repeat or comma-separate): `low`, `medium`, `high`, `unknown`."
           },
           {
             "name": "bbox",
@@ -35777,6 +34242,12 @@
                     "value": {
                       "detail": "'bbox' must be 'south,west,north,east'"
                     }
+                  },
+                  "legacy_3": {
+                    "summary": "unknown severity",
+                    "value": {
+                      "detail": "'severity' must be low, medium, high or unknown"
+                    }
                   }
                 }
               }
@@ -35792,13 +34263,13 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/countries": {
+    "/exception-patterns/countries": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
         ],
-        "summary": "List the countries of the events",
-        "description": "Countries found in the events, most events first — the values of the `country` filter.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "summary": "List the countries of the exceptions",
+        "description": "Countries found in the exceptions, most first — the values of the `country` filter.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
         "operationId": "countries",
         "responses": {
           "200": {
@@ -35887,10 +34358,105 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/data-status": {
+    "/exception-patterns/sources": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
+        ],
+        "summary": "List the sources / providers of the exceptions",
+        "description": "Sources found in the exceptions (e.g. `ymane`, `besafe`), most first — the values of the `source` filter.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "operationId": "sources",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SourceOut"
+                  },
+                  "type": "array",
+                  "title": "Response Sources"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks driver_behaviour:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "driver_behaviour",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "driver_behaviour:view",
+        "x-api-key": false
+      }
+    },
+    "/exception-patterns/data-status": {
+      "get": {
+        "tags": [
+          "Exception patterns"
         ],
         "summary": "Get the completeness of the event data",
         "description": "For each daily event-file source: up to which day the data is complete and which days are\nmissing — so a missing file is never mistaken for a day without incidents.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
@@ -35982,13 +34548,13 @@
         "x-api-key": false
       }
     },
-    "/driver-behaviour/methodology": {
+    "/exception-patterns/methodology": {
       "get": {
         "tags": [
-          "Driver behaviour"
+          "Exception patterns"
         ],
-        "summary": "Get the behaviour scoring method",
-        "description": "The scoring formula, weights, severity rules and zone criteria in force (settings section `driver_behaviour`).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
+        "summary": "Get the exception statistics method",
+        "description": "Severity rule, speed / excess bands, zone criteria and time zone in force (settings section\n`driver_behaviour`), and the interpretation limits.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `driver_behaviour:view`",
         "operationId": "methodology",
         "responses": {
           "200": {
@@ -38011,196 +36577,6 @@
         "title": "AuthConfigOut",
         "description": "Public configuration the sign-in screens need before anyone is signed in."
       },
-      "BehaviourEvent": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id",
-            "description": "Event id."
-          },
-          "source": {
-            "type": "string",
-            "title": "Source",
-            "description": "Source (`manual`, `ymane` …)."
-          },
-          "source_event_id": {
-            "type": "string",
-            "title": "Source Event Id",
-            "description": "The source's own id."
-          },
-          "event_type": {
-            "type": "string",
-            "title": "Event Type",
-            "description": "Behaviour type."
-          },
-          "occurred_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Occurred At",
-            "description": "When it happened (UTC)."
-          },
-          "latitude": {
-            "type": "number",
-            "title": "Latitude",
-            "description": "Latitude (degrees)."
-          },
-          "longitude": {
-            "type": "number",
-            "title": "Longitude",
-            "description": "Longitude (degrees)."
-          },
-          "country": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Country",
-            "description": "Country (customer affiliate) from the source."
-          },
-          "transporter": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Transporter",
-            "description": "Transporter from the source."
-          },
-          "driver_external_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Driver External Id",
-            "description": "Driver id from the source."
-          },
-          "vehicle_external_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Vehicle External Id",
-            "description": "Vehicle id from the source."
-          },
-          "speed_kmh": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Speed Kmh",
-            "description": "Speed, km/h."
-          },
-          "speed_limit_kmh": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Speed Limit Kmh",
-            "description": "Speed limit, km/h."
-          },
-          "excess_pct": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Excess Pct",
-            "description": "Excess over the limit, %."
-          },
-          "severity_raw": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Severity Raw",
-            "description": "Severity as sent by the source."
-          },
-          "severity": {
-            "type": "string",
-            "title": "Severity",
-            "description": "Normalised severity: low / medium / high / unknown."
-          },
-          "points": {
-            "type": "number",
-            "title": "Points",
-            "description": "Weighted points of this event."
-          },
-          "road_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Road Name",
-            "description": "Matched road name."
-          },
-          "place": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Place",
-            "description": "Place name of the position (reverse geocoding; null until looked up)."
-          },
-          "grid_cell_id": {
-            "type": "string",
-            "title": "Grid Cell Id",
-            "description": "Module 4 grid cell of the event."
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "source",
-          "source_event_id",
-          "event_type",
-          "occurred_at",
-          "latitude",
-          "longitude",
-          "severity",
-          "points",
-          "grid_cell_id"
-        ],
-        "title": "BehaviourEvent",
-        "description": "One driving-behaviour event."
-      },
       "Body_create_signalement": {
         "properties": {
           "type": {
@@ -38458,6 +36834,109 @@
         ],
         "title": "BoundaryCandidate",
         "description": "A place found by the boundary search, with its (simplified) outline."
+      },
+      "BreakdownRow": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "The value: source name, country (`\"\"` = not sent), severity, or band (`50-70` km/h, `10-20` % …).",
+            "examples": [
+              "ymane"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "description": "Exceptions."
+          },
+          "share": {
+            "type": "number",
+            "title": "Share",
+            "description": "Share of the dimension's total (0–1)."
+          },
+          "high_severity": {
+            "type": "integer",
+            "title": "High Severity",
+            "description": "High-severity exceptions."
+          },
+          "by_type": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Type",
+            "description": "Exceptions per type."
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "count",
+          "share",
+          "high_severity",
+          "by_type"
+        ],
+        "title": "BreakdownRow",
+        "description": "Exceptions of one value of a dimension (provider, country, severity, band)."
+      },
+      "BreakdownsOut": {
+        "properties": {
+          "window": {
+            "$ref": "#/components/schemas/WindowOut"
+          },
+          "by_source": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownRow"
+            },
+            "type": "array",
+            "title": "By Source",
+            "description": "Per source / provider, most exceptions first."
+          },
+          "by_country": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownRow"
+            },
+            "type": "array",
+            "title": "By Country",
+            "description": "Per country, most exceptions first."
+          },
+          "by_severity": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownRow"
+            },
+            "type": "array",
+            "title": "By Severity",
+            "description": "Per normalised severity: low, medium, high, unknown."
+          },
+          "by_speed_band": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownRow"
+            },
+            "type": "array",
+            "title": "By Speed Band",
+            "description": "Per band of recorded speed, km/h (`0-30` … `110+`); exceptions without a speed are left out."
+          },
+          "by_excess_band": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownRow"
+            },
+            "type": "array",
+            "title": "By Excess Band",
+            "description": "Speeding per band of excess over the limit, % (`0-10` … `50+`); without a known limit left out."
+          }
+        },
+        "type": "object",
+        "required": [
+          "window",
+          "by_source",
+          "by_country",
+          "by_severity",
+          "by_speed_band",
+          "by_excess_band"
+        ],
+        "title": "BreakdownsOut",
+        "description": "Exceptions broken down by provider, country, severity, speed and excess over the limit."
       },
       "BrowseOut": {
         "properties": {
@@ -40549,7 +39028,7 @@
               "events"
             ],
             "title": "Purpose",
-            "description": "`videos` (browse / import → processing jobs) or `events` (daily driving-event CSV files → historical analysis and driver behaviour).",
+            "description": "`videos` (browse / import → processing jobs) or `events` (daily driving-event CSV files → historical analysis and exception patterns).",
             "default": "videos"
           },
           "event_feed": {
@@ -40760,7 +39239,7 @@
           "code": {
             "type": "string",
             "title": "Code",
-            "description": "Stable code: `HISTORY_HARSH_BRAKING`, `HISTORY_HARSH_CORNERING`, `HISTORY_ACCIDENTS`, `HISTORY_EVENTS`, `HABITUAL_SPEEDING`, `VEHICLE_SPEEDING`, `POTHOLE_NEARBY`, `SPEED_BUMP_NEARBY`, `HAZARD_NEARBY`, `ACCIDENT_REPORTED`, `ROADWORK_REPORTED`, `FLOODING_REPORTED`, `CONGESTION_REPORTED`, `HAZARD_REPORTED`, `RISKY_DRIVER`, `NIGHT`, `POOR_GPS`, `STALE_DATA`.",
+            "description": "Stable code: `HISTORY_HARSH_BRAKING`, `HISTORY_HARSH_CORNERING`, `HISTORY_ACCIDENTS`, `HISTORY_EVENTS`, `HABITUAL_SPEEDING`, `VEHICLE_SPEEDING`, `POTHOLE_NEARBY`, `SPEED_BUMP_NEARBY`, `HAZARD_NEARBY`, `ACCIDENT_REPORTED`, `ROADWORK_REPORTED`, `FLOODING_REPORTED`, `CONGESTION_REPORTED`, `HAZARD_REPORTED`, `NIGHT`, `POOR_GPS`, `STALE_DATA`.",
             "examples": [
               "HISTORY_HARSH_BRAKING"
             ]
@@ -40776,7 +39255,7 @@
           "factor": {
             "type": "string",
             "title": "Factor",
-            "description": "Factor of the index: `history`, `habitual_speeding`, `vehicle_speeding`, `hazards`, `reports`, `driver`, `night`, `poor_gps`, `stale_data`."
+            "description": "Factor of the index: `history`, `habitual_speeding`, `vehicle_speeding`, `hazards`, `reports`, `night`, `poor_gps`, `stale_data`."
           },
           "value": {
             "type": "number",
@@ -43592,252 +42071,6 @@
         "title": "EffectiveThresholdsOut",
         "description": "Thresholds the processor applies to a type."
       },
-      "EntityDetailOut": {
-        "properties": {
-          "window": {
-            "$ref": "#/components/schemas/WindowOut"
-          },
-          "kind": {
-            "type": "string",
-            "title": "Kind",
-            "description": "`driver` or `vehicle`."
-          },
-          "id": {
-            "type": "string",
-            "title": "Id",
-            "description": "Driver / vehicle id."
-          },
-          "ranking": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EntityRow"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Its row of the ranking (score, trend …)."
-          },
-          "rank_of": {
-            "type": "integer",
-            "title": "Rank Of",
-            "description": "Number of ranked drivers / vehicles."
-          },
-          "by_type": {
-            "items": {
-              "$ref": "#/components/schemas/TypeSummary"
-            },
-            "type": "array",
-            "title": "By Type",
-            "description": "Per behaviour type."
-          },
-          "trends": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Trends",
-            "description": "Same shape as `GET /driver-behaviour/trends`."
-          },
-          "zones": {
-            "items": {
-              "$ref": "#/components/schemas/HeatCell"
-            },
-            "type": "array",
-            "title": "Zones",
-            "description": "Where its events happened (grid cells, most events first)."
-          },
-          "recent_events": {
-            "items": {
-              "$ref": "#/components/schemas/BehaviourEvent"
-            },
-            "type": "array",
-            "title": "Recent Events",
-            "description": "Up to 50 most recent events."
-          }
-        },
-        "type": "object",
-        "required": [
-          "window",
-          "kind",
-          "id",
-          "rank_of",
-          "by_type",
-          "trends",
-          "zones",
-          "recent_events"
-        ],
-        "title": "EntityDetailOut",
-        "description": "Behaviour profile of one driver or vehicle."
-      },
-      "EntityListOut": {
-        "properties": {
-          "window": {
-            "$ref": "#/components/schemas/WindowOut"
-          },
-          "total": {
-            "type": "integer",
-            "title": "Total",
-            "description": "Identified drivers / vehicles in the period."
-          },
-          "unidentified_events": {
-            "type": "integer",
-            "title": "Unidentified Events",
-            "description": "Events without the identifier (not ranked)."
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/EntityRow"
-            },
-            "type": "array",
-            "title": "Items",
-            "description": "This page, riskiest first."
-          }
-        },
-        "type": "object",
-        "required": [
-          "window",
-          "total",
-          "unidentified_events",
-          "items"
-        ],
-        "title": "EntityListOut",
-        "description": "Ranking of drivers or vehicles."
-      },
-      "EntityRow": {
-        "properties": {
-          "rank": {
-            "type": "integer",
-            "title": "Rank",
-            "description": "Position, riskiest first."
-          },
-          "id": {
-            "type": "string",
-            "title": "Id",
-            "description": "Driver / vehicle id (from the source)."
-          },
-          "events": {
-            "type": "integer",
-            "title": "Events",
-            "description": "Behaviour events."
-          },
-          "by_type": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "type": "object",
-            "title": "By Type",
-            "description": "Events per behaviour type."
-          },
-          "high_severity": {
-            "type": "integer",
-            "title": "High Severity",
-            "description": "High-severity events."
-          },
-          "points": {
-            "type": "number",
-            "title": "Points",
-            "description": "Weighted points."
-          },
-          "score": {
-            "type": "number",
-            "title": "Score",
-            "description": "Behaviour risk score 0–100 (see `GET /driver-behaviour/methodology`)."
-          },
-          "level": {
-            "type": "string",
-            "title": "Level",
-            "description": "`low`, `medium`, `high` or `very_high`."
-          },
-          "previous_score": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Previous Score",
-            "description": "Score over the comparison period."
-          },
-          "previous_events": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Previous Events",
-            "description": "Events over the comparison period."
-          },
-          "score_delta": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Score Delta",
-            "description": "score − previous_score."
-          },
-          "trend": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Trend",
-            "description": "`worse`, `better` or `stable` (±2 points)."
-          },
-          "linked": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Linked",
-            "description": "Vehicles driven (driver row) / drivers (vehicle row), up to 5."
-          },
-          "last_event_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Last Event At",
-            "description": "Most recent event."
-          },
-          "top_road": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Top Road",
-            "description": "Road with most events."
-          }
-        },
-        "type": "object",
-        "required": [
-          "rank",
-          "id",
-          "events",
-          "by_type",
-          "high_severity",
-          "points",
-          "score",
-          "level",
-          "linked",
-          "last_event_at"
-        ],
-        "title": "EntityRow",
-        "description": "A driver or vehicle with its behaviour score over the period."
-      },
       "EventAlertOut": {
         "properties": {
           "connection_id": {
@@ -44360,30 +42593,6 @@
           "items"
         ],
         "title": "EventFilesOut"
-      },
-      "EventListOut": {
-        "properties": {
-          "total": {
-            "type": "integer",
-            "title": "Total",
-            "description": "Events matching the filters."
-          },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/BehaviourEvent"
-            },
-            "type": "array",
-            "title": "Items",
-            "description": "This page."
-          }
-        },
-        "type": "object",
-        "required": [
-          "total",
-          "items"
-        ],
-        "title": "EventListOut",
-        "description": "A page of behaviour events."
       },
       "EventTypeCount": {
         "properties": {
@@ -46462,12 +44671,12 @@
           "count": {
             "type": "integer",
             "title": "Count",
-            "description": "Events."
+            "description": "Exceptions."
           },
-          "points": {
-            "type": "number",
-            "title": "Points",
-            "description": "Weighted points."
+          "high_severity": {
+            "type": "integer",
+            "title": "High Severity",
+            "description": "High-severity exceptions."
           },
           "by_type": {
             "additionalProperties": {
@@ -46475,19 +44684,7 @@
             },
             "type": "object",
             "title": "By Type",
-            "description": "Events per behaviour type."
-          },
-          "place": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Place",
-            "description": "Place name (driver / vehicle profile zones only)."
+            "description": "Exceptions per type."
           }
         },
         "type": "object",
@@ -46496,11 +44693,11 @@
           "latitude",
           "longitude",
           "count",
-          "points",
+          "high_severity",
           "by_type"
         ],
         "title": "HeatCell",
-        "description": "Event concentration in one grid cell."
+        "description": "Exception concentration in one grid cell."
       },
       "HeatmapOut": {
         "properties": {
@@ -46523,7 +44720,7 @@
             },
             "type": "array",
             "title": "Cells",
-            "description": "Cells with at least one event."
+            "description": "Cells with at least one exception."
           }
         },
         "type": "object",
@@ -46534,7 +44731,7 @@
           "cells"
         ],
         "title": "HeatmapOut",
-        "description": "Behaviour heatmap — intensity is an event count, not an accident probability."
+        "description": "Exception heatmap — intensity is an exception count, not an accident probability."
       },
       "HistoricalEvent": {
         "properties": {
@@ -46583,30 +44780,6 @@
               9.7679
             ]
           },
-          "vehicle_external_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Vehicle External Id",
-            "description": "The source's vehicle identifier (not a platform vehicle id)."
-          },
-          "driver_external_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Driver External Id",
-            "description": "The source's driver identifier."
-          },
           "speed_mps": {
             "anyOf": [
               {
@@ -46647,7 +44820,7 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Raw",
-            "description": "Untouched source payload, kept for reference.",
+            "description": "Source payload, kept for reference. Events are anonymous: only the non-identifying fields are stored (exception type / id, times, positions, speeds, thresholds, level, durations, distances, country, transporter); driver and vehicle fields (plate, unit, driver name / id …) are dropped.",
             "default": {}
           }
         },
@@ -46661,7 +44834,7 @@
           "longitude"
         ],
         "title": "HistoricalEvent",
-        "description": "One driving event, in canonical form, before map-matching."
+        "description": "One driving event, in canonical form, before map-matching. Anonymous: no driver or\nvehicle (app/modules/m08_historical/anonymity.py)."
       },
       "HistoricalEventType": {
         "type": "string",
@@ -48961,10 +47134,26 @@
             "title": "Version",
             "description": "Methodology version."
           },
-          "formula": {
+          "severity_rule": {
             "type": "string",
-            "title": "Formula",
-            "description": "Score formula."
+            "title": "Severity Rule",
+            "description": "How the severity is normalised."
+          },
+          "speed_bands_kmh": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Speed Bands Kmh",
+            "description": "Bands of recorded speed, km/h."
+          },
+          "excess_bands_pct": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Excess Bands Pct",
+            "description": "Bands of excess over the limit, %."
           },
           "settings": {
             "additionalProperties": true,
@@ -48984,12 +47173,14 @@
         "type": "object",
         "required": [
           "version",
-          "formula",
+          "severity_rule",
+          "speed_bands_kmh",
+          "excess_bands_pct",
           "settings",
           "notes"
         ],
         "title": "MethodologyOut",
-        "description": "Documented behaviour scoring method (RRAP-09-011)."
+        "description": "How the exception statistics are computed."
       },
       "MetricsFeedback": {
         "properties": {
@@ -50140,7 +48331,7 @@
           "total_events": {
             "type": "integer",
             "title": "Total Events",
-            "description": "Behaviour events in the period."
+            "description": "Exceptions in the period."
           },
           "previous_total_events": {
             "anyOf": [
@@ -50152,7 +48343,7 @@
               }
             ],
             "title": "Previous Total Events",
-            "description": "Events in the comparison period."
+            "description": "Exceptions in the comparison period."
           },
           "change_pct": {
             "anyOf": [
@@ -50166,37 +48357,17 @@
             "title": "Change Pct",
             "description": "Change vs the comparison period, %."
           },
-          "points": {
-            "type": "number",
-            "title": "Points",
-            "description": "Total weighted points."
-          },
           "high_severity_events": {
             "type": "integer",
             "title": "High Severity Events",
-            "description": "High-severity events."
+            "description": "High-severity exceptions."
           },
-          "drivers": {
-            "type": "integer",
-            "title": "Drivers",
-            "description": "Distinct identified drivers."
-          },
-          "vehicles": {
-            "type": "integer",
-            "title": "Vehicles",
-            "description": "Distinct identified vehicles."
-          },
-          "identified_share": {
+          "high_severity_share": {
             "type": "number",
-            "title": "Identified Share",
-            "description": "Share of events carrying a driver or vehicle id (0–1)."
+            "title": "High Severity Share",
+            "description": "Their share (0–1)."
           },
-          "high_risk_drivers": {
-            "type": "integer",
-            "title": "High Risk Drivers",
-            "description": "Drivers whose score ≥ `high_risk_score`."
-          },
-          "avg_driver_score": {
+          "avg_speed_kmh": {
             "anyOf": [
               {
                 "type": "number"
@@ -50205,8 +48376,47 @@
                 "type": "null"
               }
             ],
-            "title": "Avg Driver Score",
-            "description": "Average driver score (0–100)."
+            "title": "Avg Speed Kmh",
+            "description": "Average recorded speed, km/h (exceptions with a speed)."
+          },
+          "max_speed_kmh": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Speed Kmh",
+            "description": "Highest recorded speed, km/h."
+          },
+          "avg_excess_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Excess Pct",
+            "description": "Average excess over the limit, % (when known)."
+          },
+          "places": {
+            "type": "integer",
+            "title": "Places",
+            "description": "Distinct ~110 m squares with exceptions (spread)."
+          },
+          "sources": {
+            "type": "integer",
+            "title": "Sources",
+            "description": "Sources / providers with exceptions in the period."
+          },
+          "countries": {
+            "type": "integer",
+            "title": "Countries",
+            "description": "Countries with exceptions in the period."
           },
           "first_event_at": {
             "anyOf": [
@@ -50219,7 +48429,7 @@
               }
             ],
             "title": "First Event At",
-            "description": "Oldest event of the period."
+            "description": "Oldest exception of the period."
           },
           "last_event_at": {
             "anyOf": [
@@ -50232,7 +48442,7 @@
               }
             ],
             "title": "Last Event At",
-            "description": "Most recent event of the period."
+            "description": "Most recent exception of the period."
           },
           "data_first_event_at": {
             "anyOf": [
@@ -50245,7 +48455,7 @@
               }
             ],
             "title": "Data First Event At",
-            "description": "Oldest behaviour event stored (any period)."
+            "description": "Oldest exception stored (any period)."
           },
           "data_last_event_at": {
             "anyOf": [
@@ -50258,7 +48468,7 @@
               }
             ],
             "title": "Data Last Event At",
-            "description": "Most recent behaviour event stored."
+            "description": "Most recent exception stored."
           },
           "by_type": {
             "items": {
@@ -50266,23 +48476,22 @@
             },
             "type": "array",
             "title": "By Type",
-            "description": "Per behaviour type."
+            "description": "Per exception type."
           }
         },
         "type": "object",
         "required": [
           "window",
           "total_events",
-          "points",
           "high_severity_events",
-          "drivers",
-          "vehicles",
-          "identified_share",
-          "high_risk_drivers",
+          "high_severity_share",
+          "places",
+          "sources",
+          "countries",
           "by_type"
         ],
         "title": "OverviewOut",
-        "description": "Behaviour KPIs of the period, with the comparison period."
+        "description": "Exception KPIs of the period, with the comparison period."
       },
       "PasswordChangeIn": {
         "properties": {
@@ -52760,7 +50969,7 @@
               "collision"
             ],
             "title": "Report Type",
-            "description": "`hazards` (AI hazards), `community` (community reports), `historical` (historical risk), `driver_behaviour` or `collision` (collision prevention).",
+            "description": "`hazards` (AI hazards), `community` (community reports), `historical` (historical risk), `driver_behaviour` (exception patterns — anonymous statistics, no driver or vehicle) or `collision` (collision prevention).",
             "examples": [
               "hazards"
             ]
@@ -52823,7 +51032,7 @@
             },
             "type": "array",
             "title": "Types",
-            "description": "Only these types (empty = all): hazard types (`pothole`, `parked_vehicle`, `traffic_sign`, `speed_bump` …), community report types, historical event types or behaviour types — see `GET /reports/types`.",
+            "description": "Only these types (empty = all): hazard types (`pothole`, `parked_vehicle`, `traffic_sign`, `speed_bump` …), community report types or historical / exception event types — see `GET /reports/types`.",
             "default": [],
             "examples": [
               [
@@ -56548,6 +54757,29 @@
         "title": "SignalementVoteResultOut",
         "description": "Outcome of a vote."
       },
+      "SourceOut": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "examples": [
+              "ymane"
+            ]
+          },
+          "events": {
+            "type": "integer",
+            "title": "Events",
+            "description": "Exceptions stored from it (every type, all time)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "events"
+        ],
+        "title": "SourceOut",
+        "description": "A source / provider of the exceptions (daily file provider, API, manual import)."
+      },
       "StatsRecentJob": {
         "properties": {
           "id": {
@@ -58488,7 +56720,7 @@
             },
             "type": "array",
             "title": "Series",
-            "description": "`{bucket, total, points, <TYPE>: n …}` per bucket."
+            "description": "`{bucket, total, high_severity, <TYPE>: n …}` per bucket."
           },
           "by_hour": {
             "items": {
@@ -58506,7 +56738,7 @@
             },
             "type": "array",
             "title": "By Weekday",
-            "description": "`{weekday (0 = Monday), total, <TYPE>: n …}`."
+            "description": "`{weekday (0 = Monday), total, <TYPE>: n …}`, local time."
           }
         },
         "type": "object",
@@ -58519,7 +56751,7 @@
           "by_weekday"
         ],
         "title": "TrendsOut",
-        "description": "Behaviour events over time, by hour of day and by weekday."
+        "description": "Exceptions over time, by hour of day and by weekday."
       },
       "TypeCount": {
         "properties": {
@@ -58577,7 +56809,7 @@
           "event_type": {
             "type": "string",
             "title": "Event Type",
-            "description": "Behaviour type.",
+            "description": "Exception type.",
             "examples": [
               "SPEEDING"
             ]
@@ -58585,17 +56817,12 @@
           "count": {
             "type": "integer",
             "title": "Count",
-            "description": "Events."
+            "description": "Exceptions."
           },
           "share": {
             "type": "number",
             "title": "Share",
-            "description": "Share of all behaviour events (0–1)."
-          },
-          "points": {
-            "type": "number",
-            "title": "Points",
-            "description": "Weighted points (type weight × severity multiplier)."
+            "description": "Share of all exceptions of the selection (0–1)."
           },
           "by_severity": {
             "additionalProperties": {
@@ -58603,12 +56830,12 @@
             },
             "type": "object",
             "title": "By Severity",
-            "description": "Events per normalised severity (low/medium/high/unknown)."
+            "description": "Exceptions per normalised severity (low/medium/high/unknown)."
           },
           "high_severity": {
             "type": "integer",
             "title": "High Severity",
-            "description": "High-severity events."
+            "description": "High-severity exceptions."
           },
           "avg_speed_kmh": {
             "anyOf": [
@@ -58668,17 +56895,7 @@
               }
             ],
             "title": "Peak Hour",
-            "description": "Hour of day (local time) with most events."
-          },
-          "drivers": {
-            "type": "integer",
-            "title": "Drivers",
-            "description": "Distinct drivers."
-          },
-          "vehicles": {
-            "type": "integer",
-            "title": "Vehicles",
-            "description": "Distinct vehicles."
+            "description": "Hour of day (local time) with most exceptions."
           },
           "top_roads": {
             "items": {
@@ -58687,7 +56904,7 @@
             },
             "type": "array",
             "title": "Top Roads",
-            "description": "Up to 3 roads with most events: `{road_name, count}`."
+            "description": "Up to 3 roads with most exceptions: `{road_name, count}`."
           }
         },
         "type": "object",
@@ -58695,15 +56912,12 @@
           "event_type",
           "count",
           "share",
-          "points",
           "by_severity",
           "high_severity",
-          "drivers",
-          "vehicles",
           "top_roads"
         ],
         "title": "TypeSummary",
-        "description": "One behaviour type (speeding / harsh braking / acceleration / cornering) over the period."
+        "description": "One exception type over the period."
       },
       "UpcomingSegment": {
         "properties": {
@@ -60037,30 +58251,6 @@
             "title": "Last Seen",
             "description": "Last ping time (UTC), updated at most every `VEHICLE_LAST_SEEN_THROTTLE_S` seconds; null if never pinged."
           },
-          "plate": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plate",
-            "description": "Licence plate, if registered."
-          },
-          "driver_external_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Driver External Id",
-            "description": "Fleet driver id, if registered."
-          },
           "device_secret": {
             "anyOf": [
               {
@@ -60208,43 +58398,11 @@
             "examples": [
               "taxi"
             ]
-          },
-          "plate": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 32
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plate",
-            "description": "Licence plate as written in the fleet exception files (e.g. `LTTR 995 AR`) — links the vehicle to its driving-behaviour score (collision context factor `RISKY_DRIVER`). Omitted / null keeps the stored value on re-registration; an empty string clears it.",
-            "examples": [
-              "LTTR 995 AR"
-            ]
-          },
-          "driver_external_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 64
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Driver External Id",
-            "description": "Fleet id of the driver, when known (same rule as `plate`).",
-            "examples": [
-              "DRV-0042"
-            ]
           }
         },
         "type": "object",
         "title": "VehicleRegisterIn",
-        "description": "Register (or re-register) a vehicle/device for live telemetry."
+        "description": "Register (or re-register) a vehicle/device for live telemetry. Anonymous: nothing identifies\nthe vehicle or its driver — the `plate` / `driver_external_id` sent by older app versions are\naccepted and ignored."
       },
       "VehicleType": {
         "type": "string",
@@ -60538,25 +58696,31 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Criteria",
-            "description": "Applied criteria (`zone_cell_size_m`, `zone_min_events`, …)."
+            "description": "Applied criteria (`zone_cell_size_m`, `zone_min_events`, types)."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Zones meeting the criteria (before `limit`)."
           },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/app__modules__m09_driver_behaviour__routes__driver_behaviour__ZoneOut"
+              "$ref": "#/components/schemas/app__modules__m09_exception_patterns__routes__exception_patterns__ZoneOut"
             },
             "type": "array",
             "title": "Items",
-            "description": "Zones, riskiest first."
+            "description": "Zones, most exceptions first."
           }
         },
         "type": "object",
         "required": [
           "window",
           "criteria",
+          "total",
           "items"
         ],
         "title": "ZoneListOut",
-        "description": "Zones meeting the configured behaviour-risk criteria."
+        "description": "Places meeting the configured zone criteria."
       },
       "ZoneOptOut": {
         "properties": {
@@ -61606,12 +59770,12 @@
         "title": "ImportIn",
         "description": "Historical events to import, from a source over a date range."
       },
-      "app__modules__m09_driver_behaviour__routes__driver_behaviour__ZoneOut": {
+      "app__modules__m09_exception_patterns__routes__exception_patterns__ZoneOut": {
         "properties": {
           "rank": {
             "type": "integer",
             "title": "Rank",
-            "description": "Position, most weighted points first."
+            "description": "Position, most exceptions first."
           },
           "cell_id": {
             "type": "string",
@@ -61636,17 +59800,7 @@
           "events": {
             "type": "integer",
             "title": "Events",
-            "description": "Behaviour events in the cell."
-          },
-          "points": {
-            "type": "number",
-            "title": "Points",
-            "description": "Weighted points."
-          },
-          "score": {
-            "type": "number",
-            "title": "Score",
-            "description": "Points normalised 0–100 like a driver score."
+            "description": "Exceptions in the cell."
           },
           "by_type": {
             "additionalProperties": {
@@ -61654,32 +59808,32 @@
             },
             "type": "object",
             "title": "By Type",
-            "description": "Events per behaviour type."
+            "description": "Exceptions per type."
           },
           "dominant_type": {
             "type": "string",
             "title": "Dominant Type",
-            "description": "Most frequent behaviour type."
+            "description": "Most frequent exception type."
           },
           "dominant_share": {
             "type": "number",
             "title": "Dominant Share",
-            "description": "Its share of the cell's events (0–1)."
+            "description": "Its share of the cell's exceptions (0–1)."
           },
-          "multi_behaviour": {
+          "multi_type": {
             "type": "boolean",
-            "title": "Multi Behaviour",
-            "description": "At least two behaviour types recorded here."
-          },
-          "drivers": {
-            "type": "integer",
-            "title": "Drivers",
-            "description": "Distinct drivers / vehicles."
+            "title": "Multi Type",
+            "description": "At least two exception types recorded here."
           },
           "high_severity": {
             "type": "integer",
             "title": "High Severity",
-            "description": "High-severity events."
+            "description": "High-severity exceptions."
+          },
+          "high_severity_share": {
+            "type": "number",
+            "title": "High Severity Share",
+            "description": "Their share (0–1)."
           },
           "road_name": {
             "anyOf": [
@@ -61709,13 +59863,13 @@
             "type": "string",
             "format": "date-time",
             "title": "First Event At",
-            "description": "Oldest event."
+            "description": "Oldest exception."
           },
           "last_event_at": {
             "type": "string",
             "format": "date-time",
             "title": "Last Event At",
-            "description": "Most recent event."
+            "description": "Most recent exception."
           }
         },
         "type": "object",
@@ -61726,19 +59880,17 @@
           "longitude",
           "radius_m",
           "events",
-          "points",
-          "score",
           "by_type",
           "dominant_type",
           "dominant_share",
-          "multi_behaviour",
-          "drivers",
+          "multi_type",
           "high_severity",
+          "high_severity_share",
           "first_event_at",
           "last_event_at"
         ],
         "title": "ZoneOut",
-        "description": "A high-risk behaviour zone (grid cell of `zone_cell_size_m`)."
+        "description": "A place where exceptions concentrate (grid cell of `zone_cell_size_m`)."
       },
       "ErrorDetail": {
         "additionalProperties": true,
@@ -61911,8 +60063,8 @@
       "description": "**Module 8** (functional Module 4, Historical Risk Analysis) — historical driving events imported into stable grid cells and turned into normalised 0–1 risk scores: zone, route and heatmap queries, top risk zones, risk trend over time, import history."
     },
     {
-      "name": "Driver behaviour",
-      "description": "**Module 9** (functional Module 5, Driver Behaviour Analytics, RRAP-09) — speeding, harsh braking, hard acceleration and harsh cornering events (stored in the historical event store): KPIs per behaviour, driver / vehicle risk scores and rankings, heatmaps, time trends and high-risk behaviour zones. Scores are event-based indicators, not accident probabilities."
+      "name": "Exception patterns",
+      "description": "**Module 9** (functional Module 5, RRAP-09 — formerly Driver behaviour) — anonymous statistics of the fleet exceptions (speeding, harsh braking, hard acceleration, harsh cornering …, stored in the historical event store): KPIs per type, breakdowns by provider, country, severity and speed band, time trends, hour-of-day / weekday patterns, heatmaps and the places where exceptions concentrate. No driver or vehicle is stored, ranked or profiled. Counts are not accident probabilities."
     },
     {
       "name": "Vehicles & telemetry",

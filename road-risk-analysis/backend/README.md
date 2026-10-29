@@ -28,8 +28,8 @@ app/
 | 5 — AI Hazard & Road Infrastructure Detection | RRAP-05 | `app/modules/m05_ai_detection` | `routes/ai_models.py`, `model_registry.py`, `model_stats.py`, `ai_validation.py`, `static_check.py`, `sign_taxonomy.py`, `osd_parser.py`, `parked_vehicle/` |
 | 6 — Hazard Management, Clustering, Validation & Evidence | RRAP-06 | `app/modules/m06_hazards` | `routes/{detections,hazards,rejection_reasons,datasets,clustering,cluster_config,cluster_areas}.py`, `detection_workflow.py`, `hazard_service.py`, `lifecycle/`, `clustering/`, `training_data/`, `dataset_service.py`, `models/` (11 tables), `schemas.py` |
 | 7 — Video/Data Ingestion & Processing Jobs | RRAP-07 | `app/modules/m07_ingestion` | `routes/{jobs,streams,cloud_connections,cloud_imports}.py`, `pipeline.py` (the video processor), `job_service.py`, `job_slots.py`, `watchdog.py`, `stream_capture.py`, `cloud_import.py`, `cloud_providers.py`, `cloud_storage.py`, `sftp_core.py`, `sftp_source.py`, `models/` (6 tables), `schemas/{jobs,cloud_imports}.py` |
-| 8 — Historical Road Risk Analytics | RRAP-08 | `app/modules/m08_historical` | `routes/historical.py`, `historical_service.py`, `domain.py`, `grid.py`, `matcher.py`, `sources/`, `models/historical_event.py` |
-| 9 — Driver Behaviour Analytics | RRAP-09 | — | not built yet |
+| 8 — Historical Road Risk Analytics | RRAP-08 | `app/modules/m08_historical` | `routes/historical.py`, `historical_service.py`, `domain.py`, `grid.py`, `matcher.py`, `anonymity.py`, `rollups.py`, `aggregates.py`, `event_feed.py`, `sources/`, `models/` |
+| 9 — Exception patterns (formerly Driver Behaviour; anonymous) | RRAP-09 | `app/modules/m09_exception_patterns` | `routes/exception_patterns.py`, `views.py`, `analytics.py`, `service.py`, `settings.py` (section `driver_behaviour`) |
 | 10 — Predictive Cooperative Collision Prevention | RRAP-10 | `app/modules/m10_collision` | `routes/{vehicles,road_state,trajectory,collisions,alerts}.py`, `vehicle_service.py`, `road_state_service.py`, `trajectory_service.py` + `trajectory/`, `collision_service.py` + `collision/`, `alert_service.py` + `alerts/`, `staleness_guard.py`, `models/{vehicle,vehicle_road_state}.py`, `schemas.py` |
 | 11 — Community Reporting & Dynamic Road Events | RRAP-11 | `app/modules/m11_community` | `routes/signalements.py`, `signalement_service.py`, `signalement_votes.py`, `spatial_signalement.py`, `models/{signalement,signalement_vote}.py`, `schemas.py` |
 | 12 — External Applications & API Integration | RRAP-12 | `app/modules/m12_integration` | `routes/{api_clients,mobile_config}.py`, `mobile_config.py`, `models/api_client.py` (OpenAPI: `app/api/openapi.py`, `app/export_openapi.py`) |
@@ -91,7 +91,7 @@ app/modules/mNN_name/
   Task names are persisted in the broker and referenced by beat: never rename
   one, even if the function moves.
 - **Adding a runtime setting**: add a section model to `app/core/settings_service.py`.
-- **Adding a module** (e.g. m04 ARR, m09 driver behaviour): create
+- **Adding a module** (e.g. m04 ARR): create
   `app/modules/mNN_<name>/` with the layout above and a docstring, then wire its
   routers, models and tasks as described. Update the map in this README.
 

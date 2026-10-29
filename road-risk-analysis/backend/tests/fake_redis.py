@@ -110,6 +110,15 @@ class FakeRedis:
         h = self.h.get(key, {})
         return [h.get(f) for f in fields]
 
+    def hdel(self, key, *fields):
+        h = self.h.get(key, {})
+        return sum(1 for f in fields if h.pop(f, None) is not None)
+
+    def scan_keys(self, match="*"):
+        import fnmatch
+        keys = set(self.kv) | set(self.h) | set(self.sets) | set(self.lists) | set(self.geo)
+        return sorted(k for k in keys if fnmatch.fnmatchcase(k, match))
+
     def hincrby(self, key, field, n=1):
         h = self.h.setdefault(key, {})
         h[field] = str(int(h.get(field, 0)) + n)
@@ -178,6 +187,10 @@ class _Async:
 
     def pubsub(self):
         return self._store.pubsub()
+
+    async def scan_iter(self, match="*", count=None):
+        for k in self._store.scan_keys(match):
+            yield k
 
     def __getattr__(self, name):
         fn = getattr(self._store, name)

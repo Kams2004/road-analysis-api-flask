@@ -3,8 +3,9 @@
 
 Generating needs `reports:add` plus the view right of the module the report
 reads (hazards → detections, community → signalements, historical,
-driver_behaviour, collision → collisions). Files are stored in the private
-MinIO bucket `reports` and only served through GET /reports/{id}/download.
+driver_behaviour — the anonymous Exception patterns —, collision → collisions).
+Files are stored in the private MinIO bucket `reports` and only served through
+GET /reports/{id}/download.
 """
 import asyncio
 import logging
@@ -22,8 +23,8 @@ from app.api.openapi import errors, legacy
 from app.core import settings_service
 from app.core.config import settings
 from app.core.db.session import get_db
-from app.modules.m09_driver_behaviour.analytics import resolve_window
-from app.modules.m09_driver_behaviour.settings import BEHAVIOUR_TYPES
+from app.modules.m09_exception_patterns.analytics import resolve_window
+from app.modules.m09_exception_patterns.settings import EXCEPTION_TYPES
 from app.modules.m14_reports import collectors, pathfilter, pdf
 from app.modules.m14_reports.i18n import translator
 from app.modules.m14_reports.models.report import GeneratedReport
@@ -76,14 +77,15 @@ class ReportIn(BaseModel):
     """What to put in the report."""
     report_type: ReportType = Field(..., description=(
         "`hazards` (AI hazards), `community` (community reports), `historical` (historical risk), "
-        "`driver_behaviour` or `collision` (collision prevention)."), examples=["hazards"])
+        "`driver_behaviour` (exception patterns — anonymous statistics, no driver or vehicle) or `collision` "
+        "(collision prevention)."), examples=["hazards"])
     title: Optional[str] = Field(None, max_length=160, description="Custom title (default: the report type).")
     period: Optional[str] = Field("all", description="`7d`, `30d`, `90d`, `12m` or `all`. Ignored with dates.")
     date_from: Optional[date] = Field(None, description="First day (inclusive, UTC).")
     date_to: Optional[date] = Field(None, description="Last day (inclusive, UTC).")
     types: List[str] = Field([], description=(
         "Only these types (empty = all): hazard types (`pothole`, `parked_vehicle`, `traffic_sign`, "
-        "`speed_bump` …), community report types, historical event types or behaviour types — see "
+        "`speed_bump` …), community report types or historical / exception event types — see "
         "`GET /reports/types`."), examples=[["pothole"]])
     statuses: List[str] = Field([], description=(
         "Hazards: `active` / `resolved`; community reports: `actif` / `annule` / `rejete` (empty = all)."))
@@ -203,7 +205,7 @@ async def _type_options(db: AsyncSession) -> Dict[str, Tuple[List[TypeOption], O
         "hazards": (opt(list(dict.fromkeys(known_hz + sorted(hz))), hz), sum(hz.values())),
         "community": (opt([t.value for t in SignalementType], sg), sum(sg.values())),
         "historical": (opt([t.value for t in HistoricalEventType], ev), sum(ev.values())),
-        "driver_behaviour": (opt(list(BEHAVIOUR_TYPES), ev), sum(ev.get(t, 0) for t in BEHAVIOUR_TYPES)),
+        "driver_behaviour": (opt(list(EXCEPTION_TYPES), ev), sum(ev.get(t, 0) for t in EXCEPTION_TYPES)),
         "collision": ([], vehicles),
     }
 
@@ -317,7 +319,7 @@ async def generate_report(body: ReportIn, db: AsyncSession = Depends(get_db),
         filters["resolved_path"] = path.describe()
     if zone is not None:
         filters["zone_name"] = zone.name
-    from app.modules.m09_driver_behaviour.settings import METHODOLOGY_VERSION
+    from app.modules.m09_exception_patterns.settings import METHODOLOGY_VERSION
     row.filters = filters
     row.summary = data.get("summary", {})
     row.methodology = {"report_version": "rep-1", "driver_behaviour": METHODOLOGY_VERSION,

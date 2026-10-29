@@ -21,8 +21,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.m09_driver_behaviour import analytics as BA
-from app.modules.m09_driver_behaviour.settings import BEHAVIOUR_TYPES, DriverBehaviourSettings
+from app.modules.m09_exception_patterns import analytics as BA
+from app.modules.m09_exception_patterns.settings import EXCEPTION_TYPES, ExceptionPatternSettings
 from app.modules.m14_reports.pathfilter import Path
 
 logger = logging.getLogger(__name__)
@@ -387,12 +387,13 @@ def build_historical(ctx: Ctx, rows: Sequence) -> dict:
     }
 
 
-# ── 4. Driver behaviour (Module 5) ───────────────────────────────────────────
+# ── 4. Exception patterns (Module 9, anonymous) ──────────────────────────────
+# Report type key `driver_behaviour` kept (stored reports, permissions); the content is anonymous.
 
 async def gather_driver_behaviour(db: AsyncSession, ctx: Ctx) -> dict:
-    from app.modules.m09_driver_behaviour import service
+    from app.modules.m09_exception_patterns import service
     cfg = await service.get_settings(db)
-    types = [x for x in ctx.types if x in BEHAVIOUR_TYPES] or list(BEHAVIOUR_TYPES)
+    types = [x for x in ctx.types if x in EXCEPTION_TYPES] or list(EXCEPTION_TYPES)
     ctx.types = types
     box = ctx.bbox()
     ev = await service.load_events(db, ctx.window.start, ctx.window.end, types, bbox=box)
@@ -402,22 +403,33 @@ async def gather_driver_behaviour(db: AsyncSession, ctx: Ctx) -> dict:
     pick = lambda rows: ctx.place_filter(rows, lambda r: r.latitude, lambda r: r.longitude, town_applicable=False)
     kept = pick(ev)
     prev_kept = [r for _, _, r in pick(prev)] if prev is not None else None
-    return build_driver_behaviour(ctx, kept, prev_kept, cfg)
+    return build_exception_patterns(ctx, kept, prev_kept, cfg)
 
 
-def build_driver_behaviour(ctx: Ctx, kept: Sequence[tuple], prev: Optional[Sequence],
-                           cfg: DriverBehaviourSettings) -> dict:
+def _chart_rows(title: str, rows: Sequence[dict], label, types: Sequence[str], t) -> dict:
+    """Stacked bar chart of breakdown rows ({key, count, by_type}) in their order."""
+    return {"kind": "chart", "chart": {
+        "type": "bar", "stacked": True, "title": title, "categories": [label(r["key"]) for r in rows],
+        "series": [{"name": t(x), "values": [r["by_type"].get(x, 0) for r in rows], "key": x} for x in types]}}
+
+
+def build_exception_patterns(ctx: Ctx, kept: Sequence[tuple], prev: Optional[Sequence],
+                             cfg: ExceptionPatternSettings) -> dict:
     t = ctx.t
     ev = [r for _, _, r in kept]
-    types = ctx.types or list(BEHAVIOUR_TYPES)
+    types = ctx.types or list(EXCEPTION_TYPES)
     ov = BA.overview(ev, prev, cfg, types)
+    shown = [x for x in types if any(s["event_type"] == x and s["count"] for s in ov["by_type"])] or types
     change = f" ({ov['change_pct']:+.0f}%)" if ov.get("change_pct") is not None else ""
-    kpis = [(t("events"), f"{ov['total_events']}{change}"), (t("high_sev"), str(ov["high_severity_events"])),
-            (t("drivers"), str(ov["drivers"])), (t("vehicles"), str(ov["vehicles"])),
-            ("Score", f"{ov['avg_driver_score']:.0f}" if ov.get("avg_driver_score") is not None else "-")]
-    blocks: List[dict] = [{"kind": "heading", "text": t("behaviour_kpis")}]
+    kpis = [(t("exceptions"), f"{ov['total_events']}{change}"),
+            (t("high_sev"), f"{ov['high_severity_events']} ({ov['high_severity_share'] * 100:.0f}%)"),
+            (t("avg_speed"), _num(ov["avg_speed_kmh"])), (t("avg_excess"), _num(ov["avg_excess_pct"])),
+            (t("places"), str(ov["places"])), (t("sources"), str(ov["sources"]))]
+    blocks: List[dict] = [{"kind": "heading", "text": t("patterns_kpis")}]
     trows = []
     for s in ov["by_type"]:
+        if s["event_type"] not in shown:
+            continue
         trows.append([t(s["event_type"]), str(s["count"]), f"{s['share'] * 100:.0f}%", str(s["high_severity"]),
                       _num(s["avg_speed_kmh"]), _num(s["avg_limit_kmh"]), _num(s["avg_excess_pct"]),
                       f"{s['peak_hour']}h" if s["peak_hour"] is not None else "-",
@@ -426,62 +438,57 @@ def build_driver_behaviour(ctx: Ctx, kept: Sequence[tuple], prev: Optional[Seque
         (t("type"), 30), (t("count"), 14), (t("share"), 13), (t("high_sev"), 16), (t("avg_speed"), 18),
         (t("avg_limit"), 18), (t("avg_excess"), 18), (t("peak_hour"), 15), (t("road"), 40)], "rows": trows})
     if ev:
-        tr = BA.trends(ev, ctx.window.start, ctx.window.end, cfg, types)
+        tr = BA.trends(ev, ctx.window.start, ctx.window.end, cfg, shown)
         blocks.append({"kind": "chart", "chart": {
             "type": "bar", "stacked": True, "title": f"{t('trend')} ({tr['unit']})",
             "categories": [_d(s["bucket"]) for s in tr["series"]],
-            "series": [{"name": t(x), "values": [s[x] for s in tr["series"]], "key": x} for x in types]}})
+            "series": [{"name": t(x), "values": [s[x] for s in tr["series"]], "key": x} for x in shown]}})
         blocks.append({"kind": "chart", "chart": {
             "type": "bar", "stacked": True, "title": t("by_hour"), "categories": [str(h["hour"]) for h in tr["by_hour"]],
-            "series": [{"name": t(x), "values": [h[x] for h in tr["by_hour"]], "key": x} for x in types]}})
-    for kind, title in (("driver", "driver_ranking"), ("vehicle", "vehicle_ranking")):
-        ranked = BA.rank_entities(ev, prev, kind, cfg)[:25]
-        if not ranked:
-            continue
-        blocks.append({"kind": "heading", "text": t(title)})
-        rows = []
-        for r in ranked:
-            link = _console(ctx, f"/driver-behaviour?{kind}={r['id']}")
-            delta = f"{r['score_delta']:+.0f} ({t(r['trend'])})" if r.get("score_delta") is not None else "-"
-            rows.append([str(r["rank"]), {"text": r["id"], "link": link}, f"{r['score']:.0f}", t(r["level"]),
-                         str(r["events"])] + [str(r["by_type"][x]) for x in BEHAVIOUR_TYPES] + [delta])
-        blocks.append({"kind": "table", "columns": [
-            (t("rank"), 8), (t("id"), 32), ("Score", 14), (t("level"), 18), (t("events"), 15),
-            ("SPD", 12), ("BRK", 12), ("ACC", 12), ("CRN", 12), (t("previous"), 28)], "rows": rows})
+            "series": [{"name": t(x), "values": [h[x] for h in tr["by_hour"]], "key": x} for x in shown]}})
+        blocks.append({"kind": "chart", "chart": {
+            "type": "bar", "stacked": True, "title": t("by_weekday"),
+            "categories": [t(f"wd{d['weekday']}") for d in tr["by_weekday"]],
+            "series": [{"name": t(x), "values": [d[x] for d in tr["by_weekday"]], "key": x} for x in shown]}})
+        bd = BA.breakdowns(ev, cfg, shown)
+        plain = lambda k: k or t("unknown")
+        blocks.append(_chart_rows(t("by_source"), bd["by_source"][:12], plain, shown, t))
+        blocks.append(_chart_rows(t("by_country"), bd["by_country"][:12], plain, shown, t))
+        blocks.append(_chart_rows(t("by_severity"), bd["by_severity"], t, shown, t))
+        blocks.append(_chart_rows(t("by_speed_band"), bd["by_speed_band"], str, shown, t))
+        if any(r["count"] for r in bd["by_excess_band"]):
+            blocks.append(_chart_rows(t("by_excess_band"), bd["by_excess_band"], str, ["SPEEDING"], t))
     zones = BA.zones(ev, cfg)[:20]
-    blocks.append({"kind": "heading", "text": t("behaviour_zones")})
+    blocks.append({"kind": "heading", "text": t("patterns_zones")})
     if zones:
         with_path = ctx.path is not None
         rows = []
         for z in zones:
-            link = _console(ctx, f"/driver-behaviour?lat={z['latitude']:.5f}&lon={z['longitude']:.5f}")
+            link = _console(ctx, f"/exception-patterns?lat={z['latitude']:.5f}&lon={z['longitude']:.5f}")
             km = ctx.path.km_along(z["latitude"], z["longitude"]) if with_path else None
             rows.append([str(z["rank"])] + ([f"{km:.1f}"] if with_path else []) + [
                 {"text": z["road_name"] or z["cell_id"], "link": link},
                 f"{z['latitude']:.5f}, {z['longitude']:.5f}", t(z["dominant_type"]), str(z["events"]),
-                str(z["drivers"]), f"{z['score']:.0f}"])
+                str(z["high_severity"])])
         blocks.append({"kind": "table", "columns": [("#", 8)] + ([(t("km_along"), 13)] if with_path else []) + [
-            (t("road"), 46), (t("location"), 32), (t("dominant"), 30), (t("events"), 15), (t("drivers"), 16),
-            ("Score", 14)], "rows": rows})
+            (t("road"), 50), (t("location"), 34), (t("dominant"), 30), (t("events"), 15), (t("high_sev"), 18)],
+            "rows": rows})
     else:
         blocks.append({"kind": "para", "text": t("no_data")})
     if not ev:
         blocks.insert(0, {"kind": "para", "text": t("no_data")})
     m = BA.methodology(cfg)
     return {
-        "title": t("behaviour_title"), "filters": filters_block(ctx), "kpis": kpis,
+        "title": t("patterns_title"), "filters": filters_block(ctx), "kpis": kpis,
         "map": _map(ctx, [(None, z) for z in zones], lambda z: z["latitude"], lambda z: z["longitude"],
                     lambda z: z["dominant_type"]),
         "blocks": blocks,
-        "methodology": [f"{m['version']}: {m['formula']}",
-                        "Weights: " + ", ".join(f"{k} {v:g}" for k, v in cfg.type_weights.items())
-                        + "; severity: " + ", ".join(f"{k} x{v:g}" for k, v in cfg.severity_multipliers.items())
-                        + f"; saturation {cfg.saturation_points:g} points.",
-                        f"Zones: {cfg.zone_cell_size_m:g} m cells with >= {cfg.zone_min_events} events.",
-                        "SPD/BRK/ACC/CRN = speeding / harsh braking / hard acceleration / harsh cornering."]
+        "methodology": [f"{m['version']}: {m['severity_rule']}",
+                        f"Zones: {cfg.zone_cell_size_m:g} m cells with >= {cfg.zone_min_events} exceptions.",
+                        "Speed bands (km/h): " + ", ".join(m["speed_bands_kmh"])
+                        + "; excess bands (%): " + ", ".join(m["excess_bands_pct"]) + "."]
         + m["notes"],
-        "summary": {"items": len(ev), "drivers": ov["drivers"], "vehicles": ov["vehicles"],
-                    "by_type": {s["event_type"]: s["count"] for s in ov["by_type"]}},
+        "summary": {"items": len(ev), "by_type": {s["event_type"]: s["count"] for s in ov["by_type"]}},
     }
 
 

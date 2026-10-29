@@ -1,14 +1,16 @@
 """
-Grouped reads of the driving events for Historical analysis (Module 8) and Driver behaviour
+Grouped reads of the driving events for Historical analysis (Module 8) and Exception patterns
 (Module 9): every query is a GROUP BY in the database; only small grouped results reach Python.
+Anonymous: there is no driver / vehicle dimension to group or filter by.
 
-A `Scope` is the period + filters. Each read uses the daily summaries (rollups.py) when they
-are complete and carry the filters, the raw events otherwise:
+A `Scope` is the period + filters (types, countries, sources, normalised severities, map
+area). Each read uses the daily summaries (rollups.py) when they are complete and carry the
+filters, the raw events otherwise:
 
-    entity_rows   day / source / country / transporter / driver / vehicle / type / severity
-                  → counts, speed / limit / excess sums, first / last     (summaries unless map area)
-    hour_rows     weekday / hour (UTC) / type → counts                    (summaries unless map area,
-                                                                           driver or vehicle)
+    entity_rows   day / source / country / transporter / type / severity / speed band /
+                  excess band → counts, speed / limit / excess sums, first / last
+                                                                          (summaries unless map area)
+    hour_rows     weekday / hour (UTC) / type → counts                    (same rule)
     cell_rows     ~110 m squares / type / severity / road → counts, mean position, first / last
                                                                           (same rule)
 """
@@ -16,9 +18,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Iterable, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import Integer, String, cast, extract, func, literal_column, select, tuple_
+from sqlalchemy import Integer, String, cast, extract, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.m08_historical import rollups as R
@@ -32,14 +34,16 @@ class Scope:
     end: datetime
     types: Optional[Sequence[str]] = None
     countries: Optional[Sequence[str]] = None
-    driver: Optional[str] = None
-    vehicle: Optional[str] = None
+    sources: Optional[Sequence[str]] = None
+    severities: Optional[Sequence[str]] = None     # normalised: low / medium / high / unknown
     bbox: Optional[tuple] = None
     rollups: bool = False                      # summaries complete for the current rules
+    cfg: Any = None                            # severity rules (needed by `severities` on raw events)
     extra: dict = field(default_factory=dict)
 
     def shifted(self, start: Optional[datetime], end: datetime) -> "Scope":
-        return Scope(start, end, self.types, self.countries, self.driver, self.vehicle, self.bbox, self.rollups)
+        return Scope(start, end, self.types, self.countries, self.sources, self.severities, self.bbox,
+                     self.rollups, self.cfg)
 
     @property
     def last_day(self) -> date:
@@ -68,6 +72,18 @@ def clean_countries(values: Optional[Iterable[str]]) -> Optional[list[str]]:
 
 # ── filters ──────────────────────────────────────────────────────────────────
 
+def clean_values(values: Optional[Iterable[str]], lower: bool = False) -> Optional[list[str]]:
+    """Repeated and / or comma-separated query values, trimmed, without duplicates."""
+    out = []
+    for v in values or ():
+        for part in str(v).split(","):
+            p = " ".join(part.split())
+            p = p.lower() if lower else p
+            if p and p not in out:
+                out.append(p)
+    return out or None
+
+
 def raw_where(s: Scope) -> list:
     c = []
     if s.start is not None:
@@ -77,17 +93,17 @@ def raw_where(s: Scope) -> list:
         c.append(E.event_type.in_(list(s.types)))
     if s.countries:
         c.append(func.coalesce(E.country, "").in_(s.countries))
-    if s.driver:
-        c.append(E.driver_external_id == s.driver)
-    if s.vehicle:
-        c.append(E.vehicle_external_id == s.vehicle)
+    if s.sources:
+        c.append(E.source.in_(list(s.sources)))
+    if s.severities:
+        c.append(R.severity_expr(s.cfg).in_(list(s.severities)))
     if s.bbox:
         so, w, n, ea = s.bbox
         c += [E.latitude.between(so, n), E.longitude.between(w, ea)]
     return c
 
 
-def _roll_where(t, s: Scope, entity: bool) -> list:
+def _roll_where(t, s: Scope) -> list:
     c = [t.day <= s.last_day]
     if s.start is not None:
         c.append(t.day >= s.start.date())
@@ -95,10 +111,10 @@ def _roll_where(t, s: Scope, entity: bool) -> list:
         c.append(t.event_type.in_(list(s.types)))
     if s.countries:
         c.append(t.country.in_(s.countries))
-    if entity and s.driver:
-        c.append(t.driver == s.driver)
-    if entity and s.vehicle:
-        c.append(t.vehicle == s.vehicle)
+    if s.sources:
+        c.append(t.source.in_(list(s.sources)))
+    if s.severities:
+        c.append(t.severity.in_(list(s.severities)))
     return c
 
 
@@ -106,7 +122,7 @@ def _roll_where(t, s: Scope, entity: bool) -> list:
 
 async def entity_rows(db: AsyncSession, cfg, s: Scope, keys: Sequence[str]) -> list:
     if s.rollups and not s.bbox:
-        sub = select(EventDaily).where(*_roll_where(EventDaily, s, True)).subquery()
+        sub = select(EventDaily).where(*_roll_where(EventDaily, s)).subquery()
     else:
         sub = select(*R.entity_columns(cfg)).where(*raw_where(s)).subquery()
     return (await db.execute(R.grouped(sub, keys, R.ENTITY_SUMS, R._entity_extra(sub)))).all()
@@ -114,10 +130,10 @@ async def entity_rows(db: AsyncSession, cfg, s: Scope, keys: Sequence[str]) -> l
 
 async def hour_rows(db: AsyncSession, s: Scope) -> list:
     """(weekday 0 = Sunday, hour, event_type, n) — UTC."""
-    if s.rollups and not (s.bbox or s.driver or s.vehicle):
+    if s.rollups and not s.bbox:
         t = EventDailyHour
         q = (select(cast(extract("dow", t.day), Integer).label("dow"), t.hour, t.event_type, func.sum(t.n).label("n"))
-             .where(*_roll_where(t, s, False)))
+             .where(*_roll_where(t, s)))
     else:
         q = (select(cast(extract("dow", E.occurred_at), Integer).label("dow"),
                     cast(extract("hour", E.occurred_at), Integer).label("hour"), E.event_type,
@@ -126,49 +142,31 @@ async def hour_rows(db: AsyncSession, s: Scope) -> list:
 
 
 async def cell_rows(db: AsyncSession, cfg, s: Scope, keys: Sequence[str]) -> list:
-    if s.rollups and not (s.bbox or s.driver or s.vehicle):
-        sub = select(EventDailyCell).where(*_roll_where(EventDailyCell, s, False)).subquery()
+    if s.rollups and not s.bbox:
+        sub = select(EventDailyCell).where(*_roll_where(EventDailyCell, s)).subquery()
     else:
         sub = select(*R.cell_columns(cfg)).where(*raw_where(s)).subquery()
     return (await db.execute(R.grouped(sub, keys, R.CELL_SUMS, R._cell_extra(sub)))).all()
 
 
-async def square_entities(db: AsyncSession, s: Scope, squares: Iterable[tuple[int, int]]) -> dict:
-    """{(k_lat, k_lon): {driver or vehicle ids}} for these ~110 m squares (raw events)."""
-    squares = list(squares)
-    out: dict = {}
-    k_lat, k_lon = cast(E.latitude * 1000, Integer), cast(E.longitude * 1000, Integer)
-    who = func.coalesce(E.driver_external_id, E.vehicle_external_id)
-    for i in range(0, len(squares), 400):
-        q = (select(k_lat.label("k_lat"), k_lon.label("k_lon"), who.label("who")).distinct()
-             .where(*raw_where(s), who.isnot(None), tuple_(k_lat, k_lon).in_(squares[i:i + 400])))
-        for la, lo, w in (await db.execute(q)).all():
-            out.setdefault((la, lo), set()).add(w)
-    return out
-
-
-async def top_roads_of(db: AsyncSession, s: Scope, kind: str, ids: Sequence[str], n: int = 1) -> dict:
-    """Most frequent road of each driver / vehicle in `ids` (raw events, indexed by driver / vehicle)."""
-    if not ids:
-        return {}
-    col = E.driver_external_id if kind == "driver" else E.vehicle_external_id
-    q = (select(col, E.road_name, func.count().label("c")).where(*raw_where(s), col.in_(list(ids)),
-                                                                   E.road_name.isnot(None))
-         .group_by(col, E.road_name))
-    best: dict = {}
-    for k, road, c in (await db.execute(q)).all():
-        if k not in best or c > best[k][1]:
-            best[k] = (road, c)
-    return {k: v[0] for k, v in best.items()}
-
-
 async def countries(db: AsyncSession, rollups: bool) -> list[tuple[str, int]]:
+    return await _values(db, rollups, "country")
+
+
+async def sources(db: AsyncSession, rollups: bool) -> list[tuple[str, int]]:
+    """(source / provider, events), most events first — every type, all time."""
+    return await _values(db, rollups, "source")
+
+
+async def _values(db: AsyncSession, rollups: bool, col: str) -> list[tuple[str, int]]:
     if rollups:
-        q = select(EventDaily.country, func.sum(EventDaily.n)).group_by(EventDaily.country)
+        c = getattr(EventDaily, col)
+        q = select(c, func.sum(EventDaily.n)).group_by(c)
     else:
-        q = select(R._k(E.country), func.count()).group_by(R._k(E.country))
+        c = R._k(getattr(E, col))
+        q = select(c, func.count()).group_by(c)
     rows = (await db.execute(q)).all()
-    return sorted(((c, int(n)) for c, n in rows if c), key=lambda r: -r[1])
+    return sorted(((v, int(n)) for v, n in rows if v), key=lambda r: (-r[1], r[0]))
 
 
 # ── time buckets in SQL (PostgreSQL / SQLite) ─────────────────────────────────
@@ -188,8 +186,8 @@ def bucket_expr(col, unit: str, dialect: str):
 
 async def squares_per_bucket(db: AsyncSession, cfg, s: Scope, unit: str) -> dict:
     """{bucket date: distinct ~110 m squares with events} — one grouped read."""
-    if s.rollups and not (s.bbox or s.driver or s.vehicle):
-        sub = select(EventDailyCell).where(*_roll_where(EventDailyCell, s, False)).subquery()
+    if s.rollups and not s.bbox:
+        sub = select(EventDailyCell).where(*_roll_where(EventDailyCell, s)).subquery()
     else:
         sub = select(*R.cell_columns(cfg)).where(*raw_where(s)).subquery()
     b = bucket_expr(sub.c.day, unit, _dialect(db)).label("b")

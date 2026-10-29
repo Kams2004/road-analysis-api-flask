@@ -7,15 +7,16 @@ connected vehicle for later steps (broker, prediction engine) to consume.
 Live state lives in Redis (GEO set + one hash per vehicle, both TTL'd) rather
 than Postgres — it changes every few seconds and a vehicle that stops pinging
 should simply disappear, with no watchdog job required. Postgres only keeps
-the durable vehicle registry (id, type, last_seen, optional plate / driver id).
+the durable vehicle registry (id, type, last_seen) — no plate, no driver: a vehicle is an
+anonymous device id.
 
 Each ping also lands in a short motion history (`vehicle:motion:{id}`, the
 last few samples): the live `speed_mps` / `heading` are smoothed over the
 last 3 of them (trajectory/smoothing.py) so one jittery GPS fix does not
 drive the prediction; the raw values stay in `raw_speed_mps` / `raw_heading`.
-The plate / driver id are copied into the live hash on every ping (the ping
-route already loads the registry row), so the collision pipeline never has to
-read Postgres to find the behaviour score of a vehicle.
+
+Earlier versions kept a plate / driver id in the registry and the live hash;
+forget_identities() removes what remains of them from Redis (start-up).
 """
 import json
 from datetime import datetime, timezone
@@ -46,29 +47,17 @@ def _motion_key(vehicle_id: str) -> str:
     return f"vehicle:motion:{vehicle_id}"
 
 
-def _clean_ref(value: Optional[str]) -> Optional[str]:
-    v = " ".join((value or "").split())
-    return v or None
-
-
 async def register_vehicle(
     db: AsyncSession,
     vehicle_id: Optional[str],
     vehicle_type: VehicleType,
-    plate: Optional[str] = None,
-    driver_external_id: Optional[str] = None,
 ) -> Vehicle:
-    """`plate` / `driver_external_id`: None keeps the stored value, "" clears it."""
     vehicle = await db.get(Vehicle, vehicle_id) if vehicle_id else None
     if vehicle is None:
         vehicle = Vehicle(id=vehicle_id, vehicle_type=vehicle_type) if vehicle_id else Vehicle(vehicle_type=vehicle_type)
         db.add(vehicle)
     else:
         vehicle.vehicle_type = vehicle_type
-    if plate is not None:
-        vehicle.plate = _clean_ref(plate)
-    if driver_external_id is not None:
-        vehicle.driver_external_id = _clean_ref(driver_external_id)
     await db.commit()
     await db.refresh(vehicle)
     return vehicle
@@ -85,8 +74,6 @@ async def record_ping(
     ts: Optional[datetime],
     accuracy_m: Optional[float] = None,
     acceleration_mps2: Optional[float] = None,
-    plate: Optional[str] = None,
-    driver_external_id: Optional[str] = None,
 ) -> None:
     ts = ts or datetime.now(timezone.utc)
     if ts.tzinfo is None:
@@ -111,8 +98,6 @@ async def record_ping(
             "raw_heading": opt(heading),
             "accuracy_m": opt(accuracy_m),
             "acceleration_mps2": opt(acceleration_mps2),
-            "plate": plate or "",
-            "driver_external_id": driver_external_id or "",
             "ts": ts.isoformat(),
         },
     )
@@ -167,8 +152,6 @@ def _parse_hash(vehicle_id: str, h: dict) -> Optional[dict]:
         "acceleration_mps2": float(h["acceleration_mps2"]) if h.get("acceleration_mps2") else None,
         "raw_speed_mps": float(h["raw_speed_mps"]) if h.get("raw_speed_mps") else None,
         "raw_heading": float(h["raw_heading"]) if h.get("raw_heading") else None,
-        "plate": h.get("plate") or None,
-        "driver_external_id": h.get("driver_external_id") or None,
         "ts": h["ts"],
         # display.py: where to draw it (held still when stopped, snapped onto its road)
         "display_latitude": float(h["display_latitude"]) if h.get("display_latitude") else None,
@@ -237,3 +220,18 @@ async def query_nearby(
             parsed["distance_m"] = dist_m
             results.append(parsed)
     return results
+
+
+LEGACY_IDENTITY_FIELDS = ("plate", "driver_external_id")
+
+
+async def forget_identities() -> int:
+    """Remove the plate / driver id that earlier versions copied into the live hashes (a vehicle
+    pinging without pause keeps its hash alive) and their behaviour scores
+    (`collision:ctx:drivers`). Idempotent; answers the number of hashes cleaned."""
+    r = get_redis()
+    cleaned = 0
+    async for key in r.scan_iter(match="vehicle:live:*", count=500):
+        cleaned += 1 if await r.hdel(key, *LEGACY_IDENTITY_FIELDS) else 0
+    await r.delete("collision:ctx:drivers", "collision:ctx:drivers:tmp")
+    return cleaned
