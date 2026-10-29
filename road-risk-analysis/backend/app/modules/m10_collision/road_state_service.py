@@ -103,11 +103,15 @@ def _telemetry_from_live(vehicle_id: str, live: dict) -> TelemetrySnapshot:
     ts = live["ts"]
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts)
+    # Held by display.py (no trusted motion, still inside its GPS uncertainty): the vehicle is
+    # stopped where it is drawn — an indoor / parked phone's fake speeds and wandering fixes must
+    # not make it an "oncoming" vehicle for the collision engine.
+    held = bool(live.get("display_held")) and live.get("display_latitude") is not None
     return TelemetrySnapshot(
         vehicle_id=vehicle_id,
-        latitude=live["latitude"],
-        longitude=live["longitude"],
-        speed_mps=live.get("speed_mps"),
+        latitude=live["display_latitude"] if held else live["latitude"],
+        longitude=live["display_longitude"] if held else live["longitude"],
+        speed_mps=0.0 if held else live.get("speed_mps"),
         heading=live.get("heading"),
         accuracy_m=live.get("accuracy_m"),
         acceleration_mps2=live.get("acceleration_mps2"),

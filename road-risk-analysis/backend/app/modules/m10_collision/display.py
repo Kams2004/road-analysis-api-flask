@@ -18,6 +18,9 @@ uncertainty, kept in the live hash next to the raw fix (`display_*` fields).
             onto a road it is not on. No snapping either with an accuracy > SNAP_MAX_M: the fix
             does not say which road.
 
+A held vehicle is also stopped for the collision engine (road_state_service: speed 0 at the
+held point), so the same GPS noise cannot fake an oncoming vehicle.
+
 The ping answers the result with the road around the vehicle (`road`, ≤ ROAD_WINDOW_M each way)
 so the app snaps its own position at every GPS fix without waiting for the next ping.
 """
@@ -114,7 +117,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     heading = live.get("heading") if moving else None
 
     out = {"latitude": raw[0], "longitude": raw[1], "snapped": False, "stationary": not moving,
-           "road": None, "road_name": None, "accuracy": acc}
+           "road": None, "road_name": None, "accuracy": acc, "held": False}
 
     prev_pt, prev_acc = None, None
     if previous and previous.get("display_latitude") is not None:
@@ -125,7 +128,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     hold_radius = max(HOLD_MIN_M, acc + (prev_acc or 0.0))
     if not moving and prev_pt and not better and geo.haversine_m(*raw, *prev_pt) <= hold_radius:
         out.update(latitude=prev_pt[0], longitude=prev_pt[1], snapped=bool(previous.get("display_snapped")),
-                   accuracy=prev_acc or acc)
+                   accuracy=prev_acc or acc, held=True)
     elif acc <= SNAP_MAX_M:
         road = await _current_road(vehicle_id)
         if road is not None:
@@ -145,6 +148,7 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
     await r.hset(_hash_key(vehicle_id), mapping={
         "display_latitude": out["latitude"], "display_longitude": out["longitude"],
         "display_snapped": "1" if out["snapped"] else "", "display_accuracy": out["accuracy"],
+        "display_held": "1" if out["held"] else "",       # road_state_service: a held vehicle is stopped
     })
     return out
 

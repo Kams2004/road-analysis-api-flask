@@ -160,3 +160,17 @@ async def test_a_vehicle_registered_before_secrets_is_claimed_once(api):
     claim = await api.post("/vehicles/register", json={"vehicle_id": "old-phone", "vehicle_type": "private"})
     assert claim.json()["device_secret"]
     assert (await api.post("/vehicles/old-phone/ping", json=PING)).status_code == 403
+
+
+# ── the collision engine sees the held position ──────────────────────────────
+
+async def test_a_parked_phone_with_fake_speeds_is_not_an_oncoming_vehicle(world, shown):
+    # Indoors: the parked phone reports 1.5–2.5 m/s "towards" the car (pure GPS noise); the car rolls
+    # up at 4 m/s and stops behind it — a queue, not a head-on.
+    from app.modules.m10_collision import alert_service
+    world.use(ew_road())
+    await shown("P", KAMBO, 0.2, 270.0, accuracy=22.0)
+    for i, (d, v) in enumerate(((-40, 4.0), (-36, 4.0), (-32, 4.0), (-28, 3.0), (-24, 2.0), (-21, 1.0), (-20, 0.0))):
+        await shown("P", geo.destination(*KAMBO, (i * 97) % 360, 9.0), 1.5 + (i % 3) * 0.5, 270.0, accuracy=22.0)
+        await shown("C", east(d), v, 90.0, accuracy=5.0)
+    assert [a for a in await alert_service.get_alerts("C") if a.level.value not in ("SAFE", "MONITOR")] == []

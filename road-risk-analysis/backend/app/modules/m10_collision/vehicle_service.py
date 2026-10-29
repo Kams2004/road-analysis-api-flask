@@ -175,6 +175,7 @@ def _parse_hash(vehicle_id: str, h: dict) -> Optional[dict]:
         "display_longitude": float(h["display_longitude"]) if h.get("display_longitude") else None,
         "display_snapped": bool(h.get("display_snapped")),
         "display_accuracy": float(h["display_accuracy"]) if h.get("display_accuracy") else None,
+        "display_held": bool(h.get("display_held")),
     }
 
 
