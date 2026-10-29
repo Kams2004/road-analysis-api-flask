@@ -2,7 +2,7 @@
 import logging
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
-from typing import Optional, List
+from typing import Dict, List, Literal, Optional
 from app.modules.m10_collision.models.vehicle import VehicleType
 
 _schemas_logger = logging.getLogger(__name__)
@@ -20,6 +20,12 @@ class VehicleRegisterIn(BaseModel):
     vehicle_type: VehicleType = Field(VehicleType.private, description=(
         "Kind of vehicle (`bus`, `taxi`, `truck`, `private`, `moto`); updated on re-registration."),
         examples=["taxi"])
+    plate:        Optional[str] = Field(None, max_length=32, description=(
+        "Licence plate as written in the fleet exception files (e.g. `LTTR 995 AR`) — links the vehicle to "
+        "its driving-behaviour score (collision context factor `RISKY_DRIVER`). Omitted / null keeps the "
+        "stored value on re-registration; an empty string clears it."), examples=["LTTR 995 AR"])
+    driver_external_id: Optional[str] = Field(None, max_length=64, description=(
+        "Fleet id of the driver, when known (same rule as `plate`)."), examples=["DRV-0042"])
 
 
 class VehicleOut(BaseModel):
@@ -29,6 +35,8 @@ class VehicleOut(BaseModel):
     created_at:   datetime = Field(..., description="Registration time (UTC).")
     last_seen:    Optional[datetime] = Field(description=(
         "Last ping time (UTC), updated at most every `VEHICLE_LAST_SEEN_THROTTLE_S` seconds; null if never pinged."))
+    plate:        Optional[str] = Field(None, description="Licence plate, if registered.")
+    driver_external_id: Optional[str] = Field(None, description="Fleet driver id, if registered.")
 
     class Config:
         from_attributes = True
@@ -45,7 +53,8 @@ class VehiclePingIn(BaseModel):
     heading:   Optional[float] = Field(None, description=(  # degrees, 0-360, direction of travel
         "Direction of travel, degrees clockwise from north (0–360)."), examples=[87.5])
     accuracy_m: Optional[float] = Field(None, description=(  # device-reported GPS horizontal accuracy, metres
-        "GPS horizontal accuracy reported by the device, metres."), examples=[6.0])
+        "GPS horizontal accuracy reported by the device, metres. When omitted the collision engine assumes "
+        "`collision.assumed_accuracy_m` (10 m by default)."), examples=[6.0])
     acceleration_mps2: Optional[float] = Field(None, description=(  # device-reported linear acceleration, if available (see Step 3)
         "Longitudinal acceleration in m/s² if the device measures it (−20…20); otherwise the trajectory "
         "predictor derives it from successive speeds."), examples=[0.4])
@@ -93,8 +102,11 @@ class VehicleLiveOut(BaseModel):
     vehicle_type: VehicleType = Field(..., description="Kind of vehicle.")
     latitude:     float = Field(..., description="WGS84 latitude (degrees).", examples=[4.0511])
     longitude:    float = Field(..., description="WGS84 longitude (degrees).", examples=[9.7679])
-    speed_mps:    Optional[float] = Field(description="Speed, m/s.", examples=[13.9])
-    heading:      Optional[float] = Field(description="Heading, degrees clockwise from north (0–360).")
+    speed_mps:    Optional[float] = Field(description=(
+        "Speed, m/s — smoothed over the last 3 pings (GPS jitter rejected, real braking kept)."), examples=[13.9])
+    heading:      Optional[float] = Field(description=(
+        "Heading, degrees clockwise from north (0–360) — smoothed like `speed_mps`; a stopped vehicle "
+        "keeps the last heading it had while moving."))
     accuracy_m:   Optional[float] = Field(None, description="GPS horizontal accuracy, metres.")
     acceleration_mps2: Optional[float] = Field(None, description="Device-reported acceleration, m/s².")
     ts:           datetime = Field(..., description="Timestamp of the latest ping.")
@@ -115,3 +127,64 @@ class VehicleNearbyOut(BaseModel):
     """Live vehicles (nearest first for `/vehicles/nearby`)."""
     total: int = Field(..., description="Number of vehicles in `items`.")
     items: List[VehicleLiveOut] = Field(..., description="The vehicles.")
+
+
+# ─── Alert feedback & metrics (docs/COLLISION-PREVENTION.md) ──────────────────
+
+class AlertFeedbackIn(BaseModel):
+    """A driver's verdict on one alert."""
+    vehicle_id: str = Field(..., min_length=1, max_length=64, description="The vehicle (device) answering.")
+    verdict:    Literal["false_alert", "useful"] = Field(..., description="`false_alert` or `useful`.")
+    comment:    Optional[str] = Field(None, max_length=1000, description="Free text, optional.")
+
+
+class AlertFeedbackOut(BaseModel):
+    """The stored verdict (one per conflict × vehicle; answering again replaces it)."""
+    conflict_id: str = Field(..., description="The alert's `conflict_id`.")
+    vehicle_id:  str = Field(..., description="The vehicle that answered.")
+    verdict:     str = Field(..., description="`false_alert` or `useful`.")
+    comment:     Optional[str] = Field(None, description="Free text.")
+    level:       Optional[str] = Field(None, description="Alert level when answered (null if the alert had expired).")
+    physical_level: Optional[str] = Field(None, description="Level from physics alone when answered.")
+    context_index: Optional[float] = Field(None, description="Context Risk Index when answered.")
+    context_level_boost: Optional[int] = Field(None, description="Context boost (0/1) when answered.")
+    created_at:  datetime = Field(..., description="First answer (UTC).")
+    updated_at:  datetime = Field(..., description="Latest answer (UTC).")
+
+    model_config = {"from_attributes": True}
+
+
+class MetricsHour(BaseModel):
+    hour: datetime = Field(..., description="Start of the hour (UTC).")
+    total: int = Field(..., description="Alerts raised (NEW or ESCALATED) in that hour.")
+    by_level: Dict[str, int] = Field(..., description="Alerts raised per level.")
+
+
+class MetricsLatency(BaseModel):
+    median: Optional[float] = Field(None, description="Median detection latency, ms (telemetry fix → alert).")
+    p90: Optional[float] = Field(None, description="90th percentile, ms.")
+    samples: int = Field(0, description="Number of measured alerts.")
+
+
+class MetricsFeedback(BaseModel):
+    total: int = Field(0, description="Answers in the period.")
+    false_alert: int = Field(0, description="`false_alert` answers.")
+    useful: int = Field(0, description="`useful` answers.")
+    false_alert_rate: Optional[float] = Field(None, description="false_alert / total (null without answers).")
+    by_level: Dict[str, Dict[str, int]] = Field({}, description="Answers per alert level.")
+
+
+class CollisionMetricsOut(BaseModel):
+    """Collision-prevention activity over a period."""
+    period: str = Field(..., description="`1h`, `6h`, `24h` or `7d`.")
+    from_: datetime = Field(..., alias="from", description="Start of the first hour counted (UTC).")
+    to: datetime = Field(..., description="End of the period (UTC).")
+    alerts_total: int = Field(..., description="Alerts raised (transition NEW or ESCALATED).")
+    by_level: Dict[str, int] = Field(..., description="Alerts raised per level.")
+    by_hour: List[MetricsHour] = Field(..., description="Hourly breakdown.")
+    context_boosts: int = Field(..., description="Alerts raised one level by a high context index.")
+    context_raised: int = Field(..., description="Alerts whose level is above their physical level (widening or boost).")
+    detection_latency_ms: MetricsLatency
+    feedback: MetricsFeedback
+
+    model_config = {"populate_by_name": True}

@@ -26,7 +26,7 @@ def import_all_models() -> None:
     from app.modules.m08_historical.models import event_file  # noqa: F401
     from app.modules.m08_historical.models import event_rollup  # noqa: F401
     from app.modules.m03_maps import place_names  # noqa: F401
-    from app.modules.m10_collision.models import vehicle, vehicle_road_state  # noqa: F401
+    from app.modules.m10_collision.models import alert_feedback, vehicle, vehicle_road_state  # noqa: F401
     from app.modules.m11_community.models import signalement, signalement_vote  # noqa: F401
     from app.modules.m12_integration.models import api_client  # noqa: F401
     from app.modules.m13_admin.models import audit_log, system_setting  # noqa: F401

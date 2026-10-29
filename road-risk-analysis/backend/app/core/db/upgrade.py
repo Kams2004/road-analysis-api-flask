@@ -310,6 +310,14 @@ OBJECT_POSITION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_detections_type_recorded_at ON detections (type, recorded_at)",
 ]
 
+# ── Collision prevention context (migrations/add_collision_context.sql,
+# docs/COLLISION-PREVENTION.md) — optional plate / driver id of a vehicle; the
+# feedback table itself is created by create_all.
+COLLISION_CONTEXT_STATEMENTS = [
+    "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS plate VARCHAR",
+    "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS driver_external_id VARCHAR",
+    "CREATE INDEX IF NOT EXISTS ix_collision_feedback_updated_at ON collision_alert_feedback (updated_at)",
+]
 _ADD_COLUMN = re.compile(r"^\s*ALTER TABLE\s+(\w+)\s+ADD COLUMN IF NOT EXISTS\s+(\w+)\b", re.I)
 _CREATE_INDEX = re.compile(r"^\s*CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\s+(\w+)\b", re.I)
 
@@ -361,7 +369,7 @@ async def run(engine: AsyncEngine) -> None:
                      + ADDRESS_COLUMNS + CLUSTER_ZONE_COLUMNS + CLOUD_IMPORT_COLUMNS
                      + TRAINING_DATA_COLUMNS + SFTP_COLUMNS + EVENT_FEED_COLUMNS + REJECTION_KIND_COLUMNS
                      + HAZARD_CLUSTER_STATEMENTS + OBJECT_POSITION_STATEMENTS
-                     + DRIVER_BEHAVIOUR_STATEMENTS + SCALE_INDEX_STATEMENTS):
+                     + DRIVER_BEHAVIOUR_STATEMENTS + SCALE_INDEX_STATEMENTS + COLLISION_CONTEXT_STATEMENTS):
             m = _ADD_COLUMN.match(stmt)
             if m and (m.group(1).lower(), m.group(2).lower()) in existing:
                 skipped += 1

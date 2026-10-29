@@ -47,3 +47,26 @@ async def map_config(db: AsyncSession = Depends(get_db), principal: Principal = 
     pref = principal.user.map_provider.value if principal.user is not None else None
     tiles = await resolve_tiles(cfg, pref)
     return {**tiles.as_dict(), "google_configured": bool(cfg.google_api_key)}
+
+
+@router.get("/style.json", summary="Get the base map as a MapLibre style",
+            openapi_extra={"x-access": "any_caller"},
+            responses={200: {"description": "MapLibre style v8 (one raster source `osm`, one layer `osm-tiles`).",
+                             "content": {"application/json": {}}}})
+async def map_style(db: AsyncSession = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """The same base map as `GET /map-config/` as a MapLibre style document — what the mobile app's
+    offline map packs need (MapLibre downloads packs from a style URL). Its tiles are exactly the
+    `tile_urls` of `/map-config/`, so a downloaded pack fills the same tile cache the live map
+    reads (source `osm`, layer `osm-tiles`, as built by the app)."""
+    if settings.AUTH_ENFORCED and principal.kind == "anonymous":
+        raise api_error(401, "not_authenticated", "Please sign in.")
+    cfg: MapSettings = await get_section(db, "maps")  # type: ignore[assignment]
+    pref = principal.user.map_provider.value if principal.user is not None else None
+    tiles = (await resolve_tiles(cfg, pref)).as_dict()
+    return {
+        "version": 8,
+        "name": f"VIASafe {tiles['provider']}",
+        "sources": {"osm": {"type": "raster", "tiles": tiles["tile_urls"], "tileSize": 256,
+                            "attribution": tiles["attribution"], "maxzoom": tiles["max_zoom"]}},
+        "layers": [{"id": "osm-tiles", "type": "raster", "source": "osm"}],
+    }

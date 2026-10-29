@@ -363,8 +363,13 @@ def predict_trajectory(
             )
         )
 
+    # A ping without accuracy is not a bad fix — phones / simulators simply omit it. Assume the
+    # configured typical accuracy instead of distrusting it (confidence, lane separation).
+    accuracy_assumed = telemetry.accuracy_m is None
+    accuracy_m = thresholds.current().assumed_accuracy_m if accuracy_assumed else telemetry.accuracy_m
+
     confidence = _confidence(
-        state.match_quality, age_s, telemetry.accuracy_m,
+        state.match_quality, age_s, accuracy_m,
         telemetry.speed_mps is not None, telemetry.heading is not None,
         accel_source, truncated, direction_assumed,
     )
@@ -407,7 +412,8 @@ def predict_trajectory(
         matched_longitude=road_context.matched_longitude,
         travel_bearing_deg=travel_bearing,
         lateral_offset_m=lateral,
-        gps_accuracy_m=telemetry.accuracy_m,
+        gps_accuracy_m=accuracy_m,
+        gps_accuracy_assumed=accuracy_assumed,
         status=status,
         confidence=confidence,
         confidence_level=_confidence_level(confidence),

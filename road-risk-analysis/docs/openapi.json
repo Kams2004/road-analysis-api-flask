@@ -5275,6 +5275,74 @@
         "x-api-key": true
       }
     },
+    "/map-config/style.json": {
+      "get": {
+        "tags": [
+          "Map configuration"
+        ],
+        "summary": "Get the base map as a MapLibre style",
+        "description": "The same base map as `GET /map-config/` as a MapLibre style document — what the mobile app's\noffline map packs need (MapLibre downloads packs from a style URL). Its tiles are exactly the\n`tile_urls` of `/map-config/`, so a downloaded pack fills the same tile cache the live map\nreads (source `osm`, layer `osm-tiles`, as built by the app).\n\n---\n**Authentication:** A signed-in user (Bearer) or an API key. Anonymous calls are accepted only when `AUTH_ENFORCED=false`.",
+        "operationId": "map_style",
+        "responses": {
+          "200": {
+            "description": "MapLibre style v8 (one raster source `osm`, one layer `osm-tiles`).",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `invalid_api_key`, `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  },
+                  "invalid_api_key": {
+                    "summary": "invalid_api_key",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_api_key",
+                        "message": "Unknown or revoked API key."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "x-api-key": true
+      }
+    },
     "/mobile-config/": {
       "get": {
         "tags": [
@@ -27894,7 +27962,7 @@
           "Vehicles & telemetry"
         ],
         "summary": "Register a vehicle for live telemetry",
-        "description": "**Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its\n`id`. Idempotent: resending a known `vehicle_id` keeps it (updating `vehicle_type`); an unknown\n`vehicle_id` is created with that id, so a device survives a backend reset.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:edit`",
+        "description": "**Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its\n`id`. Idempotent: resending a known `vehicle_id` keeps it (updating `vehicle_type`); an unknown\n`vehicle_id` is created with that id, so a device survives a backend reset. Optional `plate` /\n`driver_external_id` link the vehicle to its fleet driving-behaviour score (a high score raises\nthe collision context index — reason `RISKY_DRIVER`); null keeps the stored value, `\"\"` clears it.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:edit`",
         "operationId": "register_vehicle",
         "requestBody": {
           "content": {
@@ -28008,7 +28076,7 @@
           "Vehicles & telemetry"
         ],
         "summary": "Send a telemetry ping",
-        "description": "**Mobile / simulator** — periodic position fix (every few seconds while driving). Units: WGS84\ndegrees, speed in **m/s**, heading in degrees clockwise from north, accuracy in metres,\nacceleration in m/s²; out-of-range values (latitude/longitude, negative speed, acceleration\n±20 m/s²) → 422. A speed above 100 m/s (360 km/h, e.g. the app's fast demo drive) is clamped to\n100 m/s instead of being rejected. The fix becomes the vehicle's live state (expires after `VEHICLE_LIVE_TTL_S`\nseconds without pings) and `last_seen` is updated (throttled).\n\nAfter the 204 is sent, the collision pipeline runs in the background for this vehicle:\nroad-state map-matching → trajectory prediction → conflict assessment with nearby vehicles →\nalert engine (may notify on a NEW / ESCALATED alert). Failures there never affect the ping.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:edit`",
+        "description": "**Mobile / simulator** — periodic position fix (every few seconds while driving). Units: WGS84\ndegrees, speed in **m/s**, heading in degrees clockwise from north, accuracy in metres,\nacceleration in m/s²; out-of-range values (latitude/longitude, negative speed, acceleration\n±20 m/s²) → 422. A speed above 100 m/s (360 km/h, e.g. the app's fast demo drive) is clamped to\n100 m/s instead of being rejected. The fix becomes the vehicle's live state (expires after `VEHICLE_LIVE_TTL_S`\nseconds without pings) and `last_seen` is updated (throttled).\n\nAfter the 204 is sent, the collision pipeline runs in the background for this vehicle:\nroad-state map-matching → trajectory prediction → conflict assessment with nearby vehicles →\nalert engine (may notify on a NEW / ESCALATED alert, pushed at once on `WS /alerts/ws`). Failures\nthere never affect the ping.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:edit`",
         "operationId": "ping_vehicle",
         "parameters": [
           {
@@ -29360,7 +29428,7 @@
           "Alerts"
         ],
         "summary": "Get a vehicle's alerts",
-        "description": "**Mobile** — the vehicle's current alerts as computed by the last pipeline run triggered by its\npings, most severe first (an unknown or idle vehicle gets `[]`). Read-only: never computes or\nnotifies. Lifecycle: `DETECTED` (first tick above `SAFE`) → `ACTIVE` → `RESOLVED`; `transition` says\nwhat changed on the last tick (`NEW`, `ESCALATED`, `DE_ESCALATED`, `UNCHANGED`, `RESOLVED`).\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:view`",
+        "description": "**Mobile** — the vehicle's current alerts as computed by the last pipeline run triggered by its\npings, most severe first (an unknown or idle vehicle gets `[]`). Read-only: never computes or\nnotifies. Lifecycle: `DETECTED` (first tick above `SAFE`) → `ACTIVE` → `RESOLVED`; `transition` says\nwhat changed on the last tick (`NEW`, `ESCALATED`, `DE_ESCALATED`, `UNCHANGED`, `RESOLVED`).\n`level` is `physical_level` (physics alone) modulated by the context (`context_index`,\n`context_level_boost`, `context_reasons`). Polling fallback of the WebSocket `/alerts/ws`, which\npushes every transition as it happens.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:view`",
         "operationId": "get_vehicle_alerts",
         "parameters": [
           {
@@ -29614,6 +29682,272 @@
           }
         ],
         "x-permission": "collisions:edit",
+        "x-api-key": false
+      }
+    },
+    "/alerts/{conflict_id}/feedback": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Give feedback on an alert",
+        "description": "**Mobile** — the driver says whether an alert was a `false_alert` or `useful` (optional `comment`).\nIdempotent: one answer per conflict × vehicle, a new answer replaces the previous one. The alert's\nlevel and context at that moment are stored with it (alerts themselves expire); the answers feed\nthe false-alert rate of `GET /collision/metrics`.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`) **or** API key (`X-API-Key`).  \n**Permission:** `collisions:add`",
+        "operationId": "alert_feedback",
+        "parameters": [
+          {
+            "name": "conflict_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "`conflict_id` of the alert.",
+              "examples": [
+                "CF-20261029-3fa2b9c1"
+              ],
+              "title": "Conflict Id"
+            },
+            "description": "`conflict_id` of the alert."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertFeedbackIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertFeedbackOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `invalid_api_key`, `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  },
+                  "invalid_api_key": {
+                    "summary": "invalid_api_key",
+                    "value": {
+                      "detail": {
+                        "code": "invalid_api_key",
+                        "message": "Unknown or revoked API key."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks collisions:add",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "collisions",
+                        "action": "add"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LegacyErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
+                },
+                "examples": {
+                  "legacy": {
+                    "summary": "Unknown conflict_id format",
+                    "value": {
+                      "detail": "Unknown conflict_id format"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "x-permission": "collisions:add",
+        "x-api-key": true
+      }
+    },
+    "/collision/metrics": {
+      "get": {
+        "tags": [
+          "Collisions"
+        ],
+        "summary": "Collision-prevention metrics",
+        "description": "Alerts raised (transition `NEW` or `ESCALATED`) per hour and per level, how many the context\nraised (`context_boosts`: one-step boost; `context_raised`: level above the physical level),\ndetection latency (newest telemetry fix of the pair → alert evaluation; median and 90th\npercentile) and the drivers' feedback with the false-alert rate. Hourly counters are kept 8 days.\n\n---\n**Authentication:** Signed-in user (`Authorization: Bearer`).  \n**Permission:** `collisions:view`",
+        "operationId": "collision_metrics",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d"
+              ],
+              "type": "string",
+              "description": "Period ending now.",
+              "default": "24h",
+              "title": "Period"
+            },
+            "description": "Period ending now."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollisionMetricsOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated — `not_authenticated`, `session_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "not_authenticated": {
+                    "summary": "not_authenticated — no credentials",
+                    "value": {
+                      "detail": {
+                        "code": "not_authenticated",
+                        "message": "Please sign in."
+                      }
+                    }
+                  },
+                  "session_expired": {
+                    "summary": "session_expired — token unknown, expired or revoked",
+                    "value": {
+                      "detail": {
+                        "code": "session_expired",
+                        "message": "Your session has expired. Please sign in again."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — `forbidden`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "forbidden — user lacks collisions:view",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "You do not have permission for this action.",
+                        "module": "collisions",
+                        "action": "view"
+                      }
+                    }
+                  },
+                  "forbidden_2": {
+                    "summary": "forbidden — API key not allowed on this endpoint",
+                    "value": {
+                      "detail": {
+                        "code": "forbidden",
+                        "message": "This API key is not allowed to call this endpoint."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-permission": "collisions:view",
         "x-api-key": false
       }
     },
@@ -36593,6 +36927,147 @@
         "title": "AiValidationSettings",
         "description": "AI validation mode (RRAP-05-012/016, RRAP-06-007, RRAP-13-001) — the\nSINGLE source of the automatic decisions the video processor takes on new\ndetections (see app.modules.m05_ai_detection.ai_validation):\n\n  manual     every detection goes to human review; the AI only suggests;\n  assisted   auto-accept only when the detector AND (if required) the crop\n             classifier are confident and the location is confirmed;\n             auto-reject when the classifier (or a very low detector\n             confidence) says no; everything else → review;\n  automatic  decide whenever the classifier is confident either way.\n\nThresholds per type: `type_overrides` here, else the model cards\n(app.modules.m05_ai_detection.model_registry), else section `validation`\n(auto_accept_above / auto_reject_below), which remains the fallback when\nno model card is installed. A random `audit_sample_rate` share of the\nautomatic decisions is left pending for a human (audit sample).\n\ntraffic_sign (two-stage: detector + sign-code classifier): the classifier\nscore is P(predicted code); thresholds per code (`type_overrides.traffic_sign\n.per_class`, else the card's `thresholds.per_class`, else the type values).\nP < auto_reject (or `unknown_sign` predicted) → subtype `unknown_sign`,\nreview; the card's reject class (`not_a_sign`) predicted confidently →\nauto-reject `ai_not_a_sign`.\n\nVideo consistency: an auto-accept needs the object in ≥\n`min_frames_for_auto_accept` sampled frames with an estimated position\ndrifting ≤ `max_static_drift_m` while the vehicle moves (else review,\n`not_static`); a pothole box centre must lie below\n`pothole_min_y_ratio` × frame height (else `off_road_area`, see below).\n\nPothole false-positive rules (app.modules.m05_ai_detection.static_check.pothole_rule_rejects),\non the best box of a finished track: box centre above the road-area line →\n`pothole_off_road_action` `reject` (auto-reject `ai_off_road`) or `review`\n(accept blocker `off_road_area` only); box wider than\n`pothole_max_width_ratio` of the frame, larger than `pothole_max_area_ratio`\nof it, or — with `pothole_reject_edge_touching` — touching the left/right\nborder (within 1 %) while wider than 25 % of the frame → auto-reject\n`ai_box_too_large` (roadside earth, bushes, building edges). These\nauto-rejects apply only in assisted / automatic mode; in manual mode they\nare review hints (AI suggestion)."
       },
+      "AlertFeedbackIn": {
+        "properties": {
+          "vehicle_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Vehicle Id",
+            "description": "The vehicle (device) answering."
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "false_alert",
+              "useful"
+            ],
+            "title": "Verdict",
+            "description": "`false_alert` or `useful`."
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "Free text, optional."
+          }
+        },
+        "type": "object",
+        "required": [
+          "vehicle_id",
+          "verdict"
+        ],
+        "title": "AlertFeedbackIn",
+        "description": "A driver's verdict on one alert."
+      },
+      "AlertFeedbackOut": {
+        "properties": {
+          "conflict_id": {
+            "type": "string",
+            "title": "Conflict Id",
+            "description": "The alert's `conflict_id`."
+          },
+          "vehicle_id": {
+            "type": "string",
+            "title": "Vehicle Id",
+            "description": "The vehicle that answered."
+          },
+          "verdict": {
+            "type": "string",
+            "title": "Verdict",
+            "description": "`false_alert` or `useful`."
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "Free text."
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level",
+            "description": "Alert level when answered (null if the alert had expired)."
+          },
+          "physical_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Physical Level",
+            "description": "Level from physics alone when answered."
+          },
+          "context_index": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Index",
+            "description": "Context Risk Index when answered."
+          },
+          "context_level_boost": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Level Boost",
+            "description": "Context boost (0/1) when answered."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "First answer (UTC)."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Latest answer (UTC)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "conflict_id",
+          "vehicle_id",
+          "verdict",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AlertFeedbackOut",
+        "description": "The stored verdict (one per conflict × vehicle; answering again replaces it)."
+      },
       "AlertLevel": {
         "type": "string",
         "enum": [
@@ -38916,6 +39391,79 @@
         ],
         "title": "CollisionLevel"
       },
+      "CollisionMetricsOut": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "`1h`, `6h`, `24h` or `7d`."
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "From",
+            "description": "Start of the first hour counted (UTC)."
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "To",
+            "description": "End of the period (UTC)."
+          },
+          "alerts_total": {
+            "type": "integer",
+            "title": "Alerts Total",
+            "description": "Alerts raised (transition NEW or ESCALATED)."
+          },
+          "by_level": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Level",
+            "description": "Alerts raised per level."
+          },
+          "by_hour": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsHour"
+            },
+            "type": "array",
+            "title": "By Hour",
+            "description": "Hourly breakdown."
+          },
+          "context_boosts": {
+            "type": "integer",
+            "title": "Context Boosts",
+            "description": "Alerts raised one level by a high context index."
+          },
+          "context_raised": {
+            "type": "integer",
+            "title": "Context Raised",
+            "description": "Alerts whose level is above their physical level (widening or boost)."
+          },
+          "detection_latency_ms": {
+            "$ref": "#/components/schemas/MetricsLatency"
+          },
+          "feedback": {
+            "$ref": "#/components/schemas/MetricsFeedback"
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "from",
+          "to",
+          "alerts_total",
+          "by_level",
+          "by_hour",
+          "context_boosts",
+          "context_raised",
+          "detection_latency_ms",
+          "feedback"
+        ],
+        "title": "CollisionMetricsOut",
+        "description": "Collision-prevention activity over a period."
+      },
       "CommunitySettings": {
         "properties": {
           "vote_max_distance_m": {
@@ -39174,6 +39722,50 @@
             "title": "Telemetry Stale",
             "description": "Either vehicle's trajectory was `DEGRADED` or `STALE` when assessed.",
             "default": false
+          },
+          "physical_level": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Level from physics alone (distance, time to closest approach, braking needed), before the context."
+          },
+          "context_index": {
+            "type": "number",
+            "title": "Context Index",
+            "description": "Context Risk Index 0–1 at the conflict point (place history, speeding, hazards, reports, drivers, night, GPS quality); widens the thresholds by up to 50 %.",
+            "default": 0.0
+          },
+          "context_level_boost": {
+            "type": "integer",
+            "title": "Context Level Boost",
+            "description": "1 when a high context index (≥ `collision.context.boost_threshold`) raised the level by one step.",
+            "default": 0
+          },
+          "context_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ContextReason"
+            },
+            "type": "array",
+            "title": "Context Reasons",
+            "description": "Why the context index is what it is, largest contribution first (stable `code` + English `label`).",
+            "default": []
+          },
+          "detection_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detection Latency Ms",
+            "description": "Time from the newest telemetry fix of the pair to this evaluation, milliseconds."
           },
           "reason": {
             "type": "string",
@@ -39741,6 +40333,57 @@
         "type": "object",
         "title": "ConnectionPatch",
         "description": "Partial update: only the fields sent are changed."
+      },
+      "ContextReason": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "Stable code: `HISTORY_HARSH_BRAKING`, `HISTORY_HARSH_CORNERING`, `HISTORY_ACCIDENTS`, `HISTORY_EVENTS`, `HABITUAL_SPEEDING`, `VEHICLE_SPEEDING`, `POTHOLE_NEARBY`, `SPEED_BUMP_NEARBY`, `HAZARD_NEARBY`, `ACCIDENT_REPORTED`, `ROADWORK_REPORTED`, `FLOODING_REPORTED`, `CONGESTION_REPORTED`, `HAZARD_REPORTED`, `RISKY_DRIVER`, `NIGHT`, `POOR_GPS`, `STALE_DATA`.",
+            "examples": [
+              "HISTORY_HARSH_BRAKING"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "English explanation.",
+            "examples": [
+              "Frequent harsh braking at this place"
+            ]
+          },
+          "factor": {
+            "type": "string",
+            "title": "Factor",
+            "description": "Factor of the index: `history`, `habitual_speeding`, `vehicle_speeding`, `hazards`, `reports`, `driver`, `night`, `poor_gps`, `stale_data`."
+          },
+          "value": {
+            "type": "number",
+            "title": "Value",
+            "description": "Value of the factor, 0–1."
+          },
+          "contribution": {
+            "type": "number",
+            "title": "Contribution",
+            "description": "Share of the index this reason accounts for (weight × value)."
+          },
+          "params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Params",
+            "description": "Numbers behind the reason (event counts, speeds in km/h, distances in metres, vehicle id …)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "label",
+          "factor",
+          "value",
+          "contribution"
+        ],
+        "title": "ContextReason",
+        "description": "One explanation of the Context Risk Index — `code` is stable (translate it in the app),\n`label` is an English default."
       },
       "CorrectIn": {
         "properties": {
@@ -47859,6 +48502,120 @@
         ],
         "title": "MethodologyOut",
         "description": "Documented behaviour scoring method (RRAP-09-011)."
+      },
+      "MetricsFeedback": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Answers in the period.",
+            "default": 0
+          },
+          "false_alert": {
+            "type": "integer",
+            "title": "False Alert",
+            "description": "`false_alert` answers.",
+            "default": 0
+          },
+          "useful": {
+            "type": "integer",
+            "title": "Useful",
+            "description": "`useful` answers.",
+            "default": 0
+          },
+          "false_alert_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "False Alert Rate",
+            "description": "false_alert / total (null without answers)."
+          },
+          "by_level": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "By Level",
+            "description": "Answers per alert level.",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "MetricsFeedback"
+      },
+      "MetricsHour": {
+        "properties": {
+          "hour": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Hour",
+            "description": "Start of the hour (UTC)."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Alerts raised (NEW or ESCALATED) in that hour."
+          },
+          "by_level": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Level",
+            "description": "Alerts raised per level."
+          }
+        },
+        "type": "object",
+        "required": [
+          "hour",
+          "total",
+          "by_level"
+        ],
+        "title": "MetricsHour"
+      },
+      "MetricsLatency": {
+        "properties": {
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median",
+            "description": "Median detection latency, ms (telemetry fix → alert)."
+          },
+          "p90": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90",
+            "description": "90th percentile, ms."
+          },
+          "samples": {
+            "type": "integer",
+            "title": "Samples",
+            "description": "Number of measured alerts.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "MetricsLatency"
       },
       "MfaDisableIn": {
         "properties": {
@@ -56753,7 +57510,13 @@
               }
             ],
             "title": "Gps Accuracy M",
-            "description": "GPS horizontal accuracy, metres."
+            "description": "GPS horizontal accuracy, metres (`collision.assumed_accuracy_m` when the ping carried none)."
+          },
+          "gps_accuracy_assumed": {
+            "type": "boolean",
+            "title": "Gps Accuracy Assumed",
+            "description": "The ping carried no accuracy; `gps_accuracy_m` is assumed.",
+            "default": false
           },
           "prediction_horizon_s": {
             "type": "number",
@@ -58168,6 +58931,72 @@
             ],
             "title": "Reason",
             "description": "Explanation, for `DEGRADED` / `UNAVAILABLE` or notable `NONE` results."
+          },
+          "physical_risk_level": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConflictRiskLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Risk from physics alone (distance, time, braking), before the context; `risk_level` is never lower and is above `NONE` only if this is."
+          },
+          "required_decel_mps2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Decel Mps2",
+            "description": "Closing on a stopped vehicle: deceleration needed to stop short of it, m/s² (99 = already too close)."
+          },
+          "context_index": {
+            "type": "number",
+            "title": "Context Index",
+            "description": "Context Risk Index at the conflict point, 0–1.",
+            "default": 0.0
+          },
+          "context_level_boost": {
+            "type": "integer",
+            "title": "Context Level Boost",
+            "description": "Levels added by a high context index (0 or 1).",
+            "default": 0
+          },
+          "context_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ContextReason"
+            },
+            "type": "array",
+            "title": "Context Reasons",
+            "description": "Why the context index is what it is, largest first.",
+            "default": []
+          },
+          "context_factors": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Context Factors",
+            "description": "Value (0–1) of each context factor.",
+            "default": {}
+          },
+          "telemetry_timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telemetry Timestamp",
+            "description": "Newest telemetry timestamp of the two vehicles (detection latency is measured from it)."
           }
         },
         "type": "object",
@@ -58263,7 +59092,7 @@
               }
             ],
             "title": "Speed Mps",
-            "description": "Speed, m/s.",
+            "description": "Speed, m/s — smoothed over the last 3 pings (GPS jitter rejected, real braking kept).",
             "examples": [
               13.9
             ]
@@ -58278,7 +59107,7 @@
               }
             ],
             "title": "Heading",
-            "description": "Heading, degrees clockwise from north (0–360)."
+            "description": "Heading, degrees clockwise from north (0–360) — smoothed like `speed_mps`; a stopped vehicle keeps the last heading it had while moving."
           },
           "accuracy_m": {
             "anyOf": [
@@ -58443,6 +59272,30 @@
             ],
             "title": "Last Seen",
             "description": "Last ping time (UTC), updated at most every `VEHICLE_LAST_SEEN_THROTTLE_S` seconds; null if never pinged."
+          },
+          "plate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plate",
+            "description": "Licence plate, if registered."
+          },
+          "driver_external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver External Id",
+            "description": "Fleet driver id, if registered."
           }
         },
         "type": "object",
@@ -58513,7 +59366,7 @@
               }
             ],
             "title": "Accuracy M",
-            "description": "GPS horizontal accuracy reported by the device, metres.",
+            "description": "GPS horizontal accuracy reported by the device, metres. When omitted the collision engine assumes `collision.assumed_accuracy_m` (10 m by default).",
             "examples": [
               6.0
             ]
@@ -58578,6 +59431,38 @@
             "default": "private",
             "examples": [
               "taxi"
+            ]
+          },
+          "plate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plate",
+            "description": "Licence plate as written in the fleet exception files (e.g. `LTTR 995 AR`) — links the vehicle to its driving-behaviour score (collision context factor `RISKY_DRIVER`). Omitted / null keeps the stored value on re-registration; an empty string clears it.",
+            "examples": [
+              "LTTR 995 AR"
+            ]
+          },
+          "driver_external_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver External Id",
+            "description": "Fleet id of the driver, when known (same rule as `plate`).",
+            "examples": [
+              "DRV-0042"
             ]
           }
         },

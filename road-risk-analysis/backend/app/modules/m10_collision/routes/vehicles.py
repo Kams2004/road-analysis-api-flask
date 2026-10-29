@@ -28,9 +28,12 @@ async def register_vehicle(
     """
     **Mobile / simulator** — creates the vehicle identity used by the ping endpoint and answers its
     `id`. Idempotent: resending a known `vehicle_id` keeps it (updating `vehicle_type`); an unknown
-    `vehicle_id` is created with that id, so a device survives a backend reset.
+    `vehicle_id` is created with that id, so a device survives a backend reset. Optional `plate` /
+    `driver_external_id` link the vehicle to its fleet driving-behaviour score (a high score raises
+    the collision context index — reason `RISKY_DRIVER`); null keeps the stored value, `""` clears it.
     """
-    return await vehicle_service.register_vehicle(db, body.vehicle_id, body.vehicle_type)
+    return await vehicle_service.register_vehicle(db, body.vehicle_id, body.vehicle_type,
+                                                  body.plate, body.driver_external_id)
 
 
 # ── Mobile: periodic telemetry ping (position, speed, heading) ────────────────
@@ -53,7 +56,8 @@ async def ping_vehicle(
 
     After the 204 is sent, the collision pipeline runs in the background for this vehicle:
     road-state map-matching → trajectory prediction → conflict assessment with nearby vehicles →
-    alert engine (may notify on a NEW / ESCALATED alert). Failures there never affect the ping.
+    alert engine (may notify on a NEW / ESCALATED alert, pushed at once on `WS /alerts/ws`). Failures
+    there never affect the ping.
     """
     vehicle = await db.get(Vehicle, vehicle_id)
     if vehicle is None:
@@ -63,6 +67,7 @@ async def ping_vehicle(
         db, vehicle_id, vehicle.vehicle_type,
         body.latitude, body.longitude, body.speed_mps, body.heading, body.ts,
         body.accuracy_m, body.acceleration_mps2,
+        plate=vehicle.plate, driver_external_id=vehicle.driver_external_id,
     )
 
     # Non-blocking: keep the road-aware state (Step 2), predicted trajectory

@@ -88,7 +88,9 @@ class Trajectory(BaseModel):
         "Direction of travel along the road, degrees clockwise from north."))
     lateral_offset_m: Optional[float] = Field(None, description=(  # signed raw-GPS offset from the centreline, + = right of travel
         "Signed GPS offset from the centreline, metres (+ = right of the direction of travel)."))
-    gps_accuracy_m: Optional[float] = Field(None, description="GPS horizontal accuracy, metres.")
+    gps_accuracy_m: Optional[float] = Field(None, description=(
+        "GPS horizontal accuracy, metres (`collision.assumed_accuracy_m` when the ping carried none)."))
+    gps_accuracy_assumed: bool = Field(False, description="The ping carried no accuracy; `gps_accuracy_m` is assumed.")
 
     prediction_horizon_s: float = Field(..., description=(  # the largest horizon actually configured (settings.TRAJECTORY_HORIZONS_S)
         "Largest configured prediction horizon, seconds (`TRAJECTORY_HORIZONS_S`)."))

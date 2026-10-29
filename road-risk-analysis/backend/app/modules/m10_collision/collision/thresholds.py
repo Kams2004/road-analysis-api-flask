@@ -49,6 +49,30 @@ Hysteresis (alerts/engine.py, alert_service.py):
   resolve_after_s            a pair that merely dropped below the thresholds
                              is resolved after this long (separating /
                              passing / unrelated-road pairs resolve at once)
+Reliability of layer 1 (docs/COLLISION-PREVENTION.md):
+  assumed_accuracy_m         GPS accuracy assumed when a ping carries none
+                             (instead of distrusting the fix)
+  stationary_speed_mps       at or below this a vehicle is stopped: two
+                             stopped vehicles never alert; a vehicle closing
+                             on a stopped one ahead (queue, red light) only
+                             alerts when the deceleration it needs to stop
+                             queue_safety_gap_m short of it,
+                             v² / (2 · (gap − queue_safety_gap_m)), reaches
+                             queue_comfort_decel_mps2 (WARNING),
+                             queue_high_decel_mps2 (HIGH_WARNING),
+                             queue_critical_decel_mps2 (CRITICAL)
+  heading_tolerance_deg      headings within this of 0° / 180° are "same
+                             direction" / "opposite" for the same-road rule
+  same_road_name_margin_m    a shared road name (supporting signal only)
+                             accepts predicted paths up to this far apart
+  divided_min_separation_m   opposite headings on paths at least this far
+                             apart = the two carriageways of a divided road →
+                             passing, no alert
+  candidate_cap              at most this many nearest approaching vehicles
+                             are assessed per ping
+  pair_cache_ttl_s           a pair assessed from the same two telemetry
+                             fixes is reused (not recomputed) for this long
+  context                    Context Risk Index (context_settings.py)
 """
 import logging
 import time
@@ -57,6 +81,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.config import settings
+from app.modules.m10_collision.collision.context_settings import ContextSettings
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +137,18 @@ class CollisionSettings(BaseModel):
     lateral_max_accuracy_m:    float = Field(10.0, gt=0, le=100)
     deescalate_after_s:        float = Field(3.0, ge=0, le=60)
     resolve_after_s:           float = Field(3.0, ge=0, le=120)
+    assumed_accuracy_m:        float = Field(10.0, gt=0, le=100)
+    stationary_speed_mps:      float = Field(1.0, ge=0, le=5)
+    queue_safety_gap_m:        float = Field(2.0, ge=0, le=20)
+    queue_comfort_decel_mps2:  float = Field(3.0, gt=0, le=15)
+    queue_high_decel_mps2:     float = Field(4.5, gt=0, le=15)
+    queue_critical_decel_mps2: float = Field(6.0, gt=0, le=15)
+    heading_tolerance_deg:     float = Field(30.0, ge=5, le=60)
+    same_road_name_margin_m:   float = Field(15.0, ge=0, le=100)
+    divided_min_separation_m:  float = Field(5.0, ge=1, le=100)
+    candidate_cap:             int   = Field(30, ge=1, le=500)
+    pair_cache_ttl_s:          float = Field(5.0, ge=0, le=60)
+    context:                   ContextSettings = Field(default_factory=ContextSettings)
     levels:                    dict[str, CollisionLevel] = Field(default_factory=_default_levels)
     scenario_multipliers:      dict[str, float] = Field(default_factory=_default_multipliers)
 
@@ -138,7 +175,22 @@ class CollisionSettings(BaseModel):
         self.scenario_multipliers = {s: float(self.scenario_multipliers.get(s, 1.0)) for s in SCENARIOS}
         if self.fresh_after_s >= self.stale_after_s:
             raise ValueError("fresh_after_s must be lower than stale_after_s")
+        if not self.queue_comfort_decel_mps2 <= self.queue_high_decel_mps2 <= self.queue_critical_decel_mps2:
+            raise ValueError("queue decelerations must increase: comfort ≤ high ≤ critical")
         return self
+
+    @staticmethod
+    def merge_patch(current: dict, patch: dict) -> dict:
+        """settings_service.update_section: a patch of `context` changes only the keys it
+        names (its `weights` too) instead of resetting the rest of the nested section."""
+        merged = {**current, **patch}
+        if isinstance(patch.get("context"), dict):
+            ctx = {**(current.get("context") or {}), **patch["context"]}
+            for key in ("weights", "history_type_weights", "report_kind_weights"):
+                if isinstance(patch["context"].get(key), dict):
+                    ctx[key] = {**((current.get("context") or {}).get(key) or {}), **patch["context"][key]}
+            merged["context"] = ctx
+        return merged
 
     def multiplier(self, relative_heading_deg: Optional[float]) -> float:
         s = scenario(relative_heading_deg)

@@ -14,9 +14,11 @@ here; wiring a real one (Expo push, BeSafe, etc.) is future work.
 """
 import enum
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, Field
+
+from app.modules.m10_collision.collision.context import ContextReason
 
 
 class AlertLevel(str, enum.Enum):
@@ -104,6 +106,20 @@ class ConflictAlert(BaseModel):
         "Confidence (0–1) of the underlying conflict assessment (map matching + prediction)."))
     telemetry_stale: bool = Field(False, description=(  # true if either side's trajectory was DEGRADED/STALE when assessed
         "Either vehicle's trajectory was `DEGRADED` or `STALE` when assessed."))
+
+    # Context (layer 2) — docs/COLLISION-PREVENTION.md. `level` = `physical_level` widened / boosted
+    # by the context; the context never creates an alert (physical SAFE stays SAFE) nor lowers one.
+    physical_level: Optional[AlertLevel] = Field(None, description=(
+        "Level from physics alone (distance, time to closest approach, braking needed), before the context."))
+    context_index: float = Field(0.0, description=(
+        "Context Risk Index 0–1 at the conflict point (place history, speeding, hazards, reports, drivers, "
+        "night, GPS quality); widens the thresholds by up to 50 %."))
+    context_level_boost: int = Field(0, description=(
+        "1 when a high context index (≥ `collision.context.boost_threshold`) raised the level by one step."))
+    context_reasons: List[ContextReason] = Field([], description=(
+        "Why the context index is what it is, largest contribution first (stable `code` + English `label`)."))
+    detection_latency_ms: Optional[float] = Field(None, description=(
+        "Time from the newest telemetry fix of the pair to this evaluation, milliseconds."))
 
     reason: str = Field(..., description="Human-readable explanation of the level.")
     recommended_action: RecommendedAction = Field(..., description=(

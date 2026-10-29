@@ -73,6 +73,8 @@ celery_app.conf.update(
         "app.workers.celery_app.purge_old_events":       {"queue": "processing"},
         "app.workers.celery_app.check_event_alerts":     {"queue": "processing"},
         "app.workers.celery_app.geocode_places":         {"queue": "processing"},
+        # Collision-prevention context map (app/workers/collision_tasks.py)
+        "app.workers.celery_app.refresh_collision_context": {"queue": "processing"},
     },
     beat_schedule={
         "sync-ymane-historical-events": {
@@ -124,6 +126,12 @@ celery_app.conf.update(
         "event-feeds-alerts": {
             "task": "app.workers.celery_app.check_event_alerts",
             "schedule": 3600.0,
+        },
+        # Collision context map in Redis: rebuilt when older than collision.context.refresh_interval_s
+        # (5 min) or when new fleet events were imported (checked every minute)
+        "collision-context-refresh": {
+            "task": "app.workers.celery_app.refresh_collision_context",
+            "schedule": 60.0,
         },
         # Raw driving events past RAW_EVENT_RETENTION_DAYS (daily summaries are kept)
         "events-retention": {
@@ -229,3 +237,4 @@ from app.workers import hazard_tasks  # noqa: E402,F401 — Module 6 hazard life
 from app.workers import import_tasks  # noqa: E402,F401 — cloud imports (input sources)
 from app.workers import training_tasks  # noqa: E402,F401 — live training dataset
 from app.workers import event_feed_tasks  # noqa: E402,F401 — daily event files (historical / behaviour)
+from app.workers import collision_tasks  # noqa: E402,F401 — collision-prevention context map

@@ -23,6 +23,7 @@ from app.modules.m08_historical.routes import historical
 from app.modules.m09_driver_behaviour.routes import driver_behaviour
 from app.modules.m14_reports.routes import reports
 from app.modules.m10_collision.routes import vehicles, road_state, trajectory, collisions, alerts
+from app.modules.m10_collision.routes import metrics as collision_metrics
 from app.modules.m11_community.routes import signalements
 from app.modules.m12_integration.routes import api_clients
 from app.modules.m12_integration.routes import mobile_config
@@ -53,7 +54,7 @@ _LIVE_REFRESH = {
 }
 _LIVE_CLIENT = {
     ("POST", "/vehicles/register"), ("POST", "/vehicles/{vehicle_id}/ping"), ("POST", "/vehicles/nearby"),
-    ("GET", "/alerts/{vehicle_id}"), ("GET", "/road-state/{vehicle_id}"),
+    ("GET", "/alerts/{vehicle_id}"), ("POST", "/alerts/{conflict_id}/feedback"), ("GET", "/road-state/{vehicle_id}"),
     ("GET", "/trajectory/{vehicle_id}"), ("GET", "/collisions/{vehicle_id}"),
 }
 _live_guard = module_guard("collisions", read_posts={"/vehicles/nearby"},
@@ -217,6 +218,11 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(trajectory.router, prefix="/trajectory", tags=[doc.TAG_TRAJECTORY], dependencies=[_live_guard])
     app.include_router(collisions.router, prefix="/collisions", tags=[doc.TAG_COLLISIONS], dependencies=[_live_guard])
     app.include_router(alerts.router, prefix="/alerts", tags=[doc.TAG_ALERTS], dependencies=[_live_guard])
+    # WS /alerts/ws authenticates itself with the same headers (a WebSocket has no Request for the
+    # router guard): any API client, or a user with collisions:view.
+    app.include_router(alerts.ws_router, prefix="/alerts", tags=[doc.TAG_ALERTS])
+    app.include_router(collision_metrics.router, prefix="/collision", tags=[doc.TAG_COLLISIONS],
+                       dependencies=[module_guard("collisions")])
     # Route-search helpers (tronçons, OSRM preview, geocoding) — View right on
     # any page with a route search, checked per endpoint (route_reader).
     app.include_router(route_sections.router, prefix="/routes", tags=[doc.TAG_ROUTES])

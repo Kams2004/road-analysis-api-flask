@@ -7,6 +7,7 @@ Admin command line.
     python -m app.cli recluster-detections [--dry-run] [--verbose]
     python -m app.cli dedupe-observations [--dry-run] [--verbose] [--show HZ-000001]
     python -m app.cli geocode-backfill --limit 500
+    python -m app.cli collision-calibration [--holdout-days 90] [--min-events 5] [--json]
 
 create-admin prompts for the password (or reads ADMIN_PASSWORD) and adds the
 Administrator role to an existing user with that e-mail if there is one.
@@ -23,6 +24,10 @@ estimated object positions, recomputes the cluster centres and runs
 recluster-detections (merges); idempotent, short transactions.
 geocode-backfill reverse-geocodes (street, quartier, town …) located
 detections that have no structured address yet, ≤ 1 Nominatim request/s.
+collision-calibration checks the collision Context Risk Index on the fleet
+events: the place index built from the events before the last --holdout-days
+should be higher where harsh braking / accidents then concentrated (cells
+with ≥ --min-events of them) than elsewhere (docs/COLLISION-PREVENTION.md).
 """
 import argparse
 import asyncio
@@ -249,6 +254,32 @@ async def resync_training_rejections(only_unclassified: bool) -> None:
     print("after: ", json.dumps(after, sort_keys=True))
 
 
+async def collision_calibration(holdout_days: int, min_events: int, as_json: bool) -> None:
+    import json
+    from app.modules.m10_collision import context_service
+    async with AsyncSessionLocal() as db:
+        rep = await context_service.calibrate(db, holdout_days, min_events)
+    if as_json:
+        print(json.dumps(rep, indent=2))
+        return
+    print(format_calibration(rep))
+
+
+def format_calibration(rep: dict) -> str:
+    def f(v):
+        return "n/a" if v is None else v
+    return "\n".join([
+        "Collision context — place index calibration",
+        f"  index built from events before {rep.get('cutoff', '?')[:10]} "
+        f"({rep.get('index_cells', 0)} cells); outcomes: {rep.get('outcome_events', 0)} harsh-braking / "
+        f"accident events" + (f" in the last {rep['holdout_days']} days" if rep.get("holdout_days") else " (in-sample)"),
+        f"  cells with ≥ {rep['min_events']} outcome events: {rep['hot_cells']}   mean index {f(rep['mean_index_hot'])}",
+        f"  other cells:                        {rep['other_cells']}   mean index {f(rep['mean_index_other'])}",
+        f"  ratio {f(rep['ratio'])}   AUC {f(rep['auc'])} (0.5 = no signal, 1 = perfect ranking)",
+        f"  verdict: {rep['verdict']}",
+    ])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -272,6 +303,11 @@ def main() -> None:
     r = sub.add_parser("resync-training-rejections",
                        help="re-file rejected training samples by reason kind (idempotent)")
     r.add_argument("--only-unclassified", action="store_true")
+    cc = sub.add_parser("collision-calibration",
+                        help="is the collision place index higher where harsh braking / accidents concentrate?")
+    cc.add_argument("--holdout-days", type=int, default=90, help="0 = in-sample check")
+    cc.add_argument("--min-events", type=int, default=5)
+    cc.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.cmd == "create-admin":
         asyncio.run(create_admin(args.email, args.name))
@@ -285,6 +321,8 @@ def main() -> None:
         asyncio.run(resync_training_rejections(args.only_unclassified))
     elif args.cmd == "geocode-backfill":
         asyncio.run(geocode_backfill(args.limit))
+    elif args.cmd == "collision-calibration":
+        asyncio.run(collision_calibration(args.holdout_days, args.min_events, args.json))
     else:
         asyncio.run(create_api_client(args.name))
 

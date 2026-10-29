@@ -37,13 +37,33 @@ Proximity alone is not a conflict. A pair is only rated when ALL hold:
      (MONITOR at most if the CPA is within unrelated_monitor_distance_m);
   3. an opposite-direction pair on the same road is not simply passing in its
      own lane: lateral separation (raw GPS vs centreline, trusted only with
-     good GPS accuracy) ≥ lateral_margin_m → NONE;
+     good GPS accuracy — a fix without accuracy counts as assumed_accuracy_m)
+     ≥ lateral_margin_m → NONE; nor on the two carriageways of a divided road
+     (opposite headings, predicted paths ≥ divided_min_separation_m apart);
+  4. two stopped vehicles never conflict; a vehicle closing on a STOPPED one
+     ahead (queue, red light) is rated by the deceleration it needs to stop
+     queue_safety_gap_m short of it — v² / (2·(gap − safety gap)) — not by
+     the CPA (which is always ~0 there): below queue_comfort_decel_mps2 it is
+     ordinary braking, no alert;
 then severity needs BOTH distance-at-CPA and TTC within a level's limits.
+
+"Same road" (road_relation) is geometric: predicted paths within
+road_link_margin_m AND compatible headings (same or opposite direction within
+heading_tolerance_deg) AND a supporting signal — a shared map-matched segment,
+or the same road name (paths then accepted up to same_road_name_margin_m apart).
+A shared name alone (two streets of one long avenue name, a parallel service
+road) no longer makes two vehicles "same road".
+
+Context (layer 2, collision/context.py) never runs here: apply_context()
+takes a physically-rated conflict and the Context Risk Index C and widens the
+thresholds by up to max_widening·C, then raises the level by at most one step
+when C ≥ boost_threshold — a pair physically rated NONE stays NONE.
 """
 import logging
 import math
 from typing import List, Optional, Set, Tuple
 
+from app.modules.m10_collision.collision import context as ctx
 from app.modules.m10_collision.collision import thresholds
 from app.modules.m10_collision.collision.models import ConflictRiskLevel, ConflictStatus, VehicleConflict
 from app.modules.m03_maps.osrm import geo
@@ -117,19 +137,22 @@ _LEVEL_TO_RISK = {
     "WARNING": ConflictRiskLevel.MODERATE,
     "MONITOR": ConflictRiskLevel.LOW,
 }
+_RANK_TO_RISK = {v: k for k, v in _SEVERITY_RANK.items()}
 
 
 def _classify(
     distance_m: Optional[float], ttc_s: Optional[float], relative_heading_deg: Optional[float] = None,
+    scale: float = 1.0,
 ) -> ConflictRiskLevel:
     """The most severe level whose distance-at-CPA AND TTC limits both hold
     (runtime per-level thresholds, scaled by the encounter scenario's
-    multiplier). A level with no TTC limit accepts any TTC within the
-    horizon (the horizon gate is applied before this is called)."""
+    multiplier and by `scale` — the context widening, 1 … 1.5). A level with
+    no TTC limit accepts any TTC within the horizon (the horizon gate is
+    applied before this is called)."""
     if distance_m is None:
         return ConflictRiskLevel.NONE
     cfg = thresholds.current()
-    mult = cfg.multiplier(relative_heading_deg)
+    mult = cfg.multiplier(relative_heading_deg) * scale
     for name in thresholds.LEVELS:
         level = cfg.levels[name]
         if distance_m > level.max_distance_m * mult:
@@ -197,13 +220,13 @@ def _lateral_separation(ta: Trajectory, tb: Trajectory, relative_heading: Option
     """Lane separation from each vehicle's signed raw-GPS offset to the road
     centreline (+ = right of its own travel direction). Opposite directions:
     keeping right on both sides puts them |offA + offB| apart; same direction:
-    |offA − offB|. None when offsets are missing or GPS accuracy is unknown /
-    too poor to resolve lanes."""
+    |offA − offB|. None when offsets are missing or GPS accuracy is too poor
+    to resolve lanes (an unreported accuracy counts as assumed_accuracy_m)."""
     cfg = thresholds.current()
     if ta.lateral_offset_m is None or tb.lateral_offset_m is None or relative_heading is None:
         return None
     for acc in (ta.gps_accuracy_m, tb.gps_accuracy_m):
-        if acc is None or acc > cfg.lateral_max_accuracy_m:
+        if (acc if acc is not None else cfg.assumed_accuracy_m) > cfg.lateral_max_accuracy_m:
             return None
     if relative_heading >= 90:
         return abs(ta.lateral_offset_m + tb.lateral_offset_m)
@@ -213,6 +236,88 @@ def _lateral_separation(ta: Trajectory, tb: Trajectory, relative_heading: Option
 def _norm_name(name: Optional[str]) -> Optional[str]:
     n = (name or "").strip().lower()
     return n or None
+
+
+def road_relation(
+    path_gap_m: Optional[float],
+    relative_heading_deg: Optional[float],
+    shared_segment: bool,
+    same_name: bool,
+    road_trusted: bool,
+) -> Tuple[str, bool]:
+    """(relation, divided_carriageway). relation: `same_road` (close paths, compatible
+    headings and a supporting segment / name signal), `connected` (paths within
+    road_link_margin_m — a junction, or the same line without other signal), `unrelated`
+    (far apart and both reliably map-matched) or `unknown`. divided_carriageway: opposite
+    headings on connected paths at least divided_min_separation_m apart."""
+    cfg = thresholds.current()
+    tol = cfg.heading_tolerance_deg
+    aligned = relative_heading_deg is None or relative_heading_deg <= tol or relative_heading_deg >= 180.0 - tol
+    opposite = relative_heading_deg is not None and relative_heading_deg >= 180.0 - tol
+    if path_gap_m is None:
+        same_road = aligned and shared_segment
+        connected = same_road
+    else:
+        close = path_gap_m <= cfg.road_link_margin_m
+        name_close = same_name and path_gap_m <= max(cfg.road_link_margin_m, cfg.same_road_name_margin_m)
+        same_road = aligned and ((shared_segment and close) or name_close)
+        connected = same_road or close
+    divided = bool(opposite and connected and path_gap_m is not None
+                   and path_gap_m >= cfg.divided_min_separation_m)
+    if same_road:
+        return "same_road", divided
+    if connected:
+        return "connected", divided
+    return ("unrelated" if road_trusted else "unknown"), False
+
+
+def required_deceleration(speed_mps: float, gap_m: float, safety_gap_m: float) -> float:
+    """Constant deceleration (m/s²) needed to stop from speed_mps `safety_gap_m` short of an
+    obstacle `gap_m` ahead: v² / (2·(gap − safety gap)); infinite when already inside it."""
+    if speed_mps <= 0:
+        return 0.0
+    room = gap_m - safety_gap_m
+    if room <= 0.1:
+        return float("inf")
+    return speed_mps * speed_mps / (2.0 * room)
+
+
+def queue_risk(decel_mps2: float) -> ConflictRiskLevel:
+    """Level of a vehicle closing on a stopped one, from the deceleration it needs."""
+    cfg = thresholds.current()
+    if decel_mps2 >= cfg.queue_critical_decel_mps2:
+        return ConflictRiskLevel.CRITICAL
+    if decel_mps2 >= cfg.queue_high_decel_mps2:
+        return ConflictRiskLevel.HIGH
+    if decel_mps2 >= cfg.queue_comfort_decel_mps2:
+        return ConflictRiskLevel.MODERATE
+    return ConflictRiskLevel.NONE
+
+
+def apply_context(conflict: VehicleConflict, result: "ctx.ContextResult") -> VehicleConflict:
+    """Layer 2: the physically-rated conflict with the Context Risk Index applied. The
+    distance / TTC thresholds widen by max_widening·C, then C ≥ boost_threshold raises the level
+    by at most one step (CRITICAL is the ceiling). A pair physically rated NONE, or rated by
+    the stopped-vehicle rule's own scale, keeps physics' answer for the widening part; the
+    index and reasons are recorded either way."""
+    cfg = thresholds.current().context
+    physical = conflict.physical_risk_level or conflict.risk_level
+    p_rank = _SEVERITY_RANK[physical]
+    if conflict.required_decel_mps2 is not None:
+        widened = p_rank            # rated by deceleration, not by distance / TTC thresholds
+    else:
+        widened = _SEVERITY_RANK[_classify(conflict.distance_at_closest_approach_m,
+                                           conflict.time_to_closest_approach_s,
+                                           conflict.relative_heading_deg, ctx.widening(result.index, cfg))]
+    rank, boost = ctx.raise_level(p_rank, widened, result.index, cfg)
+    return conflict.model_copy(update={
+        "risk_level": _RANK_TO_RISK[rank],
+        "physical_risk_level": physical,
+        "context_index": result.index,
+        "context_level_boost": boost,
+        "context_reasons": result.reasons,
+        "context_factors": result.factors,
+    })
 
 
 def assess_conflict(
@@ -333,46 +438,65 @@ def assess_conflict(
     )
     segment_overlap_ahead = bool(ids_a & ids_b)
     name_a, name_b = _norm_name(trajectory_a.road_name), _norm_name(trajectory_b.road_name)
-    same_road = same_current_segment or segment_overlap_ahead or (name_a is not None and name_a == name_b)
     gap = path_distance_m(_path(trajectory_a), _path(trajectory_b))
-    connected = same_road or (gap is not None and gap <= cfg.road_link_margin_m)
     road_trusted = (
         trajectory_a.match_quality in _TRUSTED_MATCH
         and trajectory_b.match_quality in _TRUSTED_MATCH
         and confidence >= cfg.segment_trust_confidence
     )
-    if same_road:
-        road_relation = "same_road"
-    elif connected:
-        road_relation = "connected"
-    elif road_trusted:
-        road_relation = "unrelated"
-    else:
-        road_relation = "unknown"
+    relation, divided = road_relation(
+        gap, relative_heading, same_current_segment or segment_overlap_ahead,
+        name_a is not None and name_a == name_b, road_trusted,
+    )
+    connected = relation in ("same_road", "connected")
 
-    # ── gate 3: opposite-direction passing in separate lanes ───────────────
+    # ── gate 3: opposite-direction passing in separate lanes / carriageways ─
     lateral = _lateral_separation(trajectory_a, trajectory_b, relative_heading)
     passing = (
         encounter == "head_on" and connected
         and lateral is not None and lateral >= cfg.lateral_margin_m
     )
 
+    # ── gate 4: stopped vehicles ───────────────────────────────────────────
+    speed_a, speed_b = trajectory_a.initial_speed_mps, trajectory_b.initial_speed_mps
+    stopped_a = speed_a <= cfg.stationary_speed_mps
+    stopped_b = speed_b <= cfg.stationary_speed_mps
+    required_decel = None
+    if stopped_a != stopped_b and encounter in ("same_direction", None):
+        required_decel = required_deceleration(speed_b if stopped_a else speed_a, d0, cfg.queue_safety_gap_m)
+
     reason = None
     clear_now = False
-    if separating:
+    if stopped_a and stopped_b:
+        risk, reason, clear_now = ConflictRiskLevel.NONE, "both vehicles are stopped", True
+    elif separating:
         risk, reason, clear_now = ConflictRiskLevel.NONE, "separation not decreasing — vehicles are not closing", True
     elif beyond_horizon:
         risk, reason = ConflictRiskLevel.NONE, "closest approach beyond the prediction horizon"
-    elif road_relation == "unrelated":
+    elif relation == "unrelated":
         clear_now = True
         if best_distance <= cfg.unrelated_monitor_distance_m:
             risk, reason = ConflictRiskLevel.LOW, "very close, but on an unconnected road"
         else:
             risk, reason = ConflictRiskLevel.NONE, "different, unconnected roads"
+    elif divided:
+        risk, reason, clear_now = (
+            ConflictRiskLevel.NONE, f"opposite carriageways of a divided road (paths {gap:.0f} m apart)", True,
+        )
     elif passing:
         risk, reason, clear_now = (
             ConflictRiskLevel.NONE, f"opposite-direction passing, lateral separation {lateral:.1f} m", True,
         )
+    elif required_decel is not None:
+        # Closing on a stopped vehicle: rated by the braking it takes, capped by physics.
+        by_decel = queue_risk(required_decel)
+        by_cpa = _classify(best_distance, best_ttc, relative_heading)
+        risk = by_decel if _SEVERITY_RANK[by_decel] <= _SEVERITY_RANK[by_cpa] else by_cpa
+        decel_txt = "∞" if math.isinf(required_decel) else f"{required_decel:.1f}"
+        if risk == ConflictRiskLevel.NONE:
+            reason = f"stopped vehicle ahead, ordinary braking suffices ({decel_txt} m/s²)"
+        else:
+            reason = f"stopped vehicle ahead, {decel_txt} m/s² needed to stop"
     else:
         risk = _classify(best_distance, best_ttc, relative_heading)
 
@@ -390,11 +514,15 @@ def assess_conflict(
         closing_speed_mps=best_closing_speed,
         relative_heading_deg=relative_heading,
         encounter=encounter,
-        road_relation=road_relation,
+        road_relation=relation,
         lateral_separation_m=lateral,
         separating=separating,
         road_type_a=trajectory_a.road_type,
         road_type_b=trajectory_b.road_type,
+        physical_risk_level=risk,
+        required_decel_mps2=(None if required_decel is None else
+                             (round(required_decel, 2) if not math.isinf(required_decel) else 99.0)),
+        telemetry_timestamp=max(trajectory_a.telemetry_timestamp, trajectory_b.telemetry_timestamp),
     )
 
     if risk == ConflictRiskLevel.NONE:

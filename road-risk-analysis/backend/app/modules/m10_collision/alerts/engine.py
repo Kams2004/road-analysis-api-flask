@@ -85,9 +85,15 @@ def _reason_text(conflict: VehicleConflict, level: AlertLevel) -> str:
         parts.append("crossing trajectories predicted to converge")
     elif heading is not None:
         parts.append("closing on the vehicle ahead")
+    if conflict.required_decel_mps2 is not None:
+        parts.append(f"stopped vehicle ahead, {conflict.required_decel_mps2:.1f} m/s² braking needed")
     if not parts:
         parts.append("predicted trajectories converge within the prediction horizon")
-    return "; ".join(parts).capitalize()
+    text = "; ".join(parts).capitalize()
+    if conflict.context_reasons and (conflict.context_level_boost or conflict.context_index >= 0.2):
+        top = ", ".join(r.label.split(" (")[0].lower() for r in conflict.context_reasons[:2])
+        text += f" — risky context ({top})"
+    return text
 
 
 def evaluate(
@@ -130,6 +136,14 @@ def evaluate(
         else:
             transition = AlertTransition.UNCHANGED
 
+    physical_level = _RISK_LEVEL_FLOOR.get(conflict.physical_risk_level or conflict.risk_level, AlertLevel.SAFE)
+    latency_ms = None
+    if conflict.telemetry_timestamp is not None:
+        ts = conflict.telemetry_timestamp
+        if ts.tzinfo is None and now.tzinfo is not None:
+            ts = ts.replace(tzinfo=now.tzinfo)
+        latency_ms = round(max(0.0, (now - ts).total_seconds() * 1000.0), 1)
+
     conflict_id = previous.conflict_id if was_active and previous is not None else _new_conflict_id(now)
     first_detected_at = previous.first_detected_at if was_active and previous is not None else now
     resolved_at = now if status == AlertLifecycleStatus.RESOLVED else (
@@ -158,6 +172,11 @@ def evaluate(
         segment_overlap_ahead=conflict.segment_overlap_ahead,
         map_match_confidence=conflict.confidence,
         telemetry_stale=(conflict.status == ConflictStatus.DEGRADED),
+        physical_level=physical_level,
+        context_index=conflict.context_index,
+        context_level_boost=conflict.context_level_boost,
+        context_reasons=conflict.context_reasons,
+        detection_latency_ms=latency_ms,
         reason=_reason_text(conflict, level),
         recommended_action=_RECOMMENDED_ACTION[level],
         first_detected_at=first_detected_at,

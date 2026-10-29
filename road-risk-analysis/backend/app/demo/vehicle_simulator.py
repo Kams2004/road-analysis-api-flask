@@ -206,6 +206,9 @@ class FakeVehicle:
             "longitude": self.lon,
             "speed_mps": round(self.speed, 2),
             "heading": round(self.heading, 1),
+            # A simulated fix is exact; report a typical phone accuracy so the collision engine
+            # treats it like a real device (lane separation needs a known accuracy).
+            "accuracy_m": 5.0,
         }
         try:
             _request("POST", f"/vehicles/{self.id}/ping", body)

@@ -98,15 +98,15 @@ async def _session_user(db: AsyncSession, token: str, now: datetime) -> tuple[Us
     return user, sess
 
 
-async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) -> Principal:
-    cached = getattr(request.state, "principal", None)
-    if cached is not None:
-        return cached
+async def resolve_principal(headers, db: AsyncSession) -> Principal:
+    """The Principal of a set of request headers (X-API-Key and / or Bearer token) — shared by
+    HTTP requests (get_principal) and WebSockets (/alerts/ws), which have no Request object."""
     principal = Principal(kind="anonymous")
     now = datetime.utcnow()
 
-    api_key = request.headers.get("x-api-key")
-    token = bearer_token(request)
+    api_key = headers.get("x-api-key")
+    auth = headers.get("authorization", "")
+    token = (auth[7:].strip() or None) if auth.lower().startswith("bearer ") else None
     if api_key:
         client = (await db.execute(
             select(ApiClient).where(ApiClient.key_hash == hash_token(api_key))
@@ -131,6 +131,14 @@ async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) ->
             kind="user", id=user.id, label=user.email, user=user, session=sess,
             permissions=effective_permissions(user),
         )
+    return principal
+
+
+async def get_principal(request: Request, db: AsyncSession = Depends(get_db)) -> Principal:
+    cached = getattr(request.state, "principal", None)
+    if cached is not None:
+        return cached
+    principal = await resolve_principal(request.headers, db)
     request.state.principal = principal
     return principal
 

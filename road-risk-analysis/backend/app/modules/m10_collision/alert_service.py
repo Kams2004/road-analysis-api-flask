@@ -16,7 +16,15 @@ Note on the two-sided nature of a conflict: both vehicles in a pair run
 this independently (their own ping triggers their own background chain),
 and both land on the *same* Redis record via the canonical pair_key below —
 so the alert is genuinely one shared object, not two divergent halves.
+
+Delivery: every transition (anything but UNCHANGED) is published on the Redis
+pub/sub channels `collision:alerts:{vehicle_id}` of BOTH vehicles — whichever
+API process holds a vehicle's WebSocket (/alerts/ws, routes/alerts.py)
+forwards it at once — counted in the hourly metrics (metrics_service.py) and
+handed to the notification adapter (logging). GET /alerts/{vehicle_id} keeps
+serving the same records for clients without a socket.
 """
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -24,7 +32,7 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.modules.m10_collision import collision_service, vehicle_service
+from app.modules.m10_collision import collision_service, metrics_service, vehicle_service
 from app.modules.m10_collision.alerts import engine
 from app.modules.m10_collision.collision import thresholds
 from app.modules.m10_collision.alerts.models import AlertLifecycleStatus, AlertTransition, ConflictAlert
@@ -79,9 +87,35 @@ async def _store_alert(key: str, alert: ConflictAlert) -> None:
     await r.set(_alert_key(key), alert.model_dump_json(), ex=settings.ALERT_TTL_S)
 
 
+def alert_channel(vehicle_id: str) -> str:
+    """Redis pub/sub channel of one vehicle's alert transitions (WS /alerts/ws)."""
+    return f"collision:alerts:{vehicle_id}"
+
+
+def alert_message(alert: ConflictAlert, vehicle_id: str) -> dict:
+    """The WebSocket message of one transition, as seen by `vehicle_id`."""
+    other = alert.vehicle_b_id if alert.vehicle_a_id == vehicle_id else alert.vehicle_a_id
+    return {"type": "alert", "vehicle_id": vehicle_id, "other_vehicle_id": other,
+            "alert": json.loads(alert.model_dump_json())}
+
+
+async def publish(alert: ConflictAlert) -> None:
+    r = get_redis()
+    for vid in {alert.vehicle_a_id, alert.vehicle_b_id}:
+        await r.publish(alert_channel(vid), json.dumps(alert_message(alert, vid)))
+
+
 async def _notify_if_changed(alert: ConflictAlert) -> None:
     if alert.transition == AlertTransition.UNCHANGED:
         return
+    try:
+        await publish(alert)
+    except Exception:
+        logger.exception("Alert publish failed for conflict %s", alert.conflict_id)
+    try:
+        await metrics_service.record(get_redis(), alert)
+    except Exception:
+        logger.warning("Alert metrics not recorded for conflict %s", alert.conflict_id, exc_info=True)
     try:
         await get_notification_adapter().notify(alert)
     except Exception:

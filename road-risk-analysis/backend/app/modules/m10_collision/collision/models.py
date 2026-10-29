@@ -11,9 +11,11 @@ through a clean API for whatever consumes it next.
 """
 import enum
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
+
+from app.modules.m10_collision.collision.context import ContextReason
 
 
 class ConflictRiskLevel(str, enum.Enum):
@@ -89,6 +91,19 @@ class VehicleConflict(BaseModel):
 
     reason: Optional[str] = Field(None, description=(  # populated for DEGRADED/UNAVAILABLE, or notable NONE results
         "Explanation, for `DEGRADED` / `UNAVAILABLE` or notable `NONE` results."))
+
+    # Layer 1 detail + layer 2 (context) — see detector.apply_context.
+    physical_risk_level: Optional[ConflictRiskLevel] = Field(None, description=(
+        "Risk from physics alone (distance, time, braking), before the context; `risk_level` is never "
+        "lower and is above `NONE` only if this is."))
+    required_decel_mps2: Optional[float] = Field(None, description=(
+        "Closing on a stopped vehicle: deceleration needed to stop short of it, m/s² (99 = already too close)."))
+    context_index: float = Field(0.0, description="Context Risk Index at the conflict point, 0–1.")
+    context_level_boost: int = Field(0, description="Levels added by a high context index (0 or 1).")
+    context_reasons: List[ContextReason] = Field([], description="Why the context index is what it is, largest first.")
+    context_factors: Dict[str, float] = Field({}, description="Value (0–1) of each context factor.")
+    telemetry_timestamp: Optional[datetime] = Field(None, description=(
+        "Newest telemetry timestamp of the two vehicles (detection latency is measured from it)."))
 
 
 class VehicleConflictReport(BaseModel):
