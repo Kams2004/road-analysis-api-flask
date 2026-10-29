@@ -3,8 +3,8 @@ Where to DRAW a vehicle on the maps (its own app and the others'): the raw GPS f
 uncertainty, kept in the live hash next to the raw fix (`display_*` fields).
 
   stopped   no trusted motion (speed > MOVING_SPEED_MPS — slower GPS speeds are noise as often as
-            not) and the new fix within the GPS uncertainty (max(HOLD_MIN_M,
-            accuracy)) of the last drawn point → the point does not move: a parked phone's GPS
+            not) and the new fix within the GPS uncertainty of both points (max(HOLD_MIN_M,
+            accuracy + the drawn point's accuracy)) of the last drawn point → the point does not move: a parked phone's GPS
             wanders by metres (indoors by 100 m, with fake speeds of several m/s), the vehicle
             does not. The speed (and heading) is only trusted with an accuracy ≤
             SPEED_TRUST_ACCURACY_M; with a poorer fix only a jump beyond the uncertainty counts as
@@ -96,8 +96,9 @@ async def update(vehicle_id: str, live: dict, previous: Optional[dict]) -> dict:
         prev_pt = (previous["display_latitude"], previous["display_longitude"])
         prev_acc = previous.get("display_accuracy")
     better = prev_acc is not None and acc <= IMPROVE * prev_acc
-    if (not moving and prev_pt and not better
-            and geo.haversine_m(*raw, *prev_pt) <= max(HOLD_MIN_M, acc)):
+    # Both points carry a GPS error: two fixes of one parked phone can be acc + prev_acc apart.
+    hold_radius = max(HOLD_MIN_M, acc + (prev_acc or 0.0))
+    if not moving and prev_pt and not better and geo.haversine_m(*raw, *prev_pt) <= hold_radius:
         out.update(latitude=prev_pt[0], longitude=prev_pt[1], snapped=bool(previous.get("display_snapped")),
                    accuracy=prev_acc or acc)
     elif acc <= SNAP_MAX_M:
